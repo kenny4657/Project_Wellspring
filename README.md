@@ -14,22 +14,6 @@ Built with SvelteKit, MapLibre GL JS (custom fork with stencil clipping), and Na
 - **Stencil-based clipping**: Hex fill is clipped to land polygons via a forked MapLibre
 - **Export/Import**: Save your work via File System Access API (overwrites same file)
 
-## Dependencies
-
-This project requires the MapLibre fork with stencil clipping. Clone it as a sibling directory:
-
-```bash
-cd ..
-git clone https://github.com/maplibre/maplibre-gl-js maplibre-fork
-cd maplibre-fork
-git checkout v5.22.0
-# Apply the stencil clipping patches from docs/MAPLIBRE_FORK_PATCH.md
-npm install
-npm run build-prod
-npm run build-css
-cd ../country-painter
-```
-
 ## Setup
 
 ```bash
@@ -37,7 +21,26 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:5173
+Open http://localhost:5173 — that's it.
+
+The MapLibre fork is vendored in `vendor/maplibre-gl/` with pre-built
+`dist/maplibre-gl.js` ready to use. No external dependencies needed.
+
+## Rebuilding the MapLibre Fork
+
+If you modify `vendor/maplibre-gl/src/`, rebuild with:
+
+```bash
+cd vendor/maplibre-gl
+npm install  # first time only
+npm run build-prod
+npm run build-css
+cd ../..
+rm -rf node_modules/.vite  # clear Vite cache
+npm run dev
+```
+
+See `vendor/maplibre-gl/FORK_CHANGES.md` for what's modified from upstream v5.22.0.
 
 ## Data Files
 
