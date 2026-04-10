@@ -25,7 +25,7 @@
     "@turf/helpers": "^7.3.4",
     "@turf/intersect": "^7.3.4",
     "h3-js": "^4.1.0",
-    "maplibre-gl": "file:../maplibre-fork",
+    "maplibre-gl": "file:./vendor/maplibre-gl",
     "topojson-client": "^3.1.0"
   }
 }
