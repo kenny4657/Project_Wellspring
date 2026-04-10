@@ -1,0 +1,7 @@
+node_modules/
+.svelte-kit/
+build/
+.DS_Store
+.env
+*.log
+# Keep static data — the cache is needed for the editor to work
