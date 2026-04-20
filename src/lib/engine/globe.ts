@@ -196,27 +196,35 @@ export async function createGlobeEngine(
 	report(`Initialized ${allCells.length.toLocaleString()} hex instances`);
 
 	// ── Picking / Painting ──────────────────────────────────
+	// Use native canvas events instead of Babylon's pointer observable
+	// to avoid interfering with GeospatialCamera's own input handling.
+	// Camera orbits on left-drag by default; painting only on single clicks.
 	let onHexClickCallback: ((h3: string) => void) | null = null;
-	let isPainting = false;
+	let pointerDownPos: { x: number; y: number } | null = null;
 
-	scene.onPointerObservable.add((pointerInfo) => {
-		if (pointerInfo.type === PointerEventTypes.POINTERDOWN && pointerInfo.event.button === 0) {
-			const h3 = pickHexAtScreen(scene, camera, scene.pointerX, scene.pointerY, H3_RES);
-			if (h3 && hexRenderer.hasHex(h3)) {
-				onHexClickCallback?.(h3);
-				isPainting = true;
-				camera.detachControl();
+	canvas.addEventListener('pointerdown', (e) => {
+		if (e.button === 0) {
+			pointerDownPos = { x: e.clientX, y: e.clientY };
+		}
+	});
+
+	canvas.addEventListener('pointerup', (e) => {
+		if (e.button === 0 && pointerDownPos) {
+			// Only paint if the pointer didn't move much (click, not drag)
+			const dx = e.clientX - pointerDownPos.x;
+			const dy = e.clientY - pointerDownPos.y;
+			const dist = Math.sqrt(dx * dx + dy * dy);
+			if (dist < 5) {
+				// This was a click, not a drag — paint the hex
+				const rect = canvas.getBoundingClientRect();
+				const x = e.clientX - rect.left;
+				const y = e.clientY - rect.top;
+				const h3 = pickHexAtScreen(scene, camera, x, y, H3_RES);
+				if (h3 && hexRenderer.hasHex(h3)) {
+					onHexClickCallback?.(h3);
+				}
 			}
-		} else if (pointerInfo.type === PointerEventTypes.POINTERMOVE && isPainting) {
-			const h3 = pickHexAtScreen(scene, camera, scene.pointerX, scene.pointerY, H3_RES);
-			if (h3 && hexRenderer.hasHex(h3)) {
-				onHexClickCallback?.(h3);
-			}
-		} else if (pointerInfo.type === PointerEventTypes.POINTERUP) {
-			if (isPainting) {
-				isPainting = false;
-				camera.attachControl(canvas, true);
-			}
+			pointerDownPos = null;
 		}
 	});
 
