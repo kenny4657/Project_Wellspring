@@ -199,6 +199,7 @@ precision highp float;
 
 uniform vec4 terrainColors[${TERRAIN_COUNT}];
 uniform vec3 sunDirection;
+uniform vec3 cameraPos;  // updated each frame from camera position
 
 varying vec3 vWorldPos;
 varying vec3 vWorldNormal;
@@ -208,7 +209,6 @@ varying float vN0, vN1, vN2, vN3, vN4, vN5;
 varying vec4 vColor;
 varying float vIsSkirt;
 
-// Get neighbor type by index
 float getNeighborType(int edge) {
     if (edge == 0) return vN0;
     if (edge == 1) return vN1;
@@ -224,7 +224,7 @@ void main() {
 
     float distFromCenter = length(vHexUV);
 
-    // Edge blending
+    // Edge blending with neighbor terrain
     float edgeBlend = smoothstep(0.5, 0.95, distFromCenter);
 
     float angle = atan(vHexUV.y, vHexUV.x);
@@ -241,19 +241,27 @@ void main() {
         bool neighborWater = neighborIdx <= 4;
 
         if (myWater != neighborWater) {
-            vec3 shoreColor = vec3(0.76, 0.70, 0.50);
+            vec3 shoreColor = vec3(0.85, 0.78, 0.55);
             baseColor = mix(baseColor, shoreColor, edgeBlend * 0.6);
         } else {
             baseColor = mix(baseColor, neighborColor, edgeBlend * 0.4);
         }
     }
 
-    // Lighting — near-full brightness, slight shading for depth
-    float NdotL = max(dot(vWorldNormal, sunDirection), 0.0);
-    vec3 litColor = baseColor * (0.92 + 0.08 * NdotL);
+    // Lighting: sun + camera headlight
+    vec3 N = normalize(vWorldNormal);
+    float sunDiffuse = max(dot(N, sunDirection), 0.0);
+
+    // Camera headlight: always illuminates what the camera sees
+    vec3 toCamera = normalize(cameraPos - vWorldPos);
+    float camDiffuse = max(dot(N, toCamera), 0.0);
+
+    // Combine: high ambient + sun + camera light
+    float light = 0.45 + 0.25 * sunDiffuse + 0.30 * camDiffuse;
+    vec3 litColor = baseColor * light;
 
     // Subtle hex edge line
-    float edgeDarken = smoothstep(0.88, 0.96, distFromCenter) * 0.08;
+    float edgeDarken = smoothstep(0.85, 0.95, distFromCenter) * 0.12;
     litColor *= (1.0 - edgeDarken);
 
     // Province/country tint
@@ -284,7 +292,7 @@ export function createTerrainMaterial(scene: Scene): ShaderMaterial {
 		],
 		uniforms: [
 			'world', 'viewProjection',
-			'terrainParams', 'terrainColors', 'sunDirection'
+			'terrainParams', 'terrainColors', 'sunDirection', 'cameraPos'
 		],
 		// DO NOT include INSTANCES/THIN_INSTANCES defines — Babylon adds them automatically
 		needAlphaBlending: false,

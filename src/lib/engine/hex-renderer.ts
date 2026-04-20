@@ -1,12 +1,12 @@
 /**
  * Hex renderer — manages thin instances for all hex tiles on the globe.
  *
- * Uses Babylon's native instance color system (ColorInstanceKind) so
- * StandardMaterial lighting works automatically. Terrain type determines
- * the instance color via the TERRAIN_PROFILES color table.
+ * Uses custom terrain shader with per-instance attributes:
+ *   - terrainData0 (4 floats): terrain type + 3 neighbor types
+ *   - terrainData1 (4 floats): 3 neighbor types + padding
+ *   - color (4 floats): province/country tint RGBA
  */
 import { Matrix, Vector3 } from '@babylonjs/core/Maths/math.vector';
-import { VertexBuffer } from '@babylonjs/core/Buffers/buffer';
 import { type Mesh } from '@babylonjs/core/Meshes/mesh';
 import { cellToLatLng, gridDisk } from 'h3-js';
 import { latLngToWorld, EARTH_RADIUS_KM } from '$lib/geo/coords';
@@ -20,8 +20,9 @@ const _right = Vector3.Zero();
 export class HexRenderer {
 	private mesh: Mesh;
 	private matrices: Float32Array;
-	private instanceColors: Float32Array; // RGBA per hex — terrain type color
-	private hexTerrain: Float32Array;     // terrain type index per hex (for lookup)
+	private terrainData0: Float32Array;
+	private terrainData1: Float32Array;
+	private colors: Float32Array;
 	private hexIndex: Map<string, number> = new Map();
 	private neighborMap: Map<string, string[]> = new Map();
 	private count: number = 0;
@@ -29,105 +30,126 @@ export class HexRenderer {
 	constructor(mesh: Mesh, capacity: number) {
 		this.mesh = mesh;
 		this.matrices = new Float32Array(capacity * 16);
-		this.instanceColors = new Float32Array(capacity * 4);
-		this.hexTerrain = new Float32Array(capacity);
+		this.terrainData0 = new Float32Array(capacity * 4);
+		this.terrainData1 = new Float32Array(capacity * 4);
+		this.colors = new Float32Array(capacity * 4);
 	}
 
-	/**
-	 * Initialize all hexes from H3 cell list.
-	 */
 	initFromCells(cells: string[], defaultTerrain: TerrainTypeId = 'deep_ocean'): void {
 		this.count = cells.length;
 		const terrainIndex = TERRAIN_TYPES[defaultTerrain];
-		const profile = TERRAIN_PROFILES[terrainIndex];
 
 		for (let i = 0; i < cells.length; i++) {
 			const h3 = cells[i];
 			this.hexIndex.set(h3, i);
 
-			// Compute neighbors
 			const disk = gridDisk(h3, 1);
 			const neighbors = disk.filter(n => n !== h3);
 			while (neighbors.length < 6) neighbors.push(neighbors[0] || h3);
 			this.neighborMap.set(h3, neighbors);
 
-			// Compute instance matrix
 			const [lat, lng] = cellToLatLng(h3);
 			this.computeMatrix(lat, lng, i);
 
-			// Set terrain type and instance color
-			this.hexTerrain[i] = terrainIndex;
-			this.instanceColors[i * 4 + 0] = profile.color[0];
-			this.instanceColors[i * 4 + 1] = profile.color[1];
-			this.instanceColors[i * 4 + 2] = profile.color[2];
-			this.instanceColors[i * 4 + 3] = 1.0;
+			this.terrainData0[i * 4 + 0] = terrainIndex;
+			this.terrainData0[i * 4 + 1] = terrainIndex;
+			this.terrainData0[i * 4 + 2] = terrainIndex;
+			this.terrainData0[i * 4 + 3] = terrainIndex;
+			this.terrainData1[i * 4 + 0] = terrainIndex;
+			this.terrainData1[i * 4 + 1] = terrainIndex;
+			this.terrainData1[i * 4 + 2] = terrainIndex;
+			this.terrainData1[i * 4 + 3] = 0;
+
+			this.colors[i * 4 + 0] = 0;
+			this.colors[i * 4 + 1] = 0;
+			this.colors[i * 4 + 2] = 0;
+			this.colors[i * 4 + 3] = 0;
 		}
 
-		// Upload buffers
-		this.mesh.thinInstanceSetBuffer('matrix', this.matrices, 16, true);
+		// Set neighbor terrain data
+		for (let i = 0; i < cells.length; i++) {
+			const h3 = cells[i];
+			const neighbors = this.neighborMap.get(h3)!;
+			for (let e = 0; e < 6; e++) {
+				const ni = this.hexIndex.get(neighbors[e]);
+				if (ni !== undefined) {
+					const neighborType = this.terrainData0[ni * 4 + 0];
+					if (e < 3) {
+						this.terrainData0[i * 4 + 1 + e] = neighborType;
+					} else {
+						this.terrainData1[i * 4 + (e - 3)] = neighborType;
+					}
+				}
+			}
+		}
 
-		// Use Babylon's native instance color system
-		this.mesh.thinInstanceSetBuffer('color', this.instanceColors, 4, false);
-		// Enable instance colors on the mesh so StandardMaterial uses them
-		this.mesh.hasVertexAlpha = false;
+		this.mesh.thinInstanceSetBuffer('matrix', this.matrices, 16, true);
+		this.mesh.thinInstanceRegisterAttribute('terrainData0', 4);
+		this.mesh.thinInstanceSetBuffer('terrainData0', this.terrainData0, 4, false);
+		this.mesh.thinInstanceRegisterAttribute('terrainData1', 4);
+		this.mesh.thinInstanceSetBuffer('terrainData1', this.terrainData1, 4, false);
+		this.mesh.thinInstanceRegisterAttribute('color', 4);
+		this.mesh.thinInstanceSetBuffer('color', this.colors, 4, false);
 	}
 
-	/**
-	 * Change a hex's terrain type.
-	 */
 	setHexTerrain(h3: string, terrain: TerrainTypeId): void {
 		const idx = this.hexIndex.get(h3);
 		if (idx === undefined) return;
 
 		const terrainIndex = TERRAIN_TYPES[terrain];
-		const profile = TERRAIN_PROFILES[terrainIndex];
+		this.terrainData0[idx * 4 + 0] = terrainIndex;
 
-		this.hexTerrain[idx] = terrainIndex;
-		this.instanceColors[idx * 4 + 0] = profile.color[0];
-		this.instanceColors[idx * 4 + 1] = profile.color[1];
-		this.instanceColors[idx * 4 + 2] = profile.color[2];
-		this.instanceColors[idx * 4 + 3] = 1.0;
+		const neighbors = this.neighborMap.get(h3);
+		if (neighbors) {
+			for (let e = 0; e < 6; e++) {
+				const neighborH3 = neighbors[e];
+				const ni = this.hexIndex.get(neighborH3);
+				if (ni === undefined) continue;
 
-		this.mesh.thinInstanceBufferUpdated('color');
+				const neighborNeighbors = this.neighborMap.get(neighborH3);
+				if (!neighborNeighbors) continue;
+				for (let ne = 0; ne < 6; ne++) {
+					if (neighborNeighbors[ne] === h3) {
+						if (ne < 3) {
+							this.terrainData0[ni * 4 + 1 + ne] = terrainIndex;
+						} else {
+							this.terrainData1[ni * 4 + (ne - 3)] = terrainIndex;
+						}
+						break;
+					}
+				}
+
+				const neighborType = this.terrainData0[ni * 4 + 0];
+				if (e < 3) {
+					this.terrainData0[idx * 4 + 1 + e] = neighborType;
+				} else {
+					this.terrainData1[idx * 4 + (e - 3)] = neighborType;
+				}
+			}
+		}
+
+		this.mesh.thinInstanceBufferUpdated('terrainData0');
+		this.mesh.thinInstanceBufferUpdated('terrainData1');
 	}
 
-	/**
-	 * Set a hex's color directly (for province/country tint).
-	 */
 	setHexColor(h3: string, r: number, g: number, b: number, a: number): void {
 		const idx = this.hexIndex.get(h3);
 		if (idx === undefined) return;
-
-		this.instanceColors[idx * 4 + 0] = r;
-		this.instanceColors[idx * 4 + 1] = g;
-		this.instanceColors[idx * 4 + 2] = b;
-		this.instanceColors[idx * 4 + 3] = a;
+		this.colors[idx * 4 + 0] = r;
+		this.colors[idx * 4 + 1] = g;
+		this.colors[idx * 4 + 2] = b;
+		this.colors[idx * 4 + 3] = a;
 		this.mesh.thinInstanceBufferUpdated('color');
 	}
 
-	/**
-	 * Clear a hex's color back to its terrain type color.
-	 */
 	clearHexColor(h3: string): void {
-		const idx = this.hexIndex.get(h3);
-		if (idx === undefined) return;
-
-		const terrainIndex = this.hexTerrain[idx];
-		const profile = TERRAIN_PROFILES[terrainIndex];
-		this.instanceColors[idx * 4 + 0] = profile.color[0];
-		this.instanceColors[idx * 4 + 1] = profile.color[1];
-		this.instanceColors[idx * 4 + 2] = profile.color[2];
-		this.instanceColors[idx * 4 + 3] = 1.0;
-		this.mesh.thinInstanceBufferUpdated('color');
+		this.setHexColor(h3, 0, 0, 0, 0);
 	}
 
-	/**
-	 * Get the terrain type of a hex.
-	 */
 	getHexTerrain(h3: string): TerrainTypeId | null {
 		const idx = this.hexIndex.get(h3);
 		if (idx === undefined) return null;
-		const typeIndex = this.hexTerrain[idx];
+		const typeIndex = this.terrainData0[idx * 4 + 0];
 		const entries = Object.entries(TERRAIN_TYPES);
 		const entry = entries.find(([, v]) => v === typeIndex);
 		return entry ? entry[0] as TerrainTypeId : null;
