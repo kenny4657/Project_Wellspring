@@ -1,5 +1,6 @@
 /**
- * Globe engine — Babylon.js 9.0 scene with geospatial camera, atmosphere, and earth sphere.
+ * Globe engine — Babylon.js 9.0 scene with geospatial camera, atmosphere,
+ * and shader-driven hex terrain.
  *
  * This is the rendering backbone. The UI layer (Svelte) communicates with it
  * via the GlobeEngine interface — it never touches Babylon objects directly.
@@ -14,6 +15,11 @@ import { HemisphericLight } from '@babylonjs/core/Lights/hemisphericLight';
 import { GeospatialCamera } from '@babylonjs/core/Cameras/geospatialCamera';
 import { Atmosphere } from '@babylonjs/addons/atmosphere/atmosphere';
 import { EARTH_RADIUS_KM, latLngToWorld } from '$lib/geo/coords';
+import { createHexMesh } from '$lib/engine/hex-mesh';
+import { HexRenderer } from '$lib/engine/hex-renderer';
+import { createTerrainMaterial } from '$lib/engine/terrain-shader';
+import { type TerrainTypeId, TERRAIN_PROFILES } from '$lib/world/terrain-types';
+import { getRes0Cells, cellToChildren, isPentagon } from 'h3-js';
 
 // Side-effect import: enables thin instance API on Mesh
 import '@babylonjs/core/Meshes/thinInstanceMesh';
@@ -21,13 +27,29 @@ import '@babylonjs/core/Meshes/thinInstanceMesh';
 export interface GlobeEngine {
 	dispose(): void;
 	flyTo(lat: number, lng: number, altitude?: number): void;
+	setHexTerrain(h3: string, terrain: TerrainTypeId): void;
+	setHexColor(h3: string, r: number, g: number, b: number, a: number): void;
+	clearHexColor(h3: string): void;
+	getHexTerrain(h3: string): TerrainTypeId | null;
+	hasHex(h3: string): boolean;
+	readonly hexCount: number;
+	readonly hexRenderer: HexRenderer;
 }
+
+/** H3 resolution for the hex grid */
+const H3_RES = 3; // ~12K cells for prototyping (res 4 = ~80K, too slow for initial dev)
 
 /**
  * Create and return a fully initialized globe engine bound to the given canvas.
  */
-export async function createGlobeEngine(canvas: HTMLCanvasElement): Promise<GlobeEngine> {
+export async function createGlobeEngine(
+	canvas: HTMLCanvasElement,
+	onProgress?: (message: string) => void
+): Promise<GlobeEngine> {
+	const report = onProgress ?? (() => {});
+
 	// ── Engine & Scene ──────────────────────────────────────
+	report('Initializing Babylon.js...');
 	const engine = new Engine(canvas, true, {
 		preserveDrawingBuffer: false,
 		stencil: true,
@@ -35,29 +57,26 @@ export async function createGlobeEngine(canvas: HTMLCanvasElement): Promise<Glob
 	});
 
 	const scene = new Scene(engine);
-	scene.clearColor = new Color4(0, 0, 0, 1); // black space background
+	scene.clearColor = new Color4(0, 0, 0, 1);
 
 	// ── Lighting ────────────────────────────────────────────
-	// Hemisphere light for ambient fill
 	const hemiLight = new HemisphericLight('hemi', new Vector3(0, 1, 0), scene);
 	hemiLight.intensity = 0.4;
 	hemiLight.groundColor = new Color3(0.1, 0.1, 0.15);
 
-	// Directional light as the sun — drives the atmosphere day/night cycle
 	const sunDirection = new Vector3(-1, 0.5, 0.3).normalize();
 	const sunLight = new DirectionalLight('sun', sunDirection.negate(), scene);
 	sunLight.intensity = 2.0;
 	sunLight.diffuse = new Color3(1, 0.98, 0.92);
 
-	// ── Globe Sphere ────────────────────────────────────────
+	// ── Globe Sphere (ocean base) ───────────────────────────
 	const globe = MeshBuilder.CreateSphere('globe', {
 		diameter: EARTH_RADIUS_KM * 2,
 		segments: 64
 	}, scene);
 
 	const globeMat = new StandardMaterial('globeMat', scene);
-	// Ocean blue-grey base color
-	globeMat.diffuseColor = new Color3(0.34, 0.45, 0.56); // ~#576F8F
+	globeMat.diffuseColor = new Color3(0.10, 0.15, 0.35); // deep ocean color
 	globeMat.specularColor = new Color3(0.15, 0.15, 0.15);
 	globe.material = globeMat;
 
@@ -67,17 +86,15 @@ export async function createGlobeEngine(canvas: HTMLCanvasElement): Promise<Glob
 		pickPredicate: (mesh) => mesh === globe
 	});
 
-	// Start looking at roughly Europe/Atlantic, zoomed out
 	const startCenter = latLngToWorld(35, -20, EARTH_RADIUS_KM);
 	camera.center = startCenter;
-	camera.radius = EARTH_RADIUS_KM * 3; // far orbit
-	camera.pitch = 0; // looking straight at globe
+	camera.radius = EARTH_RADIUS_KM * 3;
+	camera.pitch = 0;
 	camera.yaw = 0;
 
-	// Zoom limits
-	camera.limits.radiusMin = EARTH_RADIUS_KM * 1.01; // just above surface
-	camera.limits.radiusMax = EARTH_RADIUS_KM * 5;    // far orbit
-	camera.limits.pitchMax = Math.PI / 2.5;            // limit tilt
+	camera.limits.radiusMin = EARTH_RADIUS_KM * 1.01;
+	camera.limits.radiusMax = EARTH_RADIUS_KM * 5;
+	camera.limits.pitchMax = Math.PI / 2.5;
 
 	camera.attachControl(canvas, true);
 
@@ -96,12 +113,49 @@ export async function createGlobeEngine(canvas: HTMLCanvasElement): Promise<Glob
 		console.warn('[Globe] Atmosphere not supported on this device');
 	}
 
+	// ── Hex Grid ────────────────────────────────────────────
+	report('Generating hex grid...');
+	await tick();
+
+	// Generate all H3 cells at target resolution
+	const baseCells = getRes0Cells();
+	const allCells: string[] = [];
+	for (const base of baseCells) {
+		const children = cellToChildren(base, H3_RES);
+		for (const child of children) {
+			allCells.push(child);
+		}
+	}
+	report(`Generated ${allCells.length.toLocaleString()} hex cells`);
+	await tick();
+
+	// ── Hex Mesh + Material ─────────────────────────────────
+	report('Building hex mesh and shader...');
+	await tick();
+
+	// Hex radius in km: approximate from H3 cell area
+	// Res 3: ~12,393 km² per hex → radius ≈ sqrt(area / (2.598 * sqrt(3))) ≈ 59 km
+	// Res 4: ~1,770 km² per hex → radius ≈ 22 km
+	const hexRadiusKm = H3_RES === 3 ? 59 : H3_RES === 4 ? 22 : 10;
+
+	const hexMesh = createHexMesh(hexRadiusKm, 3, scene); // 3 subdivisions
+	const terrainMat = createTerrainMaterial(scene);
+	hexMesh.material = terrainMat;
+
+	// ── Hex Renderer ────────────────────────────────────────
+	report('Building hex instances...');
+	await tick();
+
+	const hexRenderer = new HexRenderer(hexMesh, allCells.length);
+	hexRenderer.initFromCells(allCells, 'deep_ocean');
+
+	report(`Initialized ${allCells.length.toLocaleString()} hex instances`);
+
 	// ── Render Loop ─────────────────────────────────────────
 	engine.runRenderLoop(() => {
 		scene.render();
 	});
 
-	// Handle window resize
 	const onResize = () => engine.resize();
 	window.addEventListener('resize', onResize);
 
@@ -117,13 +171,40 @@ export async function createGlobeEngine(canvas: HTMLCanvasElement): Promise<Glob
 		flyTo(lat: number, lng: number, altitude: number = EARTH_RADIUS_KM * 0.5) {
 			const targetCenter = latLngToWorld(lat, lng, EARTH_RADIUS_KM);
 			const targetRadius = EARTH_RADIUS_KM + altitude;
-			camera.flyToAsync(
-				undefined, // keep current yaw
-				undefined, // keep current pitch
-				targetRadius,
-				targetCenter,
-				2000 // 2 second flight
-			);
+			camera.flyToAsync(undefined, undefined, targetRadius, targetCenter, 2000);
+		},
+
+		setHexTerrain(h3: string, terrain: TerrainTypeId) {
+			hexRenderer.setHexTerrain(h3, terrain);
+		},
+
+		setHexColor(h3: string, r: number, g: number, b: number, a: number) {
+			hexRenderer.setHexColor(h3, r, g, b, a);
+		},
+
+		clearHexColor(h3: string) {
+			hexRenderer.clearHexColor(h3);
+		},
+
+		getHexTerrain(h3: string) {
+			return hexRenderer.getHexTerrain(h3);
+		},
+
+		hasHex(h3: string) {
+			return hexRenderer.hasHex(h3);
+		},
+
+		get hexCount() {
+			return hexRenderer.hexCount;
+		},
+
+		get hexRenderer() {
+			return hexRenderer;
 		}
 	};
+}
+
+/** Yield to the event loop so progress messages can render */
+function tick(): Promise<void> {
+	return new Promise(r => setTimeout(r, 0));
 }
