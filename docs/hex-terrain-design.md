@@ -19,11 +19,11 @@ Tiers control vertical positioning on the globe and determine cliff visibility b
 | Tier | Height | Terrain Types |
 |------|--------|---------------|
 | 0 | Below surface | Deep Ocean, Trench |
-| 1 | Surface level | Shallow Ocean, Reef, Coast |
+| 1 | Surface level | Shallow Ocean, Reef, Coast, Lake |
 | 2 | Low | Plains, Grassland, Desert, Swamp, Tundra |
 | 3 | Medium | Forest, Hills, Jungle |
 | 4 | High | Highland, Plateau |
-| 5 | Peak | Mountain, Volcano |
+| 5 | Peak | Mountain |
 
 ### Terrain Types (Initial Set)
 
@@ -44,10 +44,134 @@ Tiers control vertical positioning on the globe and determine cliff visibility b
 | `highland` | 4 | Raised flat plateau | Flat top at elevation | Cliff faces, layered rock |
 | `plateau` | 4 | Dramatic mesa shape | Flat top, sharp edges | Vertical cliff walls |
 | `mountain` | 5 | Central peak with ridges | Peaked, rocky, possibly snow-capped | Steep rocky faces |
-| `volcano` | 5 | Cone with crater | Hollow cone top, possible glow | Steep dark rock |
+| `lake` | 1 | Inland body of fresh water | Flat water surface, slightly below land level | Earth/grassy banks |
 | `island` | 2 | Small raised land surrounded by water at base | Beach ring → green center | Beach/cliff dropping to water |
 
-Expandable later with: ice_shelf, canyon, river_delta, mesa, badlands, glacier, etc.
+Expandable later with: ice_shelf, canyon, river_delta, mesa, badlands, glacier, volcano, etc.
+
+---
+
+## Rivers (Hex Edge Features)
+
+Rivers are **not a terrain type**. They are **edge features** — they flow along the boundaries between hexes, not through hex centers. This is how Civilization 5/6, Humankind, and most hex strategy games handle rivers.
+
+### Data Model
+
+Each hex has 6 edges. A river can exist on any edge. Edges are shared between two adjacent hexes, so river data is stored once per edge, not per hex.
+
+```typescript
+/** A hex edge is identified by the hex on one side + the edge direction (0-5) */
+interface RiverSegment {
+  h3: string;       // hex on the "upstream" side
+  edge: number;     // edge index 0-5 (which of the 6 hex edges)
+  flowDirection: number; // which end the river flows toward (for rendering arrow/width)
+}
+
+/** Added to WorldMap */
+interface WorldMap {
+  // ... existing fields ...
+  rivers: RiverSegment[];  // all river segments in the world
+}
+```
+
+### Edge Indexing
+
+H3 hex edges are indexed 0-5, starting from the top edge and going clockwise:
+
+```
+      ___0___
+     /       \
+   5/         \1
+   /           \
+   \           /
+   4\         /2
+     \___3___/
+```
+
+Two adjacent hexes share an edge. To avoid duplicate river data, each edge is stored only once — on the hex with the lexicographically smaller H3 index. The neighbor's corresponding edge index can be computed from H3's `gridDisk` neighbor ordering.
+
+### Rendering
+
+Rivers are rendered as **GreasedLine meshes** positioned along hex edges on the globe surface:
+
+```typescript
+function buildRiverGeometry(rivers: RiverSegment[], scene: Scene): Mesh {
+  const segments: Vector3[][] = [];
+
+  for (const river of rivers) {
+    // Get the two vertices of this hex edge
+    const boundary = cellToBoundary(river.h3); // 6 vertices [lat, lng]
+    const v1 = latLngToWorld(boundary[river.edge], RIVER_HEIGHT);
+    const v2 = latLngToWorld(boundary[(river.edge + 1) % 6], RIVER_HEIGHT);
+    segments.push([v1, v2]);
+  }
+
+  return GreasedLineMeshBuilder.CreateGreasedLine("rivers", {
+    points: segments,
+    width: 3,  // screen-space pixels
+  }, scene);
+}
+```
+
+- Rivers render as blue lines along hex edges, slightly above the terrain surface
+- Width can vary by flow accumulation (thin tributaries → wide main river)
+- All river segments are merged into a single GreasedLine mesh (1 draw call)
+- Rivers are rebuilt when river data changes (not per-frame)
+
+### River Painting Tools
+
+In Terrain mode, the editor adds river-specific tools:
+
+- **River brush**: click a hex edge to toggle a river segment on/off
+  - Hit testing: identify which edge is closest to the click point within the hex
+  - Visual feedback: highlight the edge under cursor before clicking
+- **River path tool**: click two hexes, auto-trace a downhill path between them along hex edges
+  - Uses terrain tier as elevation — rivers flow from high tier to low tier
+  - A* or greedy pathfinding preferring downhill edges
+- **River erase**: click a river segment to remove it
+
+### Edge Hit Testing
+
+To determine which hex edge the user clicked near:
+
+```typescript
+function getClosestEdge(h3: string, clickLatLng: {lat, lng}): number {
+  const boundary = cellToBoundary(h3); // 6 vertices
+  let closestEdge = 0;
+  let minDist = Infinity;
+
+  for (let i = 0; i < 6; i++) {
+    const v1 = boundary[i];
+    const v2 = boundary[(i + 1) % 6];
+    const midpoint = [(v1[0]+v2[0])/2, (v1[1]+v2[1])/2];
+    const dist = haversine(clickLatLng, midpoint);
+    if (dist < minDist) {
+      minDist = dist;
+      closestEdge = i;
+    }
+  }
+  return closestEdge;
+}
+```
+
+### Rivers vs. Terrain Interaction
+
+| Terrain Context | River Behavior |
+|----------------|----------------|
+| River between two land hexes | Standard river rendering (blue line on land) |
+| River entering a lake hex | River terminates at lake edge (lake is the destination) |
+| River entering ocean/coast | River mouth — could widen or show delta effect |
+| River between ocean hexes | Invalid — rivers don't exist in open ocean |
+| River along a mountain edge | Visually: river in a gorge/valley between peaks |
+
+### Why Not River-as-Terrain-Type?
+
+A "river hex" terrain type would mean an entire 45km hex is a river — far too wide. Real rivers are narrow features that cross between territories. Making them edge features gives:
+
+- **Geographic accuracy**: rivers are boundaries, not regions
+- **Gameplay utility**: rivers as natural borders between provinces/countries
+- **Visual clarity**: thin lines between hexes, not giant blue hexes
+- **Strategic meaning**: crossing a river edge could have movement/combat penalties
 
 ---
 
@@ -66,13 +190,15 @@ Terrain Type Registry
 │ plains      │ plains.glb   │ ~12,000       │ 1                │
 │ mountain    │ mountain.glb │ ~3,000        │ 1                │
 │ forest      │ forest.glb   │ ~8,000        │ 1                │
+│ lake        │ lake.glb     │ ~1,500        │ 1                │
 │ ...         │ ...          │ ...           │ ...              │
 ├─────────────┼──────────────┼───────────────┼──────────────────┤
 │ TOTAL       │ ~17 meshes   │ ~80,000       │ ~17 draw calls   │
+│ + rivers    │ GreasedLine  │ 1 merged mesh │ +1 draw call     │
 └─────────────┴──────────────┴───────────────┴──────────────────┘
 ```
 
-17 draw calls for 80K hexes. At 500K hexes, still 17 draw calls — only the instance count per group grows.
+~18 draw calls for 80K hexes + rivers. At 500K hexes, still ~18 — only instance counts grow.
 
 ### Instance Data Per Hex
 
@@ -199,6 +325,7 @@ interface WorldMap {
   version: 3;
   hexResolution: number;           // H3 resolution (e.g., 4)
   hexes: Record<string, HexState>; // h3 index → hex state
+  rivers: RiverSegment[];          // edge features (see Rivers section)
   provinces: Record<string, Province>;
   countries: Record<string, Country>;
   provinceToCountry: Record<string, string>;
@@ -228,6 +355,8 @@ The editor expands from 2 modes to 3:
 - **Area brush**: paint in a radius (1-3 hex rings)
 - **Elevation brush**: raise/lower terrain tier without changing type
 - **Smooth**: blend terrain types at edges (auto-assign transitional types like coast, hills)
+- **River brush**: click hex edges to place/remove river segments (see Rivers section)
+- **River path tool**: click two hexes to auto-trace a downhill river path between them
 
 ---
 

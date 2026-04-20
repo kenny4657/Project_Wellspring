@@ -173,7 +173,7 @@ See [hex-terrain-design.md](hex-terrain-design.md) for full terrain type catalog
        defaultColor: string;  // base color when unpainted
      }
      ```
-   - Define ~17 initial terrain types with tiers (deep_ocean through volcano)
+   - Define ~17 initial terrain types with tiers (deep_ocean through mountain, including lake)
    - Define tier height constants (world-space units per tier)
 
 2. **Create `src/lib/engine/hex-tiles.ts`**
