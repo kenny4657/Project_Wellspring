@@ -91,26 +91,29 @@ export function createTerrainMaterial(scene: Scene): CustomMaterial {
 		vTerrainType = terrainData0.x;
 		vN0=terrainData0.y;vN1=terrainData0.z;vN2=terrainData0.w;
 		vN3=terrainData1.x;vN4=terrainData1.y;vN5=terrainData1.z;
-		vHexUV = uv;
 	`);
 
 	// Inject displacement before position is used
+	// Use positionUpdated.xz as hex-local coordinates (hex mesh is on XZ plane)
 	mat.Vertex_Before_PositionUpdated(`
+		float hexR = ${TERRAIN_PROFILES[0] ? '75.0' : '75.0'}; // hex radius in km
+		vec2 hexUV = positionUpdated.xz / hexR;
+		vHexUV = hexUV;
+
 		vec4 tp[${N}]; initTP(tp);
 		int tIdx = int(terrainData0.x);
 		vec4 prm = tp[tIdx];
 		float tH = prm.x, amp = prm.y, frq = prm.z, isR = prm.w;
 
-		float dfc = length(uv);
-		vec3 wO = (finalWorld * vec4(0.,0.,0.,1.)).xyz;
-		vec3 ns = wO * 0.01;
+		float dfc = length(hexUV);
+		vec3 ns = positionUpdated * 0.01;
 
 		float disp;
-		if (isR > 0.5) { disp = ridN(ns + positionUpdated * 0.1, frq) * amp; }
-		else { disp = fbmN(ns + positionUpdated * 0.1, frq) * amp; }
+		if (isR > 0.5) { disp = ridN(ns, frq) * amp; }
+		else { disp = fbmN(ns, frq) * amp; }
 
 		float ef = smoothstep(0.5, 0.95, dfc);
-		float ang = atan(uv.y, uv.x);
+		float ang = atan(hexUV.y, hexUV.x);
 		float sec = mod(ang / (3.14159265/3.0) + 6.0, 6.0);
 		int ne = int(floor(sec)); ne = clamp(ne,0,5);
 		float nH = getNH(ne, tp);
