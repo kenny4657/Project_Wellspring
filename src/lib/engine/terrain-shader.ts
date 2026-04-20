@@ -1,38 +1,47 @@
 /**
  * Terrain shader — custom ShaderMaterial for hex terrain rendering.
  *
- * Vertex shader: displaces hex mesh vertices based on per-instance terrain type.
- * Fragment shader: selects material color, blends at edges, applies province tint.
- *
- * Babylon.js automatically adds #define INSTANCES, #define THIN_INSTANCES,
- * and world0-world3 attributes for thin instances. Our shader must handle
- * both the instanced and non-instanced paths via #ifdef.
+ * Terrain params and colors are HARDCODED as GLSL constants (not uniforms)
+ * to avoid WebGL uniform array issues. Regenerate this file if terrain
+ * profiles change.
  */
 import { ShaderMaterial } from '@babylonjs/core/Materials/shaderMaterial';
 import { ShaderStore } from '@babylonjs/core/Engines/shaderStore';
-import { Vector3, Vector4 } from '@babylonjs/core/Maths/math.vector';
+import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import type { Scene } from '@babylonjs/core/scene';
-import { TERRAIN_COUNT, packTerrainParams } from '$lib/world/terrain-types';
+import { TERRAIN_PROFILES } from '$lib/world/terrain-types';
 
-// ── GLSL Shader Sources ──
+// Generate GLSL constant arrays from terrain profiles
+function buildGlslConstants(): { paramsGlsl: string; colorsGlsl: string } {
+	const N = TERRAIN_PROFILES.length;
+	const paramLines = TERRAIN_PROFILES.map((p, i) =>
+		`  tp[${i}] = vec4(${p.height.toFixed(1)}, ${p.amplitude.toFixed(1)}, ${p.frequency.toFixed(1)}, ${p.ridged ? '1.0' : '0.0'});`
+	).join('\n');
+	const colorLines = TERRAIN_PROFILES.map((p, i) =>
+		`  tc[${i}] = vec3(${p.color[0].toFixed(2)}, ${p.color[1].toFixed(2)}, ${p.color[2].toFixed(2)});`
+	).join('\n');
 
-const VERTEX_SHADER = /* glsl */ `
+	return {
+		paramsGlsl: `void initTerrainParams(out vec4 tp[${N}]) {\n${paramLines}\n}`,
+		colorsGlsl: `void initTerrainColors(out vec3 tc[${N}]) {\n${colorLines}\n}`
+	};
+}
+
+function buildShaders() {
+	const N = TERRAIN_PROFILES.length;
+	const { paramsGlsl, colorsGlsl } = buildGlslConstants();
+
+	const VERTEX = /* glsl */ `
 precision highp float;
 
-// Babylon.js standard uniforms
 uniform mat4 world;
 uniform mat4 viewProjection;
 
-// Terrain parameter table
-uniform vec4 terrainParams[${TERRAIN_COUNT}];
-
-// Vertex attributes
 attribute vec3 position;
 attribute vec3 normal;
-attribute vec2 uv;    // local hex UV: position within hex, -1 to 1
-attribute vec2 uv2;   // x: 0 = top face, 1 = skirt vertex
+attribute vec2 uv;
+attribute vec2 uv2;
 
-// Instance attributes (Babylon auto-adds world0-world3 via #define INSTANCES)
 #ifdef INSTANCES
 attribute vec4 world0;
 attribute vec4 world1;
@@ -40,21 +49,21 @@ attribute vec4 world2;
 attribute vec4 world3;
 #endif
 
-// Custom instance attributes
-attribute vec4 terrainData0;   // [terrainType, neighbor0, neighbor1, neighbor2]
-attribute vec4 terrainData1;   // [neighbor3, neighbor4, neighbor5, padding]
-attribute vec4 color;          // province/country tint RGBA
+attribute vec4 terrainData0;
+attribute vec4 terrainData1;
+attribute vec4 color;
 
-// Varyings (no arrays — GLSL ES doesn't support varying arrays)
 varying vec3 vWorldPos;
 varying vec3 vWorldNormal;
 varying vec2 vHexUV;
 varying float vTerrainType;
-varying float vN0, vN1, vN2, vN3, vN4, vN5; // 6 neighbor types
+varying float vN0, vN1, vN2, vN3, vN4, vN5;
 varying vec4 vColor;
-varying float vIsSkirt;
 
-// ── Simplex noise (3D) — Ashima/webgl-noise (MIT) ──
+// Terrain params as constants
+${paramsGlsl}
+
+// Simplex noise
 vec3 mod289v3(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
 vec4 mod289v4(vec4 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
 vec4 permute(vec4 x) { return mod289v4(((x * 34.0) + 1.0) * x); }
@@ -115,8 +124,7 @@ float ridged(vec3 p, float freq) {
     return val;
 }
 
-// Get neighbor height by index (GLSL ES can't index varyings dynamically)
-float getNeighborHeight(int edge) {
+float getNeighborHeight(int edge, vec4 tp[${N}]) {
     float nt;
     if (edge == 0) nt = terrainData0.y;
     else if (edge == 1) nt = terrainData0.z;
@@ -124,41 +132,37 @@ float getNeighborHeight(int edge) {
     else if (edge == 3) nt = terrainData1.x;
     else if (edge == 4) nt = terrainData1.y;
     else nt = terrainData1.z;
-    return terrainParams[int(nt)].x;
+    return tp[int(nt)].x;
 }
 
 void main() {
-    // Pass terrain data to fragment shader
     vTerrainType = terrainData0.x;
     vN0 = terrainData0.y; vN1 = terrainData0.z; vN2 = terrainData0.w;
     vN3 = terrainData1.x; vN4 = terrainData1.y; vN5 = terrainData1.z;
     vColor = color;
     vHexUV = uv;
-    vIsSkirt = uv2.x;
 
-    // Build final world matrix
+    vec4 tp[${N}];
+    initTerrainParams(tp);
+
     #ifdef INSTANCES
     mat4 finalWorld = world * mat4(world0, world1, world2, world3);
     #else
     mat4 finalWorld = world;
     #endif
 
-    // Terrain params
     int typeIdx = int(terrainData0.x);
-    vec4 params = terrainParams[typeIdx];
+    vec4 params = tp[typeIdx];
     float tierHeight = params.x;
     float amplitude = params.y;
     float frequency = params.z;
     float isRidged = params.w;
 
-    // Distance from hex center
     float distFromCenter = length(uv);
 
-    // Noise seed from world position
     vec4 worldOrigin = finalWorld * vec4(0.0, 0.0, 0.0, 1.0);
     vec3 noiseSeed = worldOrigin.xyz * 0.01;
 
-    // Terrain noise displacement
     float displacement;
     if (isRidged > 0.5) {
         displacement = ridged(noiseSeed + position * 0.1, frequency) * amplitude;
@@ -166,20 +170,15 @@ void main() {
         displacement = fbm(noiseSeed + position * 0.1, frequency) * amplitude;
     }
 
-    // Edge fade toward meeting height
     float edgeFade = smoothstep(0.5, 0.95, distFromCenter);
 
-    // Nearest edge neighbor
     float angle = atan(uv.y, uv.x);
     float sector = mod(angle / (3.14159265 / 3.0) + 6.0, 6.0);
     int nearestEdge = int(floor(sector));
     nearestEdge = clamp(nearestEdge, 0, 5);
-    float neighborHeight = getNeighborHeight(nearestEdge);
+    float neighborHeight = getNeighborHeight(nearestEdge, tp);
 
-    // Meeting height
     float meetingHeight = (tierHeight + neighborHeight) * 0.5;
-
-    // Final Y displacement
     float th = tierHeight + displacement * (1.0 - edgeFade);
     float finalHeight = mix(th, meetingHeight, edgeFade);
 
@@ -194,12 +193,11 @@ void main() {
 }
 `;
 
-const FRAGMENT_SHADER = /* glsl */ `
+	const FRAGMENT = /* glsl */ `
 precision highp float;
 
-uniform vec4 terrainColors[${TERRAIN_COUNT}];
 uniform vec3 sunDirection;
-uniform vec3 cameraPos;  // updated each frame from camera position
+uniform vec3 cameraPos;
 
 varying vec3 vWorldPos;
 varying vec3 vWorldNormal;
@@ -207,7 +205,9 @@ varying vec2 vHexUV;
 varying float vTerrainType;
 varying float vN0, vN1, vN2, vN3, vN4, vN5;
 varying vec4 vColor;
-varying float vIsSkirt;
+
+// Terrain colors as constants
+${colorsGlsl}
 
 float getNeighborType(int edge) {
     if (edge == 0) return vN0;
@@ -219,14 +219,16 @@ float getNeighborType(int edge) {
 }
 
 void main() {
+    vec3 tc[${N}];
+    initTerrainColors(tc);
+
     int typeIdx = int(vTerrainType + 0.5);
-    vec3 baseColor = terrainColors[typeIdx].rgb;
+    vec3 baseColor = tc[typeIdx];
 
     float distFromCenter = length(vHexUV);
 
-    // Edge blending with neighbor terrain
+    // Edge blending
     float edgeBlend = smoothstep(0.5, 0.95, distFromCenter);
-
     float angle = atan(vHexUV.y, vHexUV.x);
     float sector = mod(angle / (3.14159265 / 3.0) + 6.0, 6.0);
     int nearestEdge = int(floor(sector));
@@ -236,7 +238,7 @@ void main() {
     int neighborIdx = int(neighborType + 0.5);
 
     if (neighborIdx != typeIdx && edgeBlend > 0.0) {
-        vec3 neighborColor = terrainColors[neighborIdx].rgb;
+        vec3 neighborColor = tc[neighborIdx];
         bool myWater = typeIdx <= 4;
         bool neighborWater = neighborIdx <= 4;
 
@@ -251,16 +253,13 @@ void main() {
     // Lighting: sun + camera headlight
     vec3 N = normalize(vWorldNormal);
     float sunDiffuse = max(dot(N, sunDirection), 0.0);
-
-    // Camera headlight: always illuminates what the camera sees
     vec3 toCamera = normalize(cameraPos - vWorldPos);
     float camDiffuse = max(dot(N, toCamera), 0.0);
 
-    // Combine: very high ambient + sun + camera light
-    float light = 0.70 + 0.15 * sunDiffuse + 0.15 * camDiffuse;
+    float light = 0.55 + 0.20 * sunDiffuse + 0.25 * camDiffuse;
     vec3 litColor = baseColor * light;
 
-    // Subtle hex edge line
+    // Hex edge line
     float edgeDarken = smoothstep(0.85, 0.95, distFromCenter) * 0.12;
     litColor *= (1.0 - edgeDarken);
 
@@ -273,12 +272,14 @@ void main() {
 }
 `;
 
-/**
- * Create the terrain ShaderMaterial with terrain parameter uniforms.
- */
+	return { VERTEX, FRAGMENT };
+}
+
 export function createTerrainMaterial(scene: Scene): ShaderMaterial {
-	ShaderStore.ShadersStore['terrainVertexShader'] = VERTEX_SHADER;
-	ShaderStore.ShadersStore['terrainFragmentShader'] = FRAGMENT_SHADER;
+	const { VERTEX, FRAGMENT } = buildShaders();
+
+	ShaderStore.ShadersStore['terrainVertexShader'] = VERTEX;
+	ShaderStore.ShadersStore['terrainFragmentShader'] = FRAGMENT;
 
 	const material = new ShaderMaterial('terrainMat', scene, {
 		vertex: 'terrain',
@@ -286,33 +287,20 @@ export function createTerrainMaterial(scene: Scene): ShaderMaterial {
 	}, {
 		attributes: [
 			'position', 'normal', 'uv', 'uv2',
-			// DO NOT include world0-world3 — Babylon adds them automatically for instances
 			'terrainData0', 'terrainData1',
 			'color'
 		],
 		uniforms: [
 			'world', 'viewProjection',
-			'terrainParams', 'terrainColors', 'sunDirection', 'cameraPos'
+			'sunDirection', 'cameraPos'
 		],
-		// DO NOT include INSTANCES/THIN_INSTANCES defines — Babylon adds them automatically
 		needAlphaBlending: false,
 	});
 
-	// Upload terrain parameters as individual vec4 uniforms
-	// setFloats uses glUniform1fv which doesn't match vec4 arrays —
-	// must set each element individually via setVector4
-	const { params, colors } = packTerrainParams();
-	for (let i = 0; i < TERRAIN_COUNT; i++) {
-		material.setVector4(`terrainParams[${i}]`, new Vector4(
-			params[i * 4 + 0], params[i * 4 + 1], params[i * 4 + 2], params[i * 4 + 3]
-		));
-		material.setVector4(`terrainColors[${i}]`, new Vector4(
-			colors[i * 4 + 0], colors[i * 4 + 1], colors[i * 4 + 2], colors[i * 4 + 3]
-		));
-	}
-
+	// Only 2 uniforms needed now — no more array hassles
 	material.setVector3('sunDirection', new Vector3(-1, 0.5, 0.3).normalize());
-	material.backFaceCulling = false; // show both sides during dev
+	material.setVector3('cameraPos', Vector3.Zero());
+	material.backFaceCulling = false;
 
 	return material;
 }
