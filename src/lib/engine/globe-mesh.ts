@@ -142,7 +142,8 @@ export function updateCellTerrain(
 		positionsBuffer[(start + 1 + i) * 3 + 2] = c.z * r;
 	}
 
-	// Push to GPU
-	mesh.updateVerticesData(VertexBuffer.ColorKind, colorsBuffer);
-	mesh.updateVerticesData(VertexBuffer.PositionKind, positionsBuffer);
+	// Push to GPU — must pass fresh copy; Babylon's internal buffer reference
+	// can diverge from our retained buffer after first update
+	mesh.setVerticesData(VertexBuffer.ColorKind, new Float32Array(colorsBuffer), true);
+	mesh.setVerticesData(VertexBuffer.PositionKind, new Float32Array(positionsBuffer), true);
 }

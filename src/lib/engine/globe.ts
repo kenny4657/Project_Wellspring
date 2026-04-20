@@ -68,8 +68,9 @@ export async function createGlobeEngine(
 	fillLight.diffuse = new Color3(0.7, 0.75, 0.9);
 
 	// ── Camera ──────────────────────────────────────────────
+	// Match pickSphere radius to the hex mesh surface (deep ocean default = radius * 0.997)
 	const pickSphere = MeshBuilder.CreateSphere('pickSphere', {
-		diameter: EARTH_RADIUS_KM * 2,
+		diameter: EARTH_RADIUS_KM * 2 * 0.997,
 		segments: 32
 	}, scene);
 	pickSphere.visibility = 0;
