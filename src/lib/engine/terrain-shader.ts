@@ -4,7 +4,9 @@
  * Vertex shader: displaces hex mesh vertices based on per-instance terrain type.
  * Fragment shader: selects material color, blends at edges, applies province tint.
  *
- * Uses Babylon's ShaderMaterial with custom instance attributes.
+ * Babylon.js automatically adds #define INSTANCES, #define THIN_INSTANCES,
+ * and world0-world3 attributes for thin instances. Our shader must handle
+ * both the instanced and non-instanced paths via #ifdef.
  */
 import { ShaderMaterial } from '@babylonjs/core/Materials/shaderMaterial';
 import { ShaderStore } from '@babylonjs/core/Engines/shaderStore';
@@ -18,12 +20,11 @@ const VERTEX_SHADER = /* glsl */ `
 precision highp float;
 
 // Babylon.js standard uniforms
+uniform mat4 world;
 uniform mat4 viewProjection;
-uniform mat4 world;  // thin instance base world matrix
 
 // Terrain parameter table
-uniform vec4 terrainParams[${TERRAIN_COUNT}];   // [height, amplitude, frequency, ridged]
-uniform vec4 terrainColors[${TERRAIN_COUNT}];   // [r, g, b, 1]
+uniform vec4 terrainParams[${TERRAIN_COUNT}];
 
 // Vertex attributes
 attribute vec3 position;
@@ -31,31 +32,32 @@ attribute vec3 normal;
 attribute vec2 uv;    // local hex UV: position within hex, -1 to 1
 attribute vec2 uv2;   // x: 0 = top face, 1 = skirt vertex
 
-// Instance matrix (Babylon thin instances split mat4 into four vec4 rows)
+// Instance attributes (Babylon auto-adds world0-world3 via #define INSTANCES)
+#ifdef INSTANCES
 attribute vec4 world0;
 attribute vec4 world1;
 attribute vec4 world2;
 attribute vec4 world3;
+#endif
 
 // Custom instance attributes
 attribute vec4 terrainData0;   // [terrainType, neighbor0, neighbor1, neighbor2]
 attribute vec4 terrainData1;   // [neighbor3, neighbor4, neighbor5, padding]
 attribute vec4 color;          // province/country tint RGBA
 
-// Varyings
+// Varyings (no arrays — GLSL ES doesn't support varying arrays)
 varying vec3 vWorldPos;
 varying vec3 vWorldNormal;
 varying vec2 vHexUV;
 varying float vTerrainType;
-varying float vNeighborTypes[6];
+varying float vN0, vN1, vN2, vN3, vN4, vN5; // 6 neighbor types
 varying vec4 vColor;
 varying float vIsSkirt;
 
-// ── Simplex noise (3D) ──
-// Adapted from Ashima/webgl-noise (MIT license)
-vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
-vec4 mod289(vec4 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
-vec4 permute(vec4 x) { return mod289(((x * 34.0) + 1.0) * x); }
+// ── Simplex noise (3D) — Ashima/webgl-noise (MIT) ──
+vec3 mod289v3(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+vec4 mod289v4(vec4 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+vec4 permute(vec4 x) { return mod289v4(((x * 34.0) + 1.0) * x); }
 vec4 taylorInvSqrt(vec4 r) { return 1.79284291400159 - 0.85373472095314 * r; }
 
 float snoise(vec3 v) {
@@ -70,7 +72,7 @@ float snoise(vec3 v) {
     vec3 x1 = x0 - i1 + C.xxx;
     vec3 x2 = x0 - i2 + C.yyy;
     vec3 x3 = x0 - D.yyy;
-    i = mod289(i);
+    i = mod289v3(i);
     vec4 p = permute(permute(permute(
         i.z + vec4(0.0, i1.z, i2.z, 1.0))
       + i.y + vec4(0.0, i1.y, i2.y, 1.0))
@@ -101,64 +103,62 @@ float snoise(vec3 v) {
     return 42.0 * dot(m*m, vec4(dot(p0,x0), dot(p1,x1), dot(p2,x2), dot(p3,x3)));
 }
 
-// fBm with 4 octaves
 float fbm(vec3 p, float freq) {
-    float value = 0.0;
-    float amp = 0.5;
-    vec3 pp = p * freq;
-    for (int i = 0; i < 4; i++) {
-        value += amp * snoise(pp);
-        pp *= 2.0;
-        amp *= 0.5;
-    }
-    return value;
+    float val = 0.0; float amp = 0.5; vec3 pp = p * freq;
+    for (int i = 0; i < 4; i++) { val += amp * snoise(pp); pp *= 2.0; amp *= 0.5; }
+    return val;
 }
 
-// Ridged noise
 float ridged(vec3 p, float freq) {
-    float value = 0.0;
-    float amp = 0.5;
-    vec3 pp = p * freq;
-    for (int i = 0; i < 4; i++) {
-        float n = 1.0 - abs(snoise(pp));
-        value += amp * n * n;
-        pp *= 2.0;
-        amp *= 0.5;
-    }
-    return value;
+    float val = 0.0; float amp = 0.5; vec3 pp = p * freq;
+    for (int i = 0; i < 4; i++) { float n = 1.0 - abs(snoise(pp)); val += amp * n * n; pp *= 2.0; amp *= 0.5; }
+    return val;
+}
+
+// Get neighbor height by index (GLSL ES can't index varyings dynamically)
+float getNeighborHeight(int edge) {
+    float nt;
+    if (edge == 0) nt = terrainData0.y;
+    else if (edge == 1) nt = terrainData0.z;
+    else if (edge == 2) nt = terrainData0.w;
+    else if (edge == 3) nt = terrainData1.x;
+    else if (edge == 4) nt = terrainData1.y;
+    else nt = terrainData1.z;
+    return terrainParams[int(nt)].x;
 }
 
 void main() {
-    float terrainType = terrainData0.x;
-    vTerrainType = terrainType;
-    vNeighborTypes[0] = terrainData0.y;
-    vNeighborTypes[1] = terrainData0.z;
-    vNeighborTypes[2] = terrainData0.w;
-    vNeighborTypes[3] = terrainData1.x;
-    vNeighborTypes[4] = terrainData1.y;
-    vNeighborTypes[5] = terrainData1.z;
+    // Pass terrain data to fragment shader
+    vTerrainType = terrainData0.x;
+    vN0 = terrainData0.y; vN1 = terrainData0.z; vN2 = terrainData0.w;
+    vN3 = terrainData1.x; vN4 = terrainData1.y; vN5 = terrainData1.z;
     vColor = color;
     vHexUV = uv;
     vIsSkirt = uv2.x;
 
-    int typeIdx = int(terrainType);
+    // Build final world matrix
+    #ifdef INSTANCES
+    mat4 finalWorld = world * mat4(world0, world1, world2, world3);
+    #else
+    mat4 finalWorld = world;
+    #endif
+
+    // Terrain params
+    int typeIdx = int(terrainData0.x);
     vec4 params = terrainParams[typeIdx];
     float tierHeight = params.x;
     float amplitude = params.y;
     float frequency = params.z;
     float isRidged = params.w;
 
-    // Distance from hex center (0 at center, 1 at edge)
+    // Distance from hex center
     float distFromCenter = length(uv);
 
-    // Reconstruct instance world matrix from four vec4 rows
-    mat4 instanceWorld = world * mat4(world0, world1, world2, world3);
+    // Noise seed from world position
+    vec4 worldOrigin = finalWorld * vec4(0.0, 0.0, 0.0, 1.0);
+    vec3 noiseSeed = worldOrigin.xyz * 0.01;
 
-    // Compute world position for noise seed (use instance transform)
-    vec4 worldOrigin = instanceWorld * vec4(0.0, 0.0, 0.0, 1.0);
-    vec3 noiseSeed = worldOrigin.xyz * 0.01; // scale down for good noise frequency
-
-    // Terrain displacement
+    // Terrain noise displacement
     float displacement;
     if (isRidged > 0.5) {
         displacement = ridged(noiseSeed + position * 0.1, frequency) * amplitude;
@@ -166,41 +166,35 @@ void main() {
         displacement = fbm(noiseSeed + position * 0.1, frequency) * amplitude;
     }
 
-    // Edge fade: blend displacement toward meeting height at hex boundary
+    // Edge fade toward meeting height
     float edgeFade = smoothstep(0.5, 0.95, distFromCenter);
 
-    // Compute nearest neighbor and its terrain height for edge blending
-    float angle = atan(uv.y, uv.x); // -PI to PI
+    // Nearest edge neighbor
+    float angle = atan(uv.y, uv.x);
     float sector = mod(angle / (3.14159265 / 3.0) + 6.0, 6.0);
     int nearestEdge = int(floor(sector));
     nearestEdge = clamp(nearestEdge, 0, 5);
+    float neighborHeight = getNeighborHeight(nearestEdge);
 
-    float neighborTypeIdx = vNeighborTypes[nearestEdge];
-    float neighborHeight = terrainParams[int(neighborTypeIdx)].x;
-
-    // Meeting height at edge = average of both terrain heights
+    // Meeting height
     float meetingHeight = (tierHeight + neighborHeight) * 0.5;
 
-    // Final Y displacement
+    // Final Y
     float finalHeight;
     if (uv2.x > 0.5) {
-        // Skirt vertex: extend downward
-        float skirtDepth = 30.0; // km below meeting height
-        finalHeight = min(tierHeight, neighborHeight) - skirtDepth;
+        // Skirt: extend below
+        finalHeight = min(tierHeight, neighborHeight) - 30.0;
     } else {
-        // Top face vertex: blend between terrain displacement and meeting height
-        float terrainHeight = tierHeight + displacement * (1.0 - edgeFade);
-        finalHeight = mix(terrainHeight, meetingHeight, edgeFade);
+        float th = tierHeight + displacement * (1.0 - edgeFade);
+        finalHeight = mix(th, meetingHeight, edgeFade);
     }
 
-    // Apply displacement along the surface normal (Y in local space = radial direction)
     vec3 displacedPos = position;
     displacedPos.y = finalHeight;
 
-    // Transform to world space
-    vec4 worldPos = instanceWorld * vec4(displacedPos, 1.0);
+    vec4 worldPos = finalWorld * vec4(displacedPos, 1.0);
     vWorldPos = worldPos.xyz;
-    vWorldNormal = normalize((instanceWorld * vec4(normal, 0.0)).xyz);
+    vWorldNormal = normalize((finalWorld * vec4(normal, 0.0)).xyz);
 
     gl_Position = viewProjection * worldPos;
 }
@@ -210,72 +204,70 @@ const FRAGMENT_SHADER = /* glsl */ `
 precision highp float;
 
 uniform vec4 terrainColors[${TERRAIN_COUNT}];
+uniform vec3 sunDirection;
 
 varying vec3 vWorldPos;
 varying vec3 vWorldNormal;
 varying vec2 vHexUV;
 varying float vTerrainType;
-varying float vNeighborTypes[6];
+varying float vN0, vN1, vN2, vN3, vN4, vN5;
 varying vec4 vColor;
 varying float vIsSkirt;
 
-// Simple directional light
-uniform vec3 sunDirection;
+// Get neighbor type by index
+float getNeighborType(int edge) {
+    if (edge == 0) return vN0;
+    if (edge == 1) return vN1;
+    if (edge == 2) return vN2;
+    if (edge == 3) return vN3;
+    if (edge == 4) return vN4;
+    return vN5;
+}
 
 void main() {
     int typeIdx = int(vTerrainType + 0.5);
     vec3 baseColor = terrainColors[typeIdx].rgb;
 
-    // Distance from hex center
     float distFromCenter = length(vHexUV);
 
-    // Edge blending with neighbor terrain
+    // Edge blending
     float edgeBlend = smoothstep(0.5, 0.95, distFromCenter);
 
-    // Determine nearest edge neighbor
     float angle = atan(vHexUV.y, vHexUV.x);
     float sector = mod(angle / (3.14159265 / 3.0) + 6.0, 6.0);
     int nearestEdge = int(floor(sector));
     nearestEdge = clamp(nearestEdge, 0, 5);
 
-    float neighborType = vNeighborTypes[nearestEdge];
+    float neighborType = getNeighborType(nearestEdge);
     int neighborIdx = int(neighborType + 0.5);
 
     if (neighborIdx != typeIdx && edgeBlend > 0.0) {
-        // Different terrain type at this edge — blend colors
         vec3 neighborColor = terrainColors[neighborIdx].rgb;
-
-        // Check if this is a water↔land transition
-        bool myWater = typeIdx <= 4;  // deep_ocean through lake
+        bool myWater = typeIdx <= 4;
         bool neighborWater = neighborIdx <= 4;
 
         if (myWater != neighborWater) {
-            // Water-land transition: add shore sand color
             vec3 shoreColor = vec3(0.76, 0.70, 0.50);
             baseColor = mix(baseColor, shoreColor, edgeBlend * 0.6);
         } else {
-            // Same category: smooth material blend
             baseColor = mix(baseColor, neighborColor, edgeBlend * 0.4);
         }
     }
 
-    // Basic lighting
+    // Lighting
     float NdotL = max(dot(vWorldNormal, sunDirection), 0.0);
-    float ambient = 0.3;
-    float diffuse = 0.7 * NdotL;
-    vec3 litColor = baseColor * (ambient + diffuse);
+    vec3 litColor = baseColor * (0.3 + 0.7 * NdotL);
 
-    // Hex edge darkening (subtle grid lines)
+    // Hex edge darkening
     float edgeDarken = smoothstep(0.85, 0.95, distFromCenter) * 0.15;
-
-    // Apply skirt darkening
-    if (vIsSkirt > 0.5) {
-        litColor *= 0.6; // darker sides
-    }
-
     litColor *= (1.0 - edgeDarken);
 
-    // Apply province/country color tint
+    // Skirt darkening
+    if (vIsSkirt > 0.5) {
+        litColor *= 0.6;
+    }
+
+    // Province/country tint
     if (vColor.a > 0.0) {
         litColor = mix(litColor, vColor.rgb, vColor.a * 0.5);
     }
@@ -288,10 +280,8 @@ void main() {
  * Create the terrain ShaderMaterial with terrain parameter uniforms.
  */
 export function createTerrainMaterial(scene: Scene): ShaderMaterial {
-	// Register shader code with Babylon's shader store
 	ShaderStore.ShadersStore['terrainVertexShader'] = VERTEX_SHADER;
 	ShaderStore.ShadersStore['terrainFragmentShader'] = FRAGMENT_SHADER;
-	console.log('[Terrain] Registered shaders. Store keys:', Object.keys(ShaderStore.ShadersStore).filter(k => k.includes('terrain')));
 
 	const material = new ShaderMaterial('terrainMat', scene, {
 		vertex: 'terrain',
@@ -299,28 +289,25 @@ export function createTerrainMaterial(scene: Scene): ShaderMaterial {
 	}, {
 		attributes: [
 			'position', 'normal', 'uv', 'uv2',
-			'world0', 'world1', 'world2', 'world3',
+			// DO NOT include world0-world3 — Babylon adds them automatically for instances
 			'terrainData0', 'terrainData1',
 			'color'
 		],
 		uniforms: [
-			'world', 'worldView', 'worldViewProjection', 'view', 'projection',
-			'viewProjection',
+			'world', 'viewProjection',
 			'terrainParams', 'terrainColors', 'sunDirection'
 		],
-		defines: ['#define INSTANCES', '#define THIN_INSTANCES'],
+		// DO NOT include INSTANCES/THIN_INSTANCES defines — Babylon adds them automatically
 		needAlphaBlending: false,
 	});
 
-	// Upload terrain parameters as flat float arrays
+	// Upload terrain parameters
 	const { params, colors } = packTerrainParams();
 	material.setFloats('terrainParams', Array.from(params));
 	material.setFloats('terrainColors', Array.from(colors));
 
-	// Sun direction
 	material.setVector3('sunDirection', new Vector3(-1, 0.5, 0.3).normalize());
-
-	material.backFaceCulling = true;
+	material.backFaceCulling = false; // show both sides during dev
 
 	return material;
 }
