@@ -9,6 +9,7 @@ import { Scene } from '@babylonjs/core/scene';
 import { Vector3, Color3, Color4 } from '@babylonjs/core/Maths/math';
 import { MeshBuilder } from '@babylonjs/core/Meshes/meshBuilder';
 import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
+import { VertexBuffer } from '@babylonjs/core/Buffers/buffer';
 import { DirectionalLight } from '@babylonjs/core/Lights/directionalLight';
 import { HemisphericLight } from '@babylonjs/core/Lights/hemisphericLight';
 import { PointLight } from '@babylonjs/core/Lights/pointLight';
@@ -116,7 +117,14 @@ export async function createGlobeEngine(
 	mat.diffuseColor = new Color3(1, 1, 1);
 	mat.specularColor = new Color3(0.15, 0.15, 0.15);
 	mat.backFaceCulling = true;
+	// Vertex colors multiply with diffuseColor — white diffuse means vertex colors show through
 	globeMesh.material = mat;
+	globeMesh.hasVertexAlpha = false;
+
+	// Debug: check vertex color data
+	const vColors = globeMesh.getVerticesData(VertexBuffer.ColorKind);
+	console.log('[Globe] Vertex colors:', vColors ? vColors.length / 4 + ' vertices' : 'NONE');
+	if (vColors) console.log('[Globe] First color:', vColors[0], vColors[1], vColors[2], vColors[3]);
 
 	report(`Globe mesh: ${globeMesh.getTotalVertices().toLocaleString()} vertices, ${cells.length} cells`);
 

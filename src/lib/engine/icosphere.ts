@@ -136,13 +136,16 @@ export function generateIcoHexGrid(resolution: number): HexCell[] {
 				const cell = cellMap.get(key)!;
 				patchCells.set(`${i},${j}`, cellId);
 
-				// Generate ALL 6 corners — don't skip any
-				// Corners outside triangle will project via slerp extrapolation
-				// Adjacent triangles will contribute their own corners, merged by dedup
+				// Generate corners — only project those within the triangle
+				// Corners outside this triangle will be contributed by adjacent triangles
+				// via the deduplication system (same hex center → corners accumulate)
 				for (let k = 0; k < 6; k++) {
 					const angle = -Math.PI / 6 + k * Math.PI / 3;
 					const px = cx + Math.cos(angle) * R;
 					const pz = cz + Math.sin(angle) * R;
+
+					// Check if corner is inside triangle (with small tolerance)
+					if (pz < -0.01 || pz > f1(px) + 0.01 || pz > f2(px) + 0.01) continue;
 
 					const mappedCorner = map2dTo3d(px, pz, v0, v1, v2).normalize();
 
@@ -190,17 +193,19 @@ export function generateIcoHexGrid(resolution: number): HexCell[] {
 				- Math.atan2(Vector3.Dot(db, fwd), Vector3.Dot(db, right));
 		});
 
-		// Limit: hexagons get 6, pentagons get 5
-		const maxCorners = cell.isPentagon ? 5 : 6;
-		if (cell.corners.length > maxCorners) {
-			// Keep corners most evenly spaced (take every N-th)
-			const step = cell.corners.length / maxCorners;
-			const kept: Vector3[] = [];
-			for (let i = 0; i < maxCorners; i++) {
-				kept.push(cell.corners[Math.round(i * step) % cell.corners.length]);
+		// Remove near-duplicate corners that survived the per-insertion check
+		// (can happen when corners from different triangles land at similar positions)
+		const merged: Vector3[] = [cell.corners[0]];
+		for (let i = 1; i < cell.corners.length; i++) {
+			let dupe = false;
+			for (const m of merged) {
+				if (Vector3.DistanceSquared(cell.corners[i], m) < keyStep * keyStep * 0.5) {
+					dupe = true; break;
+				}
 			}
-			cell.corners = kept;
+			if (!dupe) merged.push(cell.corners[i]);
 		}
+		cell.corners = merged;
 	}
 
 	// Build final array

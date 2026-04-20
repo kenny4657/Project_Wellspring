@@ -89,9 +89,8 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 	vertexData.positions = new Float32Array(positions);
 	vertexData.indices = new Uint32Array(indices);
 	vertexData.normals = new Float32Array(normals);
-	vertexData.applyToMesh(mesh);
-	mesh.setVerticesData(VertexBuffer.ColorKind, new Float32Array(colors), true);
-	mesh.useVertexColors = true;
+	vertexData.colors = new Float32Array(colors);
+	vertexData.applyToMesh(mesh, true); // updatable = true
 
 	return { mesh, vertexStarts, totalVerticesPerCell };
 }
@@ -126,6 +125,9 @@ export function updateCellTerrain(
 			colorsArr[idx + 3] = 1;
 		}
 		mesh.updateVerticesData(VertexBuffer.ColorKind, colorsArr);
+		console.log(`[Mesh] Updated cell ${cellIndex}: color=[${color}], start=${start}, count=${count}`);
+	} else {
+		console.warn('[Mesh] No color data found on mesh!');
 	}
 
 	// Update positions (height change)
