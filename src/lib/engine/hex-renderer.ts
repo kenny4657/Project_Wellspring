@@ -195,8 +195,9 @@ export class HexRenderer {
 	// ── Private helpers ──
 
 	private computeMatrix(lat: number, lng: number, index: number): void {
-		// Position slightly above globe surface to avoid z-fighting
-		const r = EARTH_RADIUS_KM + 5; // 5km above surface
+		// Position above globe sphere surface so flat hex tiles are fully visible
+		// (flat tiles on curved sphere dip below surface at edges otherwise)
+		const r = EARTH_RADIUS_KM + 15;
 		_pos.copyFrom(latLngToWorld(lat, lng, r));
 
 		// Surface normal = normalized position (for a sphere centered at origin)

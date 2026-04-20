@@ -44,8 +44,9 @@ import { type TerrainTypeId, TERRAIN_PROFILES } from '$lib/world/terrain-types';
 import { getRes0Cells, cellToChildren } from 'h3-js';
 import { PointerEventTypes } from '@babylonjs/core/Events/pointerEvents';
 
-// Side-effect import: enables thin instance API on Mesh
+// Side-effect imports
 import '@babylonjs/core/Meshes/thinInstanceMesh';
+import '@babylonjs/core/Animations/animatable'; // needed by GeospatialCamera/Atmosphere
 
 export interface GlobeEngine {
 	dispose(): void;
@@ -86,24 +87,24 @@ export async function createGlobeEngine(
 
 	// ── Lighting ────────────────────────────────────────────
 	const hemiLight = new HemisphericLight('hemi', new Vector3(0, 1, 0), scene);
-	hemiLight.intensity = 0.6;
-	hemiLight.groundColor = new Color3(0.15, 0.15, 0.2);
+	hemiLight.intensity = 1.0;
+	hemiLight.groundColor = new Color3(0.3, 0.3, 0.35);
 
 	const sunDirection = new Vector3(-1, 0.5, 0.3).normalize();
 	const sunLight = new DirectionalLight('sun', sunDirection.negate(), scene);
-	sunLight.intensity = 2.5;
+	sunLight.intensity = 1.5;
 	sunLight.diffuse = new Color3(1, 0.98, 0.92);
 
-	// ── Globe Sphere (ocean base) ───────────────────────────
+	// ── Globe Sphere ────────────────────────────────────────
+	// Slightly smaller than hex surface — only visible through gaps between hexes
 	const globe = MeshBuilder.CreateSphere('globe', {
-		diameter: EARTH_RADIUS_KM * 2,
+		diameter: EARTH_RADIUS_KM * 2 * 0.998,
 		segments: 64
 	}, scene);
 
 	const globeMat = new StandardMaterial('globeMat', scene);
-	globeMat.diffuseColor = new Color3(0.12, 0.18, 0.40);
-	globeMat.emissiveColor = new Color3(0.05, 0.08, 0.18); // self-lit so globe is visible without atmosphere
-	globeMat.specularColor = new Color3(0.2, 0.2, 0.2);
+	globeMat.diffuseColor = new Color3(0.08, 0.12, 0.30);
+	globeMat.specularColor = new Color3(0.1, 0.1, 0.1);
 	globe.material = globeMat;
 
 	// ── Geospatial Camera ───────────────────────────────────
@@ -176,10 +177,11 @@ export async function createGlobeEngine(
 	report('Building hex mesh and shader...');
 	await tick();
 
-	// Hex radius in km: approximate from H3 cell area
-	// Res 3: ~12,393 km² per hex → radius ≈ sqrt(area / (2.598 * sqrt(3))) ≈ 59 km
-	// Res 4: ~1,770 km² per hex → radius ≈ 22 km
-	const hexRadiusKm = H3_RES === 3 ? 59 : H3_RES === 4 ? 22 : 10;
+	// Hex radius in km: computed from H3 cell area
+	// Area of regular hexagon = (3√3/2) × r² → r = √(2×area / (3√3))
+	// Res 3: ~12,393 km² → r ≈ 69 km. Add ~5% overlap to eliminate gaps from sphere curvature.
+	// Res 4: ~1,770 km² → r ≈ 26 km
+	const hexRadiusKm = H3_RES === 3 ? 73 : H3_RES === 4 ? 27 : 12;
 
 	const hexMesh = createHexMesh(hexRadiusKm, 3, scene); // 3 subdivisions
 
