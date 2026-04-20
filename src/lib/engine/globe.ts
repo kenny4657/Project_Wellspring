@@ -129,12 +129,12 @@ export async function createGlobeEngine(
 	camera.pitch = 0;
 	camera.yaw = 0;
 
-	camera.limits.radiusMin = EARTH_RADIUS_KM * 1.05;
+	camera.limits.radiusMin = EARTH_RADIUS_KM + 50; // ~50km above surface
 	camera.limits.radiusMax = EARTH_RADIUS_KM * 5;
 	camera.limits.pitchMax = Math.PI / 2.5;
 
 	// Clip planes for km-scale rendering
-	camera.minZ = 10;
+	camera.minZ = 1;
 	camera.maxZ = EARTH_RADIUS_KM * 20;
 
 	camera.attachControl(canvas, true);
