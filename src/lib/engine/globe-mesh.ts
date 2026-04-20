@@ -180,6 +180,7 @@ function distToSegment(
 interface HexBorderInfo {
 	excludedEdges: boolean[];  // true = edge excluded from distance calc (no ramp)
 	edgeTargets: number[];     // ramp target height per non-excluded edge
+	edgeBorderNoise: number[]; // noise coefficient at border per edge (must match flat neighbor)
 	allSameHeight: boolean;    // ALL neighbors at exact same height level (deep ocean fast path)
 	hasBorder: boolean;        // has at least one non-excluded edge
 }
@@ -211,6 +212,7 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 	const n = cell.corners.length;
 	const excludedEdges: boolean[] = new Array(n).fill(false);
 	const edgeTargets: number[] = new Array(n).fill(0);
+	const edgeBorderNoise: number[] = new Array(n).fill(NOISE_AMP);
 	let excludedCount = 0;
 	let exactSameCount = 0;
 	const isWater = cell.heightLevel <= 1;
@@ -223,27 +225,24 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 		const nbIsWater = nb.heightLevel <= 1;
 
 		if (isWater) {
-			// ── Water hex edge logic ──
-			// Exclude: same-depth water, or this cell is deeper/equal → stay flat
 			if (nbIsWater && cell.heightLevel <= nb.heightLevel) {
 				excludedEdges[i] = true;
 				excludedCount++;
 			} else if (nbIsWater) {
-				// Shallower water → ramp down to deeper neighbor
 				edgeTargets[i] = getLevelHeight(nb.heightLevel);
+				edgeBorderNoise[i] = NOISE_AMP; // match flat water neighbor
 			} else {
-				// Water → land: ramp up to sea level
-				edgeTargets[i] = 0;
+				edgeTargets[i] = 0; // water → land: sea level
+				edgeBorderNoise[i] = NOISE_AMP * 0.3; // coastline noise (both sides use 0.3)
 			}
 		} else {
-			// ── Land hex edge logic ──
-			// Only ramp at water borders (coastline). All land-land edges excluded (walls handle those).
 			if (nbIsWater) {
-				// Land → water: ramp down to sea level
-				edgeTargets[i] = 0;
-				// NOT excluded — this edge gets a ramp
+				edgeTargets[i] = 0; // land → water: sea level
+				edgeBorderNoise[i] = NOISE_AMP * 0.3; // coastline noise (both sides use 0.3)
+			} else if (nb.heightLevel < cell.heightLevel) {
+				edgeTargets[i] = getLevelHeight(nb.heightLevel);
+				edgeBorderNoise[i] = NOISE_AMP; // match flat land neighbor
 			} else {
-				// Land → land: excluded (walls handle height transitions)
 				excludedEdges[i] = true;
 				excludedCount++;
 			}
@@ -253,6 +252,7 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 	return {
 		excludedEdges,
 		edgeTargets,
+		edgeBorderNoise,
 		allSameHeight: isWater && exactSameCount >= n,
 		hasBorder: excludedCount < n
 	};
@@ -266,10 +266,11 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 function distToBorderWithTarget(
 	vx: number, vy: number, vz: number,
 	cell: HexCell, borderInfo: HexBorderInfo
-): { dist: number; target: number } {
+): { dist: number; target: number; borderNoise: number } {
 	const n = cell.corners.length;
 	let minDist = Infinity;
 	let target = -Infinity;
+	let borderNoise = NOISE_AMP;
 	const EPS = 1e-4;
 	for (let i = 0; i < n; i++) {
 		if (borderInfo.excludedEdges[i]) continue;
@@ -279,13 +280,16 @@ function distToBorderWithTarget(
 		if (d < minDist - EPS) {
 			minDist = d;
 			target = borderInfo.edgeTargets[i];
+			borderNoise = borderInfo.edgeBorderNoise[i];
 		} else if (d < minDist + EPS) {
-			// Multiple edges at similar distance (corner) — use highest target
-			target = Math.max(target, borderInfo.edgeTargets[i]);
+			if (borderInfo.edgeTargets[i] > target) {
+				target = borderInfo.edgeTargets[i];
+				borderNoise = borderInfo.edgeBorderNoise[i];
+			}
 			if (d < minDist) minDist = d;
 		}
 	}
-	return { dist: minDist, target };
+	return { dist: minDist, target, borderNoise };
 }
 
 // ── Build Globe Mesh ────────────────────────────────────────
@@ -391,20 +395,15 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 
 					let h: number;
 					if (borderInfo.hasBorder) {
-						// Sota-style distance_to_border with per-edge targets.
-						// Both water AND land hexes ramp at coastlines → they meet at sea level.
-						// Water→water depth transitions ramp to neighbor's height.
-						const { dist, target: borderTarget } = distToBorderWithTarget(ux, uy, uz, cell, borderInfo);
+						const { dist, target: borderTarget, borderNoise: bNoise } =
+							distToBorderWithTarget(ux, uy, uz, cell, borderInfo);
 						const t = Math.min(dist / hexRadius, 1.0);
 						const mu = (1 - Math.cos(t * Math.PI)) / 2;
 
-						// Noise coefficient must MATCH at shared borders:
-						// - Water↔water: border noise = NOISE_AMP (flat neighbor uses full noise)
-						// - Water↔land: border noise = NOISE_AMP * 0.3 (both sides use 0.3 at coast)
-						const isWaterNeighborBorder = borderTarget < -0.001;
-						const borderNoise = isWaterNeighborBorder ? NOISE_AMP : NOISE_AMP * 0.3;
+						// Per-edge border noise set in getHexBorderInfo:
+						// coastline = 0.3×, water→water = 1×, land→land = 1×
 						const interiorNoise = isWaterHex ? NOISE_AMP * 0.3 : NOISE_AMP;
-						const noiseCoeff = interiorNoise * mu + borderNoise * (1 - mu);
+						const noiseCoeff = interiorNoise * mu + bNoise * (1 - mu);
 
 						h = tierH * mu + borderTarget * (1 - mu) + noiseH * noiseCoeff;
 					} else {
@@ -438,61 +437,8 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 		}
 
 		// ── Side walls ──────────────────────────────────────
-		// Water hexes: cosine ramps handle all transitions — no walls.
-		// Land hexes: walls only at land→land height transitions.
-		// Coastline edges (land→water) use smooth ramps, not walls.
-		if (isWaterHex) {
-			// Water hexes use cosine ramps — skip all walls
-		} else
-		for (let i = 0; i < n; i++) {
-			const c0 = cell.corners[i];
-			const c1 = cell.corners[(i + 1) % n];
-
-			const nb = findNeighborAcrossEdge(cell, i, cellById);
-			if (!nb) continue;
-
-			// Skip coastline edges — ramp handles the transition smoothly
-			if (nb.heightLevel <= 1) continue;
-
-			// Only emit wall from the HIGHER land hex.
-			if (nb.heightLevel >= cell.heightLevel) continue;
-
-			const wn0 = fbmNoise(c0.x * NOISE_SCALE, c0.y * NOISE_SCALE, c0.z * NOISE_SCALE);
-			const wn1 = fbmNoise(c1.x * NOISE_SCALE, c1.y * NOISE_SCALE, c1.z * NOISE_SCALE);
-			const topR0 = radius * (1 + tierH + wn0 * NOISE_AMP);
-			const topR1 = radius * (1 + tierH + wn1 * NOISE_AMP);
-
-			const midX = (c0.x + c1.x) * 0.5;
-			const midY = (c0.y + c1.y) * 0.5;
-			const midZ = (c0.z + c1.z) * 0.5;
-			let wnx = midX - cell.center.x;
-			let wny = midY - cell.center.y;
-			let wnz = midZ - cell.center.z;
-			const wnLen = Math.sqrt(wnx * wnx + wny * wny + wnz * wnz) || 1;
-			wnx /= wnLen; wny /= wnLen; wnz /= wnLen;
-
-			const wallOff = vOff;
-
-			positions.push(c0.x * topR0, c0.y * topR0, c0.z * topR0);
-			normals.push(wnx, wny, wnz);
-			colors.push(color[0], color[1], color[2], 0.0);
-
-			positions.push(c1.x * topR1, c1.y * topR1, c1.z * topR1);
-			normals.push(wnx, wny, wnz);
-			colors.push(color[0], color[1], color[2], 0.0);
-
-			positions.push(c0.x * botR, c0.y * botR, c0.z * botR);
-			normals.push(wnx, wny, wnz);
-			colors.push(color[0], color[1], color[2], 0.0);
-
-			positions.push(c1.x * botR, c1.y * botR, c1.z * botR);
-			normals.push(wnx, wny, wnz);
-			colors.push(color[0], color[1], color[2], 0.0);
-
-			indices.push(wallOff + 0, wallOff + 1, wallOff + 2);
-			indices.push(wallOff + 1, wallOff + 3, wallOff + 2);
-			vOff += 4;
-		}
+		// All height transitions use smooth ramps — no walls.
+		// Higher hexes ramp down to lower neighbors (land and water alike).
 
 		} // end of non-deep-ocean block
 
