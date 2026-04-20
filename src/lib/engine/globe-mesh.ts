@@ -258,23 +258,31 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 	};
 }
 
-/** Compute minimum distance to ANY non-excluded edge, and return
- *  the ramp target of the closest edge. */
+/** Compute minimum distance to ANY non-excluded edge, and return the ramp target.
+ *  At corners where multiple edges are equidistant (dist≈0), use the HIGHEST target
+ *  so all hexes sharing that corner converge to the same height (triple junction fix). */
 function distToBorderWithTarget(
 	vx: number, vy: number, vz: number,
 	cell: HexCell, borderInfo: HexBorderInfo
 ): { dist: number; target: number } {
 	const n = cell.corners.length;
 	let minDist = Infinity;
-	let target = 0;
+	let target = -Infinity;
+	const CORNER_EPS = 1e-4; // edges within this distance are "at the same corner"
 	for (let i = 0; i < n; i++) {
 		if (borderInfo.excludedEdges[i]) continue;
 		const a = cell.corners[i];
 		const b = cell.corners[(i + 1) % n];
 		const d = distToSegment(vx, vy, vz, a.x, a.y, a.z, b.x, b.y, b.z);
-		if (d < minDist) {
+		if (d < minDist - CORNER_EPS) {
+			// New closest edge — use its target
 			minDist = d;
 			target = borderInfo.edgeTargets[i];
+		} else if (d < minDist + CORNER_EPS) {
+			// Multiple edges at similar distance (corner) — use highest target
+			// so all hexes at this corner converge to the same height
+			target = Math.max(target, borderInfo.edgeTargets[i]);
+			if (d < minDist) minDist = d;
 		}
 	}
 	return { dist: minDist, target };
@@ -334,19 +342,23 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 		const deepOcean = isWaterHex && borderInfo.allSameHeight;
 
 		if (deepOcean) {
-			// Simple center + corners fan — 6 triangles instead of 384
-			const flatR = radius * (1 + tierH);
+			// Simple center + corners fan — 6 triangles instead of 384.
+			// Vertices include noise displacement to match adjacent subdivided hexes at corners.
 
 			// Center vertex
-			positions.push(cell.center.x * flatR, cell.center.y * flatR, cell.center.z * flatR);
+			const cn = fbmNoise(cell.center.x * NOISE_SCALE, cell.center.y * NOISE_SCALE, cell.center.z * NOISE_SCALE);
+			const centerR = radius * (1 + tierH + cn * NOISE_AMP);
+			positions.push(cell.center.x * centerR, cell.center.y * centerR, cell.center.z * centerR);
 			normals.push(cell.center.x, cell.center.y, cell.center.z);
 			colors.push(color[0], color[1], color[2], 1.0);
 			const centerOff = vOff++;
 
-			// Corner vertices
+			// Corner vertices with noise
 			for (let i = 0; i < n; i++) {
 				const c = cell.corners[i];
-				positions.push(c.x * flatR, c.y * flatR, c.z * flatR);
+				const cNoise = fbmNoise(c.x * NOISE_SCALE, c.y * NOISE_SCALE, c.z * NOISE_SCALE);
+				const cR = radius * (1 + tierH + cNoise * NOISE_AMP);
+				positions.push(c.x * cR, c.y * cR, c.z * cR);
 				normals.push(c.x, c.y, c.z);
 				colors.push(color[0], color[1], color[2], 1.0);
 				vOff++;
@@ -389,15 +401,10 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 						const t = Math.min(dist / hexRadius, 1.0);
 						const mu = (1 - Math.cos(t * Math.PI)) / 2;
 
-						// Noise coefficient must MATCH at shared borders:
-						// - Water↔water: border noise = NOISE_AMP (flat neighbor uses full noise)
-						// - Water↔land: border noise = NOISE_AMP * 0.3 (both sides use 0.3 at coast)
-						const isWaterNeighborBorder = borderTarget < -0.001;
-						const borderNoise = isWaterNeighborBorder ? NOISE_AMP : NOISE_AMP * 0.3;
-						const interiorNoise = isWaterHex ? NOISE_AMP * 0.3 : NOISE_AMP;
-						const noiseCoeff = interiorNoise * mu + borderNoise * (1 - mu);
-
-						h = tierH * mu + borderTarget * (1 - mu) + noiseH * noiseCoeff;
+						// NOISE_AMP used everywhere — no 0.3× reduction.
+						// This guarantees adjacent hexes always compute the same noise
+						// at shared border vertices, eliminating all noise mismatch gaps.
+						h = tierH * mu + borderTarget * (1 - mu) + noiseH * NOISE_AMP;
 					} else {
 						h = tierH + noiseH * NOISE_AMP;
 					}
