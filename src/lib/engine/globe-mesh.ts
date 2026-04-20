@@ -183,8 +183,8 @@ interface CoastlineInfo {
  *  Replicates Sota's get_exclude_border_set() logic. */
 function getCoastlineInfo(cell: HexCell, cellById: Map<number, HexCell>): CoastlineInfo {
 	const n = cell.corners.length;
-	const coastlineEdges: boolean[] = new Array(n).fill(true); // default: all edges are coastline
-	let waterNeighborCount = 0;
+	const coastlineEdges: boolean[] = new Array(n).fill(true); // default: all edges are transitions
+	let sameHeightCount = 0;
 
 	// For each edge, find which neighbor is across it
 	for (let i = 0; i < n; i++) {
@@ -213,16 +213,16 @@ function getCoastlineInfo(cell: HexCell, cellById: Map<number, HexCell>): Coastl
 
 		if (closestNId >= 0) {
 			const neighbor = cellById.get(closestNId)!;
-			if (neighbor.heightLevel <= 1) {
-				// Neighbor is also water → exclude this edge (not a coastline)
+			if (neighbor.heightLevel === cell.heightLevel) {
+				// Same height level → exclude (no transition needed)
 				coastlineEdges[i] = false;
-				waterNeighborCount++;
+				sameHeightCount++;
 			}
 		}
 	}
 
 	return {
-		hasCoastline: waterNeighborCount < n, // if all neighbors are water, no coastline
+		hasCoastline: sameHeightCount < n, // has transition edges if not all neighbors are same height
 		coastlineEdges
 	};
 }
@@ -397,21 +397,23 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 			const dirZ = edgeMidZ - cell.center.z;
 
 			let neighborHeight = cell.heightLevel;
+			let bestDot = -Infinity;
 			for (const nId of cell.neighbors) {
 				const nb = cellById.get(nId);
 				if (!nb) continue;
 				const ndx = nb.center.x - cell.center.x;
 				const ndy = nb.center.y - cell.center.y;
 				const ndz = nb.center.z - cell.center.z;
-				if (dirX * ndx + dirY * ndy + dirZ * ndz > 0) {
-					// Check if this neighbor is the one across this edge (closest in edge direction)
+				const dot = dirX * ndx + dirY * ndy + dirZ * ndz;
+				if (dot > bestDot) {
+					bestDot = dot;
 					neighborHeight = nb.heightLevel;
-					break;
 				}
 			}
 
-			// Skip wall if neighbor is at same height — no cliff needed
-			if (neighborHeight === cell.heightLevel) continue;
+			// Only emit wall from the HIGHER hex (wall faces outward/downward).
+			// Skip if same height or if neighbor is higher (neighbor emits the wall).
+			if (neighborHeight >= cell.heightLevel) continue;
 
 			const wn0 = fbmNoise(c0.x * NOISE_SCALE, c0.y * NOISE_SCALE, c0.z * NOISE_SCALE);
 			const wn1 = fbmNoise(c1.x * NOISE_SCALE, c1.y * NOISE_SCALE, c1.z * NOISE_SCALE);
