@@ -15,6 +15,8 @@ export interface HexCell {
 	corners: Vector3[];
 	neighbors: Set<number>;
 	terrain: number;
+	/** Discrete height level (0-5), independent of terrain type */
+	heightLevel: number;
 	isPentagon: boolean;
 }
 
@@ -216,7 +218,7 @@ export function generateIcoHexGrid(resolution: number): HexCell[] {
 		cells.push({
 			id, center: data.center, corners: data.corners,
 			neighbors: globalNeighbors.get(id) || new Set(),
-			terrain: 0, isPentagon: data.isPentagon
+			terrain: 0, heightLevel: 0, isPentagon: data.isPentagon
 		});
 	}
 

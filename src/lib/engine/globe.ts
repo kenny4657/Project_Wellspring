@@ -9,6 +9,7 @@ import { Engine } from '@babylonjs/core/Engines/engine';
 import { Scene } from '@babylonjs/core/scene';
 import { Vector3, Color3, Color4 } from '@babylonjs/core/Maths/math';
 import { MeshBuilder } from '@babylonjs/core/Meshes/meshBuilder';
+import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
 import { DirectionalLight } from '@babylonjs/core/Lights/directionalLight';
 import { HemisphericLight } from '@babylonjs/core/Lights/hemisphericLight';
 import { GeospatialCamera } from '@babylonjs/core/Cameras/geospatialCamera';
@@ -16,12 +17,15 @@ import { GeospatialCamera } from '@babylonjs/core/Cameras/geospatialCamera';
 import '@babylonjs/core/Shaders/default.vertex';
 import '@babylonjs/core/Shaders/default.fragment';
 import '@babylonjs/core/Animations/animatable';
+// Side-effect imports needed for camera pointer input system
+import '@babylonjs/core/Events/pointerEvents';
+import '@babylonjs/core/Culling/ray';
 
 import { EARTH_RADIUS_KM, latLngToWorld } from '$lib/geo/coords';
 import { generateIcoHexGrid, type HexCell } from '$lib/engine/icosphere';
 import { buildGlobeMesh, buildHexEdgeLines, updateCellTerrain } from '$lib/engine/globe-mesh';
 import { createTerrainMaterial } from '$lib/engine/terrain-material';
-import { pickHexAtScreen } from '$lib/engine/picking';
+// picking is inlined below using the lightweight pickSphere
 import { assignTerrain } from '$lib/engine/terrain-gen';
 import { TERRAIN_TYPES, type TerrainTypeId } from '$lib/world/terrain-types';
 
@@ -68,7 +72,10 @@ export async function createGlobeEngine(
 		diameter: EARTH_RADIUS_KM * 2 * 0.997,
 		segments: 32
 	}, scene);
+	// isVisible must be true for scene.pick() to work (separate from visibility)
+	// visibility=0 makes it visually invisible, isVisible=true keeps it pickable
 	pickSphere.visibility = 0;
+	pickSphere.isVisible = true;
 	pickSphere.isPickable = true;
 
 	const camera = new GeospatialCamera('geoCam', scene, {
@@ -88,7 +95,7 @@ export async function createGlobeEngine(
 	camera.minZ = 1;
 	camera.maxZ = EARTH_RADIUS_KM * 20;
 
-	camera.attachControl(true);
+	camera.attachControl();
 
 	// ── Generate Icosahedral Hex Grid ────────────────────────
 	report('Generating icosahedral hex grid...');
@@ -114,7 +121,7 @@ export async function createGlobeEngine(
 	const terrainMat = createTerrainMaterial(scene);
 	globeMesh.material = terrainMat;
 	globeMesh.hasVertexAlpha = false;
-	globeMesh.isPickable = true;
+	globeMesh.isPickable = false; // picking uses the lightweight pickSphere instead
 
 	// ── Hex Edge Wireframe ──────────────────────────────────
 	report('Building hex grid overlay...');
@@ -125,8 +132,22 @@ export async function createGlobeEngine(
 	report(`Globe ready: ${cells.length} cells, ${globeMesh.getTotalVertices().toLocaleString()} vertices`);
 
 	// ── Picking / Painting ──────────────────────────────────
+	// Pick against the lightweight pickSphere instead of the 5M-vertex globe mesh.
+	// Only fire on click (not drag) so left-click-drag camera orbit still works.
 	let onHexClickCallback: ((cellIndex: number) => void) | null = null;
 	let pointerDownPos: { x: number; y: number } | null = null;
+
+	function pickHex(sx: number, sy: number): number {
+		const result = scene.pick(sx, sy, (m) => m === pickSphere);
+		if (!result?.hit || !result.pickedPoint) return -1;
+		const hitNorm = result.pickedPoint.normalize();
+		let bestIdx = -1, bestDist = Infinity;
+		for (let i = 0; i < cells.length; i++) {
+			const d = Vector3.DistanceSquared(hitNorm, cells[i].center);
+			if (d < bestDist) { bestDist = d; bestIdx = i; }
+		}
+		return bestIdx;
+	}
 
 	canvas.addEventListener('pointerdown', (e) => {
 		if (e.button === 0) pointerDownPos = { x: e.clientX, y: e.clientY };
@@ -137,7 +158,7 @@ export async function createGlobeEngine(
 			const dx = e.clientX - pointerDownPos.x;
 			const dy = e.clientY - pointerDownPos.y;
 			if (Math.sqrt(dx * dx + dy * dy) < 5) {
-				const idx = pickHexAtScreen(scene, globeMesh, scene.pointerX, scene.pointerY, cells);
+				const idx = pickHex(scene.pointerX, scene.pointerY);
 				if (idx >= 0) onHexClickCallback?.(idx);
 			}
 			pointerDownPos = null;

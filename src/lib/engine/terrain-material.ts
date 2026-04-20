@@ -45,6 +45,7 @@ uniform vec3 sunDir;
 uniform vec3 fillDir;
 uniform vec3 cameraPos;
 uniform float planetRadius;
+uniform float seaLevel;      // height threshold: below = water, above = land
 uniform float bottomOffset;  // lowest height (water floor)
 uniform float hillRatio;     // 0-1 ratio where grass→hill transition occurs
 uniform float topOffset;     // highest height (mountain peak)
@@ -189,24 +190,41 @@ void main() {
         procColor = textureWall(vColor.rgb, vWorldPos);
     } else {
         // ── Sota-style height-based texture blending ────
+        // Replicates polyhedron_biome.gdshader:
+        //   h = (dist_from_center - bottom_offset) / amplitude
+        //   below bottom_offset → water
+        //   h ≤ hillRatio → mix(plain, hill)
+        //   h > hillRatio → mix(hill, mountain)
         float distFromCenter = length(vWorldPos);
         float heightAboveR = distFromCenter - planetRadius;
 
         float amplitude = abs(topOffset) + abs(bottomOffset);
+        float firstCoef = 1.0 / hillRatio;
+        float secondCoef = 1.0 / (1.0 - hillRatio);
+
         float h = (heightAboveR - bottomOffset) / amplitude;
 
         float scratchy = triplanarScratchy(vWorldPos, N, 0.004);
 
-        if (heightAboveR < bottomOffset * 0.3) {
-            // Deep water
+        // Shore transition zone: narrow sand/beach blend at water/land boundary
+        float shoreWidth = 0.06; // width of shore zone in normalized height
+        float shoreCenter = 0.0; // at bottom_offset (sea level)
+
+        if (heightAboveR < seaLevel) {
+            // Below sea level → water texture (hard cutoff like Sota)
             procColor = waterColor(scratchy);
+        } else if (heightAboveR < seaLevel + shoreWidth * amplitude) {
+            // Shore/beach transition zone — sand blending into grass
+            vec3 shore = vec3(0.65, 0.58, 0.40) * (1.0 + scratchy * 0.10);
+            float shoreT = (heightAboveR - seaLevel) / (shoreWidth * amplitude);
+            procColor = mix(shore, grassColor(scratchy), clamp(shoreT, 0.0, 1.0));
         } else if (h <= hillRatio) {
-            // Grass → Hill blend
-            float t = clamp(h / hillRatio, 0.0, 1.0);
+            // Plain → Hill blend (Sota's first_coef)
+            float t = clamp(h * firstCoef, 0.0, 1.0);
             procColor = mix(grassColor(scratchy), hillColor(scratchy), t);
         } else {
-            // Hill → Snow blend
-            float t = clamp((h - hillRatio) / (1.0 - hillRatio), 0.0, 1.0);
+            // Hill → Snow blend (Sota's second_coef)
+            float t = clamp((h - hillRatio) * secondCoef, 0.0, 1.0);
             procColor = mix(hillColor(scratchy), snowColor(scratchy), t);
         }
     }
@@ -222,9 +240,7 @@ void main() {
     vec3 litColor = procColor * light;
 
     // Specular on water
-    float distFromCenter = length(vWorldPos);
-    float heightAboveR = distFromCenter - planetRadius;
-    if (!isWall && heightAboveR < bottomOffset * 0.3) {
+    if (!isWall && length(vWorldPos) - planetRadius < seaLevel) {
         vec3 halfVec = normalize(sunDir + toCamera);
         float spec = pow(max(0.0, dot(N, halfVec)), 64.0);
         litColor += vec3(1.0, 0.98, 0.92) * spec * 0.10;
@@ -246,7 +262,7 @@ export function createTerrainMaterial(scene: Scene): ShaderMaterial {
 		uniforms: [
 			'world', 'viewProjection',
 			'sunDir', 'fillDir', 'cameraPos',
-			'planetRadius', 'bottomOffset', 'topOffset', 'hillRatio'
+			'planetRadius', 'seaLevel', 'bottomOffset', 'topOffset', 'hillRatio'
 		],
 		needAlphaBlending: false,
 	});
@@ -258,9 +274,10 @@ export function createTerrainMaterial(scene: Scene): ShaderMaterial {
 	// Height parameters matching NOISE_AMP in globe-mesh.ts
 	const R = 6371; // EARTH_RADIUS_KM
 	mat.setFloat('planetRadius', R);
-	mat.setFloat('bottomOffset', -0.020 * R);  // deep water tier
-	mat.setFloat('topOffset', 0.080 * R);       // mountain peak tier
-	mat.setFloat('hillRatio', 0.40);             // grass→hill transition
+	mat.setFloat('seaLevel', -0.002 * R);        // sea level (slightly below level 2 at 0.000)
+	mat.setFloat('bottomOffset', -0.020 * R);    // deep water floor
+	mat.setFloat('topOffset', 0.080 * R);         // mountain peak
+	mat.setFloat('hillRatio', 0.40);               // grass→hill transition
 
 	mat.backFaceCulling = true;
 

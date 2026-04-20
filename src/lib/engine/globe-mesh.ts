@@ -23,14 +23,15 @@ import '@babylonjs/core/Meshes/Builders/linesBuilder';
 
 // ── Configuration ───────────────────────────────────────────
 
-/** Height offsets per terrain tier (fraction of globe radius) */
-const TIER_HEIGHTS = [
-	-0.020,  // tier 0: deep water
-	-0.008,  // tier 1: shallow water
-	 0.000,  // tier 2: low land
-	 0.020,  // tier 3: forest/hills
-	 0.045,  // tier 4: highland
-	 0.080,  // tier 5: mountain peak
+/** Height offsets per discrete height level (fraction of globe radius).
+ *  Height level is independent of terrain type. */
+const LEVEL_HEIGHTS = [
+	-0.020,  // level 0: deep water
+	-0.008,  // level 1: shallow water
+	 0.000,  // level 2: lowland
+	 0.020,  // level 3: midland
+	 0.045,  // level 4: highland
+	 0.080,  // level 5: peak
 ];
 
 /** Walls extend down to this floor */
@@ -79,9 +80,8 @@ function fbmNoise(x: number, y: number, z: number): number {
 
 // ── Helpers ─────────────────────────────────────────────────
 
-function getTerrainTier(idx: number): number { return TERRAIN_PROFILES[idx]?.tier ?? 0; }
 function getTerrainColor(idx: number): [number, number, number] { return TERRAIN_PROFILES[idx]?.color ?? [0.5, 0.5, 0.5]; }
-function getTierHeight(tier: number): number { return TIER_HEIGHTS[tier] ?? 0; }
+function getLevelHeight(level: number): number { return LEVEL_HEIGHTS[Math.min(level, LEVEL_HEIGHTS.length - 1)] ?? 0; }
 
 /** Recursively subdivide a triangle on the unit sphere */
 function subdivTriangle(
@@ -184,8 +184,20 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 		const startVOff = vOff;
 
 		const color = getTerrainColor(cell.terrain);
-		const tier = getTerrainTier(cell.terrain);
-		const tierH = getTierHeight(tier);
+		const tierH = getLevelHeight(cell.heightLevel);
+		const isWaterHex = cell.heightLevel <= 1;
+
+		// Compute hex radius for water bowl shape
+		let hexRadius = 0;
+		if (isWaterHex) {
+			for (let i = 0; i < n; i++) {
+				const dx = cell.corners[i].x - cell.center.x;
+				const dy = cell.corners[i].y - cell.center.y;
+				const dz = cell.corners[i].z - cell.center.z;
+				hexRadius += Math.sqrt(dx * dx + dy * dy + dz * dz);
+			}
+			hexRadius /= n;
+		}
 
 		// ── Subdivided top face ─────────────────────────────
 		for (let i = 0; i < n; i++) {
@@ -202,16 +214,32 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 			for (let j = 0; j < triVerts.length; j += 9) {
 				const displaced: number[] = [];
 
-				// Height = tier base (flat across hex) + global noise (continuous across all hexes)
-				// No per-hex dome shaping. Adjacent same-tier hexes look seamless.
 				for (let k = 0; k < 3; k++) {
 					const ux = triVerts[j + k * 3];
 					const uy = triVerts[j + k * 3 + 1];
 					const uz = triVerts[j + k * 3 + 2];
 
 					const noiseH = fbmNoise(ux * NOISE_SCALE, uy * NOISE_SCALE, uz * NOISE_SCALE);
-					const r = radius * (1 + tierH + noiseH * NOISE_AMP);
 
+					let h: number;
+					if (isWaterHex) {
+						// Sota-style: water hexes use cosine interpolation to create
+						// concave bowl shapes. Edge stays near sea level (0), center
+						// dips to full water depth. This creates natural shorelines.
+						const dx = ux - cell.center.x;
+						const dy = uy - cell.center.y;
+						const dz = uz - cell.center.z;
+						const distToCenter = Math.sqrt(dx * dx + dy * dy + dz * dz);
+						const t = Math.min(distToCenter / hexRadius, 1.0);
+						// cosrp: cosine interpolation from full depth (center) to 0 (edge)
+						const mu = (1 - Math.cos(t * Math.PI)) / 2; // 0 at center, 1 at edge
+						h = tierH * (1 - mu) + noiseH * NOISE_AMP;
+					} else {
+						// Land hexes: flat tier height + global noise
+						h = tierH + noiseH * NOISE_AMP;
+					}
+
+					const r = radius * (1 + h);
 					displaced.push(ux * r, uy * r, uz * r);
 				}
 
@@ -339,8 +367,7 @@ export function updateCellTerrain(
 export function buildHexEdgeLines(cells: HexCell[], radius: number, scene: Scene): Mesh {
 	const lines: Vector3[][] = [];
 	for (const cell of cells) {
-		const tier = getTerrainTier(cell.terrain);
-		const tH = getTierHeight(tier);
+		const tH = getLevelHeight(cell.heightLevel);
 		const nc = cell.corners.length;
 		for (let i = 0; i < nc; i++) {
 			const a = cell.corners[i], b = cell.corners[(i + 1) % nc];
