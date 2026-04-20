@@ -169,9 +169,9 @@ export async function createGlobeEngine(
 
 	// Hex circumradius from H3 cell area. Slight oversize (~8%) to eliminate gaps
 	// from sphere curvature without excessive overlap that causes z-fighting.
-	const hexRadiusKm = H3_RES === 3 ? 75 : H3_RES === 4 ? 28 : 12;
+	const hexRadiusKm = H3_RES === 3 ? 85 : H3_RES === 4 ? 30 : 14;
 
-	const hexMesh = createHexMesh(hexRadiusKm, 10, scene); // 10 subdivisions = 100 quads = 200 tris
+	const hexMesh = createHexMesh(hexRadiusKm, 2, scene); // 2 subdivisions = 96 triangles per hex
 
 	const hexMat = createTerrainMaterial(scene, hexRadiusKm);
 	hexMesh.material = hexMat;
