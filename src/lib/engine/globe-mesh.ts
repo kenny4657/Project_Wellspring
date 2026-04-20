@@ -175,8 +175,9 @@ function distToSegment(
 }
 
 interface CoastlineInfo {
-	hasCoastline: boolean;           // does this water hex have any transition edges?
-	coastlineEdges: boolean[];       // per-edge: true if neighbor has different height
+	hasCoastline: boolean;           // does this hex have edges where it needs to ramp down?
+	allSameHeight: boolean;          // are ALL neighbors at the exact same height level?
+	coastlineEdges: boolean[];       // per-edge: true if we ramp at this edge
 	neighborHeights: number[];       // per-edge: height of the neighbor (for ramp target)
 }
 
@@ -187,6 +188,7 @@ function getCoastlineInfo(cell: HexCell, cellById: Map<number, HexCell>): Coastl
 	const coastlineEdges: boolean[] = new Array(n).fill(true);
 	const neighborHeights: number[] = new Array(n).fill(cell.heightLevel);
 	let sameHeightCount = 0;
+	let exactSameCount = 0;
 
 	for (let i = 0; i < n; i++) {
 		const midX = (cell.corners[i].x + cell.corners[(i + 1) % n].x) / 2;
@@ -211,9 +213,9 @@ function getCoastlineInfo(cell: HexCell, cellById: Map<number, HexCell>): Coastl
 		if (closestNId >= 0) {
 			const neighbor = cellById.get(closestNId)!;
 			neighborHeights[i] = neighbor.heightLevel;
+			if (neighbor.heightLevel === cell.heightLevel) exactSameCount++;
 			if (neighbor.heightLevel >= cell.heightLevel) {
 				// Same height or neighbor is higher → no ramp from our side.
-				// Higher neighbor ramps down to us from their side.
 				coastlineEdges[i] = false;
 				sameHeightCount++;
 			}
@@ -222,6 +224,7 @@ function getCoastlineInfo(cell: HexCell, cellById: Map<number, HexCell>): Coastl
 
 	return {
 		hasCoastline: sameHeightCount < n,
+		allSameHeight: exactSameCount >= n, // ALL neighbors at exact same height
 		coastlineEdges,
 		neighborHeights
 	};
@@ -299,7 +302,8 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 		}
 
 		// ── Deep ocean fast path: flat hex, no subdivision ──
-		const deepOcean = isWaterHex && coastInfo && !coastInfo.hasCoastline;
+		// Only when ALL neighbors are at the exact same height (no edge mismatch)
+		const deepOcean = isWaterHex && coastInfo && coastInfo.allSameHeight;
 
 		if (deepOcean) {
 			// Simple center + corners fan — 6 triangles instead of 384
