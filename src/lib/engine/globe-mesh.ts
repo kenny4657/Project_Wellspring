@@ -45,6 +45,10 @@ const NOISE_SCALE = 35.0;
 
 /** Subdivision levels for hex face tessellation (3 ≈ Sota's divisions=7) */
 const SUBDIVISIONS = 3;
+const CORNER_KEY_SCALE = 1e6;
+const CORNER_EPS2 = 1e-12;
+const COAST_ROUNDING = 0.0018;
+const COAST_SMOOTHING = 0.22;
 
 // ── Noise ───────────────────────────────────────────────────
 
@@ -164,6 +168,14 @@ function distToSegment(
 	ax: number, ay: number, az: number,
 	bx: number, by: number, bz: number
 ): number {
+	return distToSegmentWithT(px, py, pz, ax, ay, az, bx, by, bz).dist;
+}
+
+function distToSegmentWithT(
+	px: number, py: number, pz: number,
+	ax: number, ay: number, az: number,
+	bx: number, by: number, bz: number
+): { dist: number; t: number } {
 	const abx = bx - ax, aby = by - ay, abz = bz - az;
 	const apx = px - ax, apy = py - ay, apz = pz - az;
 	const ab2 = abx * abx + aby * aby + abz * abz;
@@ -171,7 +183,7 @@ function distToSegment(
 	const dx = ax + t * abx - px;
 	const dy = ay + t * aby - py;
 	const dz = az + t * abz - pz;
-	return Math.sqrt(dx * dx + dy * dy + dz * dz);
+	return { dist: Math.sqrt(dx * dx + dy * dy + dz * dz), t };
 }
 
 /** Border info for any hex — controls which edges get cosine ramps.
@@ -182,6 +194,10 @@ interface HexBorderInfo {
 	edgeTargets: number[];     // ramp target height per non-excluded edge
 	allSameHeight: boolean;    // ALL neighbors at exact same height level (deep ocean fast path)
 	hasBorder: boolean;        // has at least one non-excluded edge
+}
+
+function cornerKey(x: number, y: number, z: number): string {
+	return `${Math.round(x * CORNER_KEY_SCALE)},${Math.round(y * CORNER_KEY_SCALE)},${Math.round(z * CORNER_KEY_SCALE)}`;
 }
 
 /** Find the neighbor across a given hex edge (by edge midpoint direction). */
@@ -224,13 +240,11 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 
 		if (isWater) {
 			// ── Water hex edge logic ──
-			// Exclude: same-depth water, or this cell is deeper/equal → stay flat
-			if (nbIsWater && cell.heightLevel <= nb.heightLevel) {
-				excludedEdges[i] = true;
-				excludedCount++;
-			} else if (nbIsWater) {
-				// Shallower water → ramp down to deeper neighbor
-				edgeTargets[i] = getLevelHeight(nb.heightLevel);
+			// Every water edge is an explicit continuity constraint so adjacent
+			// water hexes agree on their shared boundary, even when one cell has
+			// other nearby coast/depth transitions.
+			if (nbIsWater) {
+				edgeTargets[i] = getLevelHeight(Math.min(cell.heightLevel, nb.heightLevel));
 			} else {
 				// Water → land: ramp up to sea level
 				edgeTargets[i] = 0;
@@ -258,6 +272,35 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 	};
 }
 
+function buildCornerTargetMap(cells: HexCell[], borderInfoById: Map<number, HexBorderInfo>): Map<string, number> {
+	const cornerTargets = new Map<string, number>();
+
+	for (const cell of cells) {
+		const borderInfo = borderInfoById.get(cell.id);
+		if (!borderInfo) continue;
+		const isWater = cell.heightLevel <= 1;
+		const n = cell.corners.length;
+
+		for (let i = 0; i < n; i++) {
+			const prev = (i + n - 1) % n;
+			let best = cornerTargets.get(cornerKey(cell.corners[i].x, cell.corners[i].y, cell.corners[i].z)) ?? -Infinity;
+
+			if (isWater || !borderInfo.excludedEdges[prev]) {
+				best = Math.max(best, borderInfo.edgeTargets[prev]);
+			}
+			if (isWater || !borderInfo.excludedEdges[i]) {
+				best = Math.max(best, borderInfo.edgeTargets[i]);
+			}
+
+			if (best > -Infinity) {
+				cornerTargets.set(cornerKey(cell.corners[i].x, cell.corners[i].y, cell.corners[i].z), best);
+			}
+		}
+	}
+
+	return cornerTargets;
+}
+
 /** Compute minimum distance to ANY non-excluded edge, and return the ramp target.
  *  At corners where multiple edges are equidistant (dist≈0), use the HIGHEST target
  *  so all hexes sharing that corner converge to the same height. Without this,
@@ -265,27 +308,153 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
  *  while land and deep both pick target=0 → 127km gap. */
 function distToBorderWithTarget(
 	vx: number, vy: number, vz: number,
-	cell: HexCell, borderInfo: HexBorderInfo
-): { dist: number; target: number } {
+	cell: HexCell, borderInfo: HexBorderInfo, cornerTargets: Map<string, number>
+): { dist: number; target: number; edgeIdx: number; edgeT: number } {
+	for (let i = 0; i < cell.corners.length; i++) {
+		const c = cell.corners[i];
+		const dx = vx - c.x;
+		const dy = vy - c.y;
+		const dz = vz - c.z;
+		if (dx * dx + dy * dy + dz * dz <= CORNER_EPS2) {
+			const target = cornerTargets.get(cornerKey(c.x, c.y, c.z));
+			if (target !== undefined) return { dist: 0, target, edgeIdx: -1, edgeT: 0.5 };
+			break;
+		}
+	}
+
 	const n = cell.corners.length;
 	let minDist = Infinity;
 	let target = -Infinity;
+	let edgeIdx = -1;
+	let edgeT = 0.5;
 	const EPS = 1e-4;
 	for (let i = 0; i < n; i++) {
 		if (borderInfo.excludedEdges[i]) continue;
 		const a = cell.corners[i];
 		const b = cell.corners[(i + 1) % n];
-		const d = distToSegment(vx, vy, vz, a.x, a.y, a.z, b.x, b.y, b.z);
-		if (d < minDist - EPS) {
-			minDist = d;
+		const sample = distToSegmentWithT(vx, vy, vz, a.x, a.y, a.z, b.x, b.y, b.z);
+		if (sample.dist < minDist - EPS) {
+			minDist = sample.dist;
 			target = borderInfo.edgeTargets[i];
-		} else if (d < minDist + EPS) {
+			edgeIdx = i;
+			edgeT = sample.t;
+		} else if (sample.dist < minDist + EPS) {
 			// Multiple edges at similar distance (corner) — use highest target
-			target = Math.max(target, borderInfo.edgeTargets[i]);
-			if (d < minDist) minDist = d;
+			if (borderInfo.edgeTargets[i] > target) {
+				target = borderInfo.edgeTargets[i];
+				edgeIdx = i;
+				edgeT = sample.t;
+			}
+			if (sample.dist < minDist) minDist = sample.dist;
 		}
 	}
-	return { dist: minDist, target };
+	return { dist: minDist, target, edgeIdx, edgeT };
+}
+
+function smoothMin(a: number, b: number, k: number): number {
+	if (k <= 0) return Math.min(a, b);
+	const h = Math.max(k - Math.abs(a - b), 0) / k;
+	return Math.min(a, b) - h * h * k * 0.25;
+}
+
+function smoothDistanceToTargetEdges(
+	vx: number, vy: number, vz: number,
+	cell: HexCell,
+	borderInfo: HexBorderInfo,
+	targetHeight: number,
+	hexRadius: number
+): number {
+	const n = cell.corners.length;
+	const k = hexRadius * COAST_SMOOTHING;
+	let result = Infinity;
+
+	for (let i = 0; i < n; i++) {
+		if (borderInfo.excludedEdges[i]) continue;
+		if (Math.abs(borderInfo.edgeTargets[i] - targetHeight) > 1e-9) continue;
+		const a = cell.corners[i];
+		const b = cell.corners[(i + 1) % n];
+		const d = distToSegment(vx, vy, vz, a.x, a.y, a.z, b.x, b.y, b.z);
+		result = Number.isFinite(result) ? smoothMin(result, d, k) : d;
+	}
+
+	return result;
+}
+
+/** Compute the top-surface height at a point using the same logic as the subdivided top face. */
+function computeSurfaceHeight(
+	ux: number, uy: number, uz: number,
+	cell: HexCell,
+	borderInfo: HexBorderInfo,
+	cornerTargets: Map<string, number>,
+	hexRadius: number,
+	tierH: number,
+	isWaterHex: boolean
+): number {
+	const noiseH = fbmNoise(ux * NOISE_SCALE, uy * NOISE_SCALE, uz * NOISE_SCALE);
+
+	if (isWaterHex && borderInfo.allSameHeight) {
+		return tierH + noiseH * NOISE_AMP;
+	}
+
+	if (borderInfo.hasBorder) {
+		const nearest = distToBorderWithTarget(ux, uy, uz, cell, borderInfo, cornerTargets);
+		let dist = nearest.dist;
+		const borderTarget = nearest.target;
+		const edgeIdx = nearest.edgeIdx;
+		const edgeT = nearest.edgeT;
+
+		// Round coastline corners by blending adjacent coast-edge distance fields
+		// into a smooth union instead of using a hard nearest-edge switch.
+		if (borderTarget === 0) {
+			dist = Math.min(dist, smoothDistanceToTargetEdges(ux, uy, uz, cell, borderInfo, 0, hexRadius));
+		}
+
+		const t = Math.min(dist / hexRadius, 1.0);
+		const mu = (1 - Math.cos(t * Math.PI)) / 2;
+
+		// Noise coefficient must MATCH at shared borders:
+		// - Water↔water: border noise = NOISE_AMP (flat neighbor uses full noise)
+		// - Water↔land: border noise = NOISE_AMP * 0.3 (both sides use 0.3 at coast)
+		const isWaterNeighborBorder = borderTarget < -0.001;
+		const borderNoise = isWaterNeighborBorder ? NOISE_AMP : NOISE_AMP * 0.3;
+		const interiorNoise = isWaterHex ? NOISE_AMP * 0.3 : NOISE_AMP;
+		const noiseCoeff = interiorNoise * mu + borderNoise * (1 - mu);
+		let h = tierH * mu + borderTarget * (1 - mu) + noiseH * noiseCoeff;
+
+		// Keep coastline continuity exact at the shared edge, but hold the terrain
+		// slightly lower around the middle of each coastal edge so the visible
+		// shoreline contour reads rounder and less like a straight hex cut.
+		if (borderTarget === 0 && edgeIdx >= 0) {
+			const coastMid = 4 * edgeT * (1 - edgeT);      // 0 at corners, 1 at edge midpoint
+			const coastBlend = mu * (1 - mu);              // 0 on the edge and in the far interior
+			h -= COAST_ROUNDING * coastMid * coastBlend * 4;
+		}
+
+		return h;
+	}
+
+	return tierH + noiseH * NOISE_AMP;
+}
+
+/** Recursively build the same normalized edge polyline used by the subdivided top face. */
+function subdivideEdge(
+	ax: number, ay: number, az: number,
+	bx: number, by: number, bz: number,
+	level: number,
+	out: number[]
+): void {
+	if (level === 0) {
+		out.push(ax, ay, az, bx, by, bz);
+		return;
+	}
+
+	let mx = (ax + bx) * 0.5, my = (ay + by) * 0.5, mz = (az + bz) * 0.5;
+	const ml = Math.sqrt(mx * mx + my * my + mz * mz) || 1;
+	mx /= ml; my /= ml; mz /= ml;
+
+	subdivideEdge(ax, ay, az, mx, my, mz, level - 1, out);
+	out.pop(); out.pop(); out.pop(); // avoid duplicating the midpoint
+	subdivideEdge(mx, my, mz, bx, by, bz, level - 1, out);
 }
 
 // ── Build Globe Mesh ────────────────────────────────────────
@@ -310,6 +479,9 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 	// Build cell-by-ID lookup for neighbor queries
 	const cellById = new Map<number, HexCell>();
 	for (const c of cells) cellById.set(c.id, c);
+	const borderInfoById = new Map<number, HexBorderInfo>();
+	for (const c of cells) borderInfoById.set(c.id, getHexBorderInfo(c, cellById));
+	const cornerTargets = buildCornerTargetMap(cells, borderInfoById);
 
 
 	for (let ci = 0; ci < cells.length; ci++) {
@@ -327,7 +499,7 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 		// Border info for coastline ramps — applies to BOTH water and land hexes.
 		// Water hexes: ramp at water→land and water→water depth transitions.
 		// Land hexes: ramp at land→water coastline edges (smooth slope to sea level).
-		const borderInfo = getHexBorderInfo(cell, cellById);
+		const borderInfo = borderInfoById.get(cell.id)!;
 		let hexRadius = 0;
 		if (borderInfo.hasBorder) {
 			for (let i = 0; i < n; i++) {
@@ -338,34 +510,6 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 			}
 			hexRadius /= n;
 		}
-
-		// Deep ocean fast path: flat hex when ALL neighbors are same height water
-		const deepOcean = isWaterHex && borderInfo.allSameHeight;
-
-		if (deepOcean) {
-			// Simple center + corners fan — 6 triangles instead of 384
-			const flatR = radius * (1 + tierH);
-
-			// Center vertex
-			positions.push(cell.center.x * flatR, cell.center.y * flatR, cell.center.z * flatR);
-			normals.push(cell.center.x, cell.center.y, cell.center.z);
-			colors.push(color[0], color[1], color[2], 1.0);
-			const centerOff = vOff++;
-
-			// Corner vertices
-			for (let i = 0; i < n; i++) {
-				const c = cell.corners[i];
-				positions.push(c.x * flatR, c.y * flatR, c.z * flatR);
-				normals.push(c.x, c.y, c.z);
-				colors.push(color[0], color[1], color[2], 1.0);
-				vOff++;
-			}
-			// Fan triangles (CW from outside)
-			for (let i = 0; i < n; i++) {
-				indices.push(centerOff, centerOff + 1 + (i + 1) % n, centerOff + 1 + i);
-			}
-
-		} else {
 
 		// ── Subdivided top face ─────────────────────────────
 		for (let i = 0; i < n; i++) {
@@ -386,30 +530,7 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 					const ux = triVerts[j + k * 3];
 					const uy = triVerts[j + k * 3 + 1];
 					const uz = triVerts[j + k * 3 + 2];
-
-					const noiseH = fbmNoise(ux * NOISE_SCALE, uy * NOISE_SCALE, uz * NOISE_SCALE);
-
-					let h: number;
-					if (borderInfo.hasBorder) {
-						// Sota-style distance_to_border with per-edge targets.
-						// Both water AND land hexes ramp at coastlines → they meet at sea level.
-						// Water→water depth transitions ramp to neighbor's height.
-						const { dist, target: borderTarget } = distToBorderWithTarget(ux, uy, uz, cell, borderInfo);
-						const t = Math.min(dist / hexRadius, 1.0);
-						const mu = (1 - Math.cos(t * Math.PI)) / 2;
-
-						// Noise coefficient must MATCH at shared borders:
-						// - Water↔water: border noise = NOISE_AMP (flat neighbor uses full noise)
-						// - Water↔land: border noise = NOISE_AMP * 0.3 (both sides use 0.3 at coast)
-						const isWaterNeighborBorder = borderTarget < -0.001;
-						const borderNoise = isWaterNeighborBorder ? NOISE_AMP : NOISE_AMP * 0.3;
-						const interiorNoise = isWaterHex ? NOISE_AMP * 0.3 : NOISE_AMP;
-						const noiseCoeff = interiorNoise * mu + borderNoise * (1 - mu);
-
-						h = tierH * mu + borderTarget * (1 - mu) + noiseH * noiseCoeff;
-					} else {
-						h = tierH + noiseH * NOISE_AMP;
-					}
+					const h = computeSurfaceHeight(ux, uy, uz, cell, borderInfo, cornerTargets, hexRadius, tierH, isWaterHex);
 
 					const r = radius * (1 + h);
 					displaced.push(ux * r, uy * r, uz * r);
@@ -457,44 +578,54 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 			// Only emit wall from the HIGHER land hex.
 			if (nb.heightLevel >= cell.heightLevel) continue;
 
-			const wn0 = fbmNoise(c0.x * NOISE_SCALE, c0.y * NOISE_SCALE, c0.z * NOISE_SCALE);
-			const wn1 = fbmNoise(c1.x * NOISE_SCALE, c1.y * NOISE_SCALE, c1.z * NOISE_SCALE);
-			const topR0 = radius * (1 + tierH + wn0 * NOISE_AMP);
-			const topR1 = radius * (1 + tierH + wn1 * NOISE_AMP);
+			const edgePoints: number[] = [];
+			subdivideEdge(c0.x, c0.y, c0.z, c1.x, c1.y, c1.z, SUBDIVISIONS, edgePoints);
 
-			const midX = (c0.x + c1.x) * 0.5;
-			const midY = (c0.y + c1.y) * 0.5;
-			const midZ = (c0.z + c1.z) * 0.5;
-			let wnx = midX - cell.center.x;
-			let wny = midY - cell.center.y;
-			let wnz = midZ - cell.center.z;
-			const wnLen = Math.sqrt(wnx * wnx + wny * wny + wnz * wnz) || 1;
-			wnx /= wnLen; wny /= wnLen; wnz /= wnLen;
+			for (let p = 0; p < edgePoints.length - 3; p += 3) {
+				const ux0 = edgePoints[p];
+				const uy0 = edgePoints[p + 1];
+				const uz0 = edgePoints[p + 2];
+				const ux1 = edgePoints[p + 3];
+				const uy1 = edgePoints[p + 4];
+				const uz1 = edgePoints[p + 5];
 
-			const wallOff = vOff;
+				const h0 = computeSurfaceHeight(ux0, uy0, uz0, cell, borderInfo, cornerTargets, hexRadius, tierH, isWaterHex);
+				const h1 = computeSurfaceHeight(ux1, uy1, uz1, cell, borderInfo, cornerTargets, hexRadius, tierH, isWaterHex);
+				const topR0 = radius * (1 + h0);
+				const topR1 = radius * (1 + h1);
 
-			positions.push(c0.x * topR0, c0.y * topR0, c0.z * topR0);
-			normals.push(wnx, wny, wnz);
-			colors.push(color[0], color[1], color[2], 0.0);
+				const midX = (ux0 + ux1) * 0.5;
+				const midY = (uy0 + uy1) * 0.5;
+				const midZ = (uz0 + uz1) * 0.5;
+				let wnx = midX - cell.center.x;
+				let wny = midY - cell.center.y;
+				let wnz = midZ - cell.center.z;
+				const wnLen = Math.sqrt(wnx * wnx + wny * wny + wnz * wnz) || 1;
+				wnx /= wnLen; wny /= wnLen; wnz /= wnLen;
 
-			positions.push(c1.x * topR1, c1.y * topR1, c1.z * topR1);
-			normals.push(wnx, wny, wnz);
-			colors.push(color[0], color[1], color[2], 0.0);
+				const wallOff = vOff;
 
-			positions.push(c0.x * botR, c0.y * botR, c0.z * botR);
-			normals.push(wnx, wny, wnz);
-			colors.push(color[0], color[1], color[2], 0.0);
+				positions.push(ux0 * topR0, uy0 * topR0, uz0 * topR0);
+				normals.push(wnx, wny, wnz);
+				colors.push(color[0], color[1], color[2], 0.0);
 
-			positions.push(c1.x * botR, c1.y * botR, c1.z * botR);
-			normals.push(wnx, wny, wnz);
-			colors.push(color[0], color[1], color[2], 0.0);
+				positions.push(ux1 * topR1, uy1 * topR1, uz1 * topR1);
+				normals.push(wnx, wny, wnz);
+				colors.push(color[0], color[1], color[2], 0.0);
 
-			indices.push(wallOff + 0, wallOff + 1, wallOff + 2);
-			indices.push(wallOff + 1, wallOff + 3, wallOff + 2);
-			vOff += 4;
+				positions.push(ux0 * botR, uy0 * botR, uz0 * botR);
+				normals.push(wnx, wny, wnz);
+				colors.push(color[0], color[1], color[2], 0.0);
+
+				positions.push(ux1 * botR, uy1 * botR, uz1 * botR);
+				normals.push(wnx, wny, wnz);
+				colors.push(color[0], color[1], color[2], 0.0);
+
+				indices.push(wallOff + 0, wallOff + 1, wallOff + 2);
+				indices.push(wallOff + 1, wallOff + 3, wallOff + 2);
+				vOff += 4;
+			}
 		}
-
-		} // end of non-deep-ocean block
 
 		totalVerticesPerCell.push(vOff - startVOff);
 	}
