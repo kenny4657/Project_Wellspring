@@ -9,7 +9,7 @@ Every rule below must hold simultaneously. Fixing one gap must not break another
 ## Hard Constraints (NEVER violate)
 
 ### 1. Land hexes MUST ramp at water borders
-Land hexes ramp down to sea level at coastline edges. This was explicitly requested and creates the smooth coastline transition. **NEVER revert to flat land + wall at coastline.**
+Land hexes ramp down to sea level at coastline edges. This creates the smooth coastline transition. **NEVER revert to flat land + wall at coastline.**
 
 ### 2. Land-land transitions use walls, NOT ramps
 Land hex ramps ONLY apply at water-adjacent edges. Land-land height transitions MUST use walls from the higher hex. A land ramp that affects vertices at land-land corners creates 100+ km height mismatches (proven by gap detection).
@@ -17,27 +17,53 @@ Land hex ramps ONLY apply at water-adjacent edges. Land-land height transitions 
 ### 3. Water hexes ramp — never use walls
 Water→land: ramp to sea level. Water→water different depth: shallower ramps to deeper. Same-depth water: excluded (continuous flat). No walls ever on water hexes.
 
-### 4. No deep ocean flat fast path
-Flat fan geometry (6 tris) creates topology mismatches with adjacent subdivided hexes (384 tris). All hexes must use full subdivision for consistent edge vertices.
+### 4. Deep ocean flat fast path is OK
+Only when `allSameHeight` (ALL neighbors exact same height). These hexes are surrounded by identical-height water so no edge mismatches.
 
-## The Land Ramp Problem (UNSOLVED)
+## Solved: The Triple Junction Gap
 
-A land hex bordering BOTH water AND higher land has conflicting needs:
-- It must ramp at its water edges (constraint #1)
-- It must stay at full tier height at its land-land wall edges (constraint #2)
+### Problem
+At corners where land + shallow water + deep water meet, the shallow hex's `distToBorderWithTarget` could arbitrarily pick the deep-water edge (target=-0.020) instead of the land edge (target=0). Land and deep both computed target=0, shallow computed target=-0.020 → 127km gap.
 
-The current `distToBorder` approach applies the ramp globally based on distance to the nearest non-excluded edge. If water is the nearest non-excluded edge, ALL vertices get pulled toward sea level — including corners shared with higher land hexes. This creates huge gaps (127+ km) at those corners.
+### Solution (Codex)
+**`buildCornerTargetMap`**: Pre-computes the correct ramp target at every hex corner by taking the MAX target across all non-excluded edges touching that corner, across ALL hexes sharing that corner. This is stored in a global `Map<string, number>`.
 
-**The fix must**: ramp land vertices near water edges WITHOUT affecting vertices near land-land edges. This requires either:
-- A per-vertex blend that considers distance to BOTH water edges and land-land edges
-- Or separate distance fields for coastline vs interior
+**`distToBorderWithTarget` corner fast-path**: When a vertex is at a hex corner (within `CORNER_EPS2`), it looks up the pre-computed target instead of iterating edges. All hexes sharing that corner get the same target → same height → no gap.
+
+## Solved: Wall Gaps at Ramp Corners
+
+### Problem
+Wall tops used flat `tierH + noise` but the top face used the ramp formula. At corners where a wall edge meets a coastline ramp, wall top ≠ surface → gap.
+
+### Solution (Codex)
+1. **`computeSurfaceHeight` helper**: Extracted the height formula (ramp + noise) into a shared function used by BOTH the top face subdivision AND the wall generation. Walls and surface always agree.
+2. **`subdivideEdge`**: Walls are subdivided along the edge to match the top face's subdivision points, so intermediate wall segments follow the noise displacement exactly.
+
+## Solved: Coastline Smoothing
+
+### Smooth distance blending
+`smoothDistanceToTargetEdges` uses `smoothMin` (smooth minimum) to blend distance fields from multiple coastline edges. This rounds coastline corners instead of creating sharp hex-shaped cuts.
+
+### Coast rounding
+`COAST_ROUNDING` applies a subtle height depression at the midpoint of each coastal edge (`coastMid * coastBlend`), making shoreline contours read rounder.
+
+## Architecture Summary
+
+```
+getHexBorderInfo(cell)     → per-edge: excluded?, target, for each hex
+buildCornerTargetMap(cells) → per-corner: max target across all hexes (global)
+distToBorderWithTarget(v)   → corner lookup OR nearest edge with max-target tiebreak
+computeSurfaceHeight(v)     → ramp + noise, used by both top face and walls
+subdivideEdge(c0,c1,level)  → edge points matching top face subdivision
+```
 
 ## Noise Rules
 
 - At water-water borders: both sides must use `NOISE_AMP` (full)
-- At water-land borders: both sides must use matching noise coefficient
-- Water hexes without borders use `h = tierH + noise * NOISE_AMP`
-- The noise coefficient interpolation (0.3× interior vs 1.0× border for water) creates mismatches when a water hex has borders to both land and other water
+- At water-land borders (coastline): both sides use `NOISE_AMP * 0.3`
+- Water interior: `NOISE_AMP * 0.3` (calm water)
+- Land interior: `NOISE_AMP` (full terrain noise)
+- Flat hexes (no border): `tierH + noise * NOISE_AMP`
 
 ## Shader Boundary
 
