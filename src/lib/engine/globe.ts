@@ -63,7 +63,7 @@ export interface GlobeEngine {
 }
 
 /** H3 resolution for the hex grid */
-const H3_RES = 3; // ~12K cells for prototyping (res 4 = ~80K, too slow for initial dev)
+const H3_RES = 3;
 
 /**
  * Create and return a fully initialized globe engine bound to the given canvas.
@@ -129,7 +129,8 @@ export async function createGlobeEngine(
 	camera.pitch = 0;
 	camera.yaw = 0;
 
-	camera.limits.radiusMin = EARTH_RADIUS_KM + 5; // ~5km above surface
+	// Hexes are at EARTH_RADIUS_KM + 15. Camera must stay above them.
+	camera.limits.radiusMin = EARTH_RADIUS_KM + 100; // 100km above surface, ~85km above hex tiles
 	camera.limits.radiusMax = EARTH_RADIUS_KM * 5;
 	camera.limits.pitchMax = Math.PI / 2.5;
 
@@ -222,9 +223,12 @@ export async function createGlobeEngine(
 		}
 	});
 
+	// Expose for debugging
+	(window as any).__scene = scene;
+	(window as any).__camera = camera;
+
 	// ── Render Loop ─────────────────────────────────────────
 	engine.runRenderLoop(() => {
-		// Keep headlight at camera position
 		cameraLight.position.copyFrom(camera.position);
 		scene.render();
 	});
