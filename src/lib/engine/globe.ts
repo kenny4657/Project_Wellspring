@@ -3,16 +3,14 @@
  *
  * Uses Sota-style icosahedral projection: hex vertices are projected
  * directly onto the sphere surface — zero gaps, zero z-fighting.
+ * Procedural ShaderMaterial for per-biome textures and rock/dirt walls.
  */
 import { Engine } from '@babylonjs/core/Engines/engine';
 import { Scene } from '@babylonjs/core/scene';
 import { Vector3, Color3, Color4 } from '@babylonjs/core/Maths/math';
 import { MeshBuilder } from '@babylonjs/core/Meshes/meshBuilder';
-import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
-import { VertexBuffer } from '@babylonjs/core/Buffers/buffer';
 import { DirectionalLight } from '@babylonjs/core/Lights/directionalLight';
 import { HemisphericLight } from '@babylonjs/core/Lights/hemisphericLight';
-import { PointLight } from '@babylonjs/core/Lights/pointLight';
 import { GeospatialCamera } from '@babylonjs/core/Cameras/geospatialCamera';
 
 import '@babylonjs/core/Shaders/default.vertex';
@@ -21,17 +19,20 @@ import '@babylonjs/core/Animations/animatable';
 
 import { EARTH_RADIUS_KM, latLngToWorld } from '$lib/geo/coords';
 import { generateIcoHexGrid, type HexCell } from '$lib/engine/icosphere';
-import { buildGlobeMesh, updateCellTerrain } from '$lib/engine/globe-mesh';
+import { buildGlobeMesh, buildHexEdgeLines, updateCellTerrain } from '$lib/engine/globe-mesh';
+import { createTerrainMaterial } from '$lib/engine/terrain-material';
 import { pickHexAtScreen } from '$lib/engine/picking';
+import { assignTerrain } from '$lib/engine/terrain-gen';
 import { TERRAIN_TYPES, type TerrainTypeId } from '$lib/world/terrain-types';
 
-/** Icosphere resolution — controls hex count. Total ≈ 10 * res² + 2 */
-const ICO_RESOLUTION = 20; // ~4000 hexes
+/** Icosphere resolution — controls hex count. Total ~ 10 * res² + 2 */
+const ICO_RESOLUTION = 20;
 
 export interface GlobeEngine {
 	dispose(): void;
 	flyTo(lat: number, lng: number, altitude?: number): void;
 	setHexTerrain(cellIndex: number, terrain: TerrainTypeId): void;
+	setGridVisible(visible: boolean): void;
 	readonly hexCount: number;
 	readonly cells: HexCell[];
 	onHexClick: ((cellIndex: number) => void) | null;
@@ -54,21 +55,15 @@ export async function createGlobeEngine(
 	const scene = new Scene(engine);
 	scene.clearColor = new Color4(0.02, 0.03, 0.08, 1);
 
-	// ── Lighting ────────────────────────────────────────────
+	// ── Lighting (scene lights for any non-shader meshes) ───
 	const hemiLight = new HemisphericLight('hemi', new Vector3(0, 1, 0), scene);
-	hemiLight.intensity = 1.2;
-	hemiLight.groundColor = new Color3(0.4, 0.4, 0.5);
+	hemiLight.intensity = 0.6;
 
 	const sunLight = new DirectionalLight('sun', new Vector3(1, -0.5, -0.3).normalize(), scene);
-	sunLight.intensity = 1.5;
+	sunLight.intensity = 0.8;
 	sunLight.diffuse = new Color3(1, 0.98, 0.92);
 
-	const fillLight = new DirectionalLight('fill', new Vector3(-1, 0.3, 0.5).normalize(), scene);
-	fillLight.intensity = 0.8;
-	fillLight.diffuse = new Color3(0.7, 0.75, 0.9);
-
 	// ── Camera ──────────────────────────────────────────────
-	// Match pickSphere radius to the hex mesh surface (deep ocean default = radius * 0.997)
 	const pickSphere = MeshBuilder.CreateSphere('pickSphere', {
 		diameter: EARTH_RADIUS_KM * 2 * 0.997,
 		segments: 32
@@ -81,14 +76,9 @@ export async function createGlobeEngine(
 		pickPredicate: (mesh) => mesh === pickSphere
 	});
 
-	const cameraLight = new PointLight('cameraLight', camera.position.clone(), scene);
-	cameraLight.intensity = 0.8;
-	cameraLight.diffuse = new Color3(1, 1, 1);
-	cameraLight.range = EARTH_RADIUS_KM * 10;
-
 	const startCenter = latLngToWorld(35, -20, EARTH_RADIUS_KM);
 	camera.center = startCenter;
-	camera.radius = 15000;
+	camera.radius = 12000;
 	camera.pitch = 0;
 	camera.yaw = 0;
 
@@ -98,7 +88,7 @@ export async function createGlobeEngine(
 	camera.minZ = 1;
 	camera.maxZ = EARTH_RADIUS_KM * 20;
 
-	camera.attachControl(canvas, true);
+	camera.attachControl(true);
 
 	// ── Generate Icosahedral Hex Grid ────────────────────────
 	report('Generating icosahedral hex grid...');
@@ -108,22 +98,31 @@ export async function createGlobeEngine(
 	report(`Generated ${cells.length} hex cells`);
 	await tick();
 
+	// ── Assign Procedural Terrain ───────────────────────────
+	report('Generating terrain...');
+	await tick();
+	assignTerrain(cells);
+
 	// ── Build Globe Mesh ────────────────────────────────────
 	report('Building globe mesh...');
 	await tick();
 
-	const { mesh: globeMesh, vertexStarts, totalVerticesPerCell, colorsBuffer, positionsBuffer } = buildGlobeMesh(cells, EARTH_RADIUS_KM, scene);
+	const { mesh: globeMesh, vertexStarts, totalVerticesPerCell, colorsBuffer, positionsBuffer } =
+		buildGlobeMesh(cells, EARTH_RADIUS_KM, scene);
 
-	const mat = new StandardMaterial('globeMat', scene);
-	mat.diffuseColor = new Color3(1, 1, 1);
-	mat.specularColor = new Color3(0.15, 0.15, 0.15);
-	mat.backFaceCulling = true;
-	// Vertex colors multiply with diffuseColor — white diffuse means vertex colors show through
-	globeMesh.material = mat;
+	// Procedural terrain ShaderMaterial
+	const terrainMat = createTerrainMaterial(scene);
+	globeMesh.material = terrainMat;
 	globeMesh.hasVertexAlpha = false;
 	globeMesh.isPickable = true;
 
-	report(`Globe mesh: ${globeMesh.getTotalVertices().toLocaleString()} vertices, ${cells.length} cells`);
+	// ── Hex Edge Wireframe ──────────────────────────────────
+	report('Building hex grid overlay...');
+	await tick();
+	const edgeLines = buildHexEdgeLines(cells, EARTH_RADIUS_KM, scene);
+	edgeLines.setEnabled(false); // off by default — Sota style uses geometry, not grid lines
+
+	report(`Globe ready: ${cells.length} cells, ${globeMesh.getTotalVertices().toLocaleString()} vertices`);
 
 	// ── Picking / Painting ──────────────────────────────────
 	let onHexClickCallback: ((cellIndex: number) => void) | null = null;
@@ -138,7 +137,6 @@ export async function createGlobeEngine(
 			const dx = e.clientX - pointerDownPos.x;
 			const dy = e.clientY - pointerDownPos.y;
 			if (Math.sqrt(dx * dx + dy * dy) < 5) {
-				// Use Babylon's tracked pointer position for accurate picking
 				const idx = pickHexAtScreen(scene, globeMesh, scene.pointerX, scene.pointerY, cells);
 				if (idx >= 0) onHexClickCallback?.(idx);
 			}
@@ -148,7 +146,8 @@ export async function createGlobeEngine(
 
 	// ── Render Loop ─────────────────────────────────────────
 	engine.runRenderLoop(() => {
-		cameraLight.position.copyFrom(camera.position);
+		// Update camera position uniform for shader lighting
+		terrainMat.setVector3('cameraPos', camera.position);
 		scene.render();
 	});
 
@@ -171,6 +170,10 @@ export async function createGlobeEngine(
 		setHexTerrain(cellIndex: number, terrain: TerrainTypeId) {
 			cells[cellIndex].terrain = TERRAIN_TYPES[terrain];
 			updateCellTerrain(globeMesh, cells, cellIndex, vertexStarts, totalVerticesPerCell, EARTH_RADIUS_KM, colorsBuffer, positionsBuffer);
+		},
+
+		setGridVisible(visible: boolean) {
+			edgeLines.setEnabled(visible);
 		},
 
 		get hexCount() { return cells.length; },

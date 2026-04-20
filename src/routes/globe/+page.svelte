@@ -10,6 +10,7 @@
 	let error = $state<string | null>(null);
 	let selectedTerrain = $state<TerrainTypeId>('plains');
 	let hexCount = $state(0);
+	let gridVisible = $state(false);
 
 	onMount(async () => {
 		try {
@@ -76,10 +77,14 @@
 			{/each}
 		</div>
 
-		<!-- Camera -->
+		<!-- View -->
 		<div class="px-3 py-2 border-t border-[rgba(255,255,255,0.08)] space-y-1">
-			<div class="text-[10px] uppercase tracking-wider text-[#A09890] mb-1">Camera</div>
-			<div class="flex gap-1 flex-wrap">
+			<div class="text-[10px] uppercase tracking-wider text-[#A09890] mb-1">View</div>
+			<label class="flex items-center gap-2 text-xs cursor-pointer">
+				<input type="checkbox" bind:checked={gridVisible} onchange={() => engine?.setGridVisible(gridVisible)} class="accent-[#C4A96A]" />
+				Hex grid
+			</label>
+			<div class="flex gap-1 flex-wrap mt-1">
 				<button class="tool-btn" onclick={() => engine?.flyTo(48.86, 2.35, 500)}>Paris</button>
 				<button class="tool-btn" onclick={() => engine?.flyTo(40.71, -74.01, 500)}>NYC</button>
 				<button class="tool-btn" onclick={() => engine?.flyTo(35.68, 139.69, 500)}>Tokyo</button>
