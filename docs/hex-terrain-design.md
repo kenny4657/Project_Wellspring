@@ -177,39 +177,55 @@ A "river hex" terrain type would mean an entire 45km hex is a river — far too 
 
 ## Rendering Architecture
 
-### Per-Terrain-Type Thin Instance Groups
+### Shader-Driven Single-Mesh Approach (Recommended)
 
-All hexes sharing a terrain type share the same source mesh. Each terrain type is a separate thin-instance group.
+All hexes share **one subdivided hex mesh template**. Terrain shape, elevation, material, and transitions are handled entirely in the vertex and fragment shaders via per-instance attributes. No separate edge piece geometry. No per-terrain-type mesh groups.
 
 ```
 Rendering Registry
 ┌──────────────────┬──────────────┬───────────────┬──────────────────┐
 │ Component        │ Source Mesh  │ Instance Count│ Draw Calls       │
 ├──────────────────┼──────────────┼───────────────┼──────────────────┤
-│ BASE TILES       │              │               │                  │
-│  deep_ocean      │ ocean.glb    │ ~25,000       │ 1                │
-│  plains          │ plains.glb   │ ~12,000       │ 1                │
-│  mountain        │ mountain.glb │ ~3,000        │ 1                │
-│  forest          │ forest.glb   │ ~8,000        │ 1                │
-│  lake            │ lake.glb     │ ~1,500        │ 1                │
-│  ...             │ ...          │ ...           │ ...              │
-│  (subtotal)      │ ~17 meshes   │ ~80,000       │ ~17              │
+│ Hex tiles        │ 1 shared     │ 80,000        │ 1                │
+│                  │ subdivided   │               │                  │
+│                  │ hex mesh     │               │                  │
 ├──────────────────┼──────────────┼───────────────┼──────────────────┤
-│ EDGE PIECES      │              │               │                  │
-│  shore           │ shore.glb    │ ~15,000       │ 1                │
-│  cliff           │ cliff.glb    │ ~8,000        │ 1                │
-│  slope           │ slope.glb    │ ~12,000       │ 1                │
-│  treeline        │ treeline.glb │ ~6,000        │ 1                │
-│  ...             │ ...          │ ...           │ ...              │
-│  (subtotal)      │ ~8 meshes    │ ~100,000      │ ~8               │
+│ Rivers           │ GreasedLine  │ 1 merged mesh │ 1                │
 ├──────────────────┼──────────────┼───────────────┼──────────────────┤
-│ RIVERS           │ GreasedLine  │ 1 merged mesh │ 1                │
-├──────────────────┼──────────────┼───────────────┼──────────────────┤
-│ TOTAL            │ ~26 meshes   │ ~180,000 inst │ ~26 draw calls   │
+│ TOTAL            │ 2 meshes     │ ~80,000 inst  │ 2 draw calls     │
 └──────────────────┴──────────────┴───────────────┴──────────────────┘
 ```
 
-~26 draw calls for 80K hexes + transitions + rivers. Scales linearly with hex count — at 500K hexes, still ~26 draw calls.
+2 draw calls for 80K hexes + rivers. At 500K hexes, still 2 draw calls.
+
+### Why This Works
+
+Going fully procedural means the GPU can compute everything that was previously baked into different mesh geometries:
+
+| Pre-made model approach | Shader-driven approach |
+|------------------------|----------------------|
+| 17 different mesh shapes | 1 mesh, vertex shader selects displacement profile |
+| 8 edge piece meshes | Fragment shader blends materials at hex edges |
+| ~26 draw calls | 2 draw calls |
+| Moving hex between groups on terrain change | Update 7 instance attributes (self + neighbors) |
+| Edge piece rebuild on terrain change | No rebuild — shader reads neighbor data per-frame |
+
+### Shared Hex Mesh Template
+
+One hex mesh used by all instances. Subdivided enough for terrain displacement:
+
+```
+Subdivision 0:  6 triangles    (~18 vertices)   — flat hex
+Subdivision 1:  24 triangles   (~37 vertices)   — gentle bumps
+Subdivision 2:  96 triangles   (~61 vertices)   — visible terrain shape  ← target
+Subdivision 3:  384 triangles  (~217 vertices)  — detailed terrain
+```
+
+**Target: subdivision level 2** (~96 triangles, ~61 vertices per hex)
+- 80K hexes × 96 tris = 7.7M triangles — well within budget
+- 500K hexes × 96 tris = 48M triangles — feasible, may need LOD
+
+The mesh includes **skirt vertices** extending below the hex footprint (ring of downward-facing triangles at each edge). The vertex shader positions skirts based on the hex's elevation tier.
 
 ### Instance Data Per Hex
 
@@ -218,101 +234,252 @@ Each thin instance carries:
 | Attribute | Stride | Purpose |
 |-----------|--------|---------|
 | `matrix` | 16 floats | Position + rotation on globe surface |
+| `terrainData` | 8 floats | Terrain type (1) + 6 neighbor types + padding |
 | `color` | 4 floats | Province/country tint (RGBA) |
 
-Total per instance: 80 bytes. For 80K hexes: ~6.4 MB GPU buffer. For 500K: ~40 MB.
+Total per instance: 112 bytes. For 80K hexes: ~9 MB GPU buffer. For 500K: ~56 MB.
 
-The matrix encodes:
-1. **Translation** — position on globe surface at the terrain type's elevation tier
-2. **Rotation** — orient hex flat-face tangent to sphere surface
-3. **Scale** — uniform, derived from H3 cell size at that latitude
+```typescript
+// Per-instance attribute layout
+terrainData[0] = terrainTypeIndex;       // 0-16, indexes into terrain params
+terrainData[1] = neighborType_edge0;     // neighbor terrain type for edge 0
+terrainData[2] = neighborType_edge1;     // ... edge 1
+terrainData[3] = neighborType_edge2;     // ... edge 2
+terrainData[4] = neighborType_edge3;     // ... edge 3
+terrainData[5] = neighborType_edge4;     // ... edge 4
+terrainData[6] = neighborType_edge5;     // ... edge 5
+terrainData[7] = 0;                      // padding / future use
+```
 
-### Terrain Type Change (Moving Between Groups)
+### Vertex Shader: Terrain Displacement
 
-When a hex changes terrain (e.g., plains → mountain via editor):
+The vertex shader transforms the flat subdivided hex into terrain-specific geometry:
 
-1. Remove the hex from the old group's instance buffer (swap with last element, shrink count)
-2. Add the hex to the new group's instance buffer (append, grow count)
-3. Update the index mapping: `hexIndex[h3] = { terrainType, bufferIndex }`
-4. Call `thinInstanceBufferUpdated("matrix")` and `thinInstanceBufferUpdated("color")` on both groups
+```glsl
+// Terrain parameters table (uniform buffer, one row per terrain type)
+// Each row: [tier_height, noise_amplitude, noise_frequency, noise_ridged]
+uniform vec4 terrainParams[17];
 
-This is an O(1) operation per hex. Batch operations (e.g., flood-fill terrain painting) update multiple hexes then call `bufferUpdated` once per affected group.
+// Per-instance attributes
+attribute float terrainType;
+attribute float neighbor0, neighbor1, neighbor2, neighbor3, neighbor4, neighbor5;
+
+void main() {
+    vec4 params = terrainParams[int(terrainType)];
+    float tierHeight = params.x;
+    float amplitude = params.y;
+    float frequency = params.z;
+
+    // 1. Compute distance from hex center (0 at center, 1 at edge)
+    float distFromCenter = length(localPosition.xz) / HEX_RADIUS;
+
+    // 2. Determine which edge this vertex is nearest to (0-5)
+    int nearestEdge = computeNearestEdge(localPosition.xz);
+    float neighborType = getNeighborType(nearestEdge); // from instance attributes
+
+    // 3. Terrain noise displacement (only affects Y)
+    float noise = fbmNoise(localPosition.xz * frequency, 4); // 4 octaves
+    if (params.w > 0.5) noise = ridgedNoise(noise);           // ridged for mountains
+
+    // 4. Edge fade: blend displacement toward neighbor's expected height at edge
+    float edgeFade = smoothstep(0.6, 1.0, distFromCenter);
+    vec4 neighborParams = terrainParams[int(neighborType)];
+    float neighborHeight = neighborParams.x;
+    float blendedHeight = mix(
+        tierHeight + noise * amplitude,     // this hex's terrain
+        (tierHeight + neighborHeight) / 2.0, // meeting height at edge
+        edgeFade
+    );
+
+    // 5. Apply displacement
+    localPosition.y = blendedHeight;
+
+    // 6. Skirt vertices: extend downward
+    if (isSkirtVertex) {
+        localPosition.y = min(tierHeight, neighborHeight) - SKIRT_DEPTH;
+    }
+}
+```
+
+**Terrain parameter examples:**
+
+| Type | Tier Height | Amplitude | Frequency | Ridged |
+|------|------------|-----------|-----------|--------|
+| `deep_ocean` | -2.0 | 0.1 | 0.5 | no |
+| `shallow_ocean` | -0.5 | 0.05 | 1.0 | no |
+| `lake` | -0.3 | 0.02 | 0.5 | no |
+| `plains` | 0.0 | 0.1 | 1.0 | no |
+| `grassland` | 0.0 | 0.15 | 1.5 | no |
+| `desert` | 0.0 | 0.2 | 0.8 | no |
+| `hills` | 0.5 | 0.4 | 2.0 | no |
+| `forest` | 0.3 | 0.3 | 1.5 | no |
+| `highland` | 1.0 | 0.1 | 1.0 | no |
+| `mountain` | 2.0 | 1.0 | 3.0 | yes |
+
+### Fragment Shader: Material + Edge Blending
+
+The fragment shader selects the terrain material and blends at edges:
+
+```glsl
+// Material table: one set of properties per terrain type
+// Encoded in a texture atlas or array texture
+uniform sampler2DArray terrainMaterials; // [albedo, normal, roughness] per type
+
+void main() {
+    int myType = int(terrainType);
+    float distFromCenter = length(localUV) / HEX_RADIUS;
+    int nearestEdge = computeNearestEdge(localUV);
+    int neighborType = int(getNeighborType(nearestEdge));
+
+    // Sample this hex's material (triplanar mapping for seamless tiling)
+    vec4 myColor = triplanarSample(terrainMaterials, myType, worldPos, normal);
+
+    if (myType == neighborType || distFromCenter < 0.6) {
+        // Same type or far from edge — pure material, no blending
+        fragColor = myColor;
+    } else {
+        // Different type near edge — blend materials
+        vec4 neighborColor = triplanarSample(terrainMaterials, neighborType, worldPos, normal);
+        float blend = smoothstep(0.6, 0.95, distFromCenter);
+        fragColor = mix(myColor, neighborColor, blend * 0.5);
+
+        // Special transitions
+        if (isWaterType(myType) != isWaterType(neighborType)) {
+            // Water↔land: add shore foam/sand at the transition
+            fragColor = mix(fragColor, shoreColor, blend * 0.7);
+        }
+    }
+
+    // Apply province/country tint
+    fragColor = mix(fragColor, instanceColor, instanceColor.a);
+}
+```
+
+### Same-Type Merging (Automatic)
+
+When two adjacent hexes share the same terrain type:
+- `neighborType == myType` → no edge blending → pure material
+- Both hexes' vertex displacement fades to the **same meeting height** at the shared edge
+- **World-space triplanar texturing** ensures no texture seam at the boundary
+- The hex grid line is completely invisible between same-type hexes
+- Multiple lake hexes → continuous flat water surface, no hex boundaries visible
+
+### Terrain Type Change
+
+When a hex changes terrain type (e.g., plains → mountain):
+
+```typescript
+function setHexTerrain(h3: string, newTerrain: TerrainType): void {
+  const index = hexBufferIndex[h3];
+
+  // 1. Update this hex's terrain type
+  terrainData[index * 8] = TERRAIN_INDEX[newTerrain];
+
+  // 2. Update all 6 neighbors' neighbor data (they now border a different type)
+  const neighbors = gridDisk(h3, 1).filter(n => n !== h3);
+  for (let edge = 0; edge < 6; edge++) {
+    const neighborIndex = hexBufferIndex[neighbors[edge]];
+    if (neighborIndex !== undefined) {
+      const oppositeEdge = (edge + 3) % 6; // neighbor's edge facing us
+      terrainData[neighborIndex * 8 + 1 + oppositeEdge] = TERRAIN_INDEX[newTerrain];
+    }
+  }
+
+  // 3. Upload changed region of buffer
+  mesh.thinInstanceBufferUpdated("terrainData");
+}
+```
+
+This is **O(1) per hex** — update 7 values in the buffer (1 self + 6 neighbors), no mesh rebuild, no group switching. The shader handles the visual change next frame automatically.
+
+### Babylon.js Implementation: Node Material
+
+The terrain shader is built using Babylon's **Node Material Editor** (NME), which provides:
+
+- Custom instance attribute inputs (`terrainData`, `color`)
+- Noise generation blocks (`SimplexPerlin3DBlock`)
+- Texture array sampling
+- Triplanar mapping blocks
+- Visual shader graph — no raw GLSL needed
+- Works with both WebGL2 and WebGPU
+
+The Node Material is created once and assigned to the shared hex mesh. All terrain logic lives in the shader graph.
+
+### Comparison: Per-Type Models vs. Shader-Driven
+
+| Concern | Per-type models (previous) | Shader-driven (recommended) |
+|---------|--------------------------|---------------------------|
+| Draw calls | ~26 | 2 |
+| Terrain change | Move between groups, rebuild edges | Update 7 floats in buffer |
+| Edge transitions | Separate geometry, rebuild needed | Automatic via shader |
+| Same-type merging | Edge pieces omitted between same type | Automatic — no edge = no blend |
+| Visual variety | Each type has unique geometry | Displacement profiles per type |
+| Silhouette distinctiveness | High (dedicated mesh per type) | Medium-high (noise-driven peaks) |
+| Asset pipeline | Model each type (Blender or procedural) | Tune parameters per type |
+| Iteration speed | Slow (rebuild meshes) | Fast (tweak uniforms in real-time) |
+| Complexity | Engine-side (buffer management) | Shader-side (Node Material graph) |
+| GPU memory | ~14 MB (26 groups × buffers) | ~9 MB (1 group × buffer) |
+
+**Main tradeoff**: shader-driven terrain has slightly less silhouette control than dedicated models. A mountain won't have an artist-sculpted peak — it'll have a noise-displaced peak driven by parameters. At 45km hexes viewed from orbit, this is more than sufficient. If close-up detail matters later, individual terrain types can be given more sophisticated noise profiles or even replaced with authored meshes (the per-type group approach can be mixed in for specific types).
 
 ---
 
-## Tile Model Specification
+## Shared Hex Mesh Specification
 
-### Geometry Constraints
+### Geometry
 
-Each tile model must conform to:
+One subdivided hex mesh used by all instances. The vertex shader transforms it into terrain-specific shapes.
 
 - **Hex footprint**: regular hexagon, flat-top orientation, inscribed radius matching H3 cell size
 - **Origin**: center of hex base, Y=0 at the base plane
 - **Orientation**: flat edge faces +Z in model space
-- **Triangle budget**: 24-100 triangles per tile (target ~50 average)
-  - 80K hexes x 50 tris = 4M triangles — well within budget
-  - 500K hexes x 50 tris = 25M triangles — feasible with LOD
-- **Skirt geometry**: extends downward from hex edges to at least 1 tier below the model's native tier. Hides gaps between neighbors at different elevations.
+- **Subdivision level 2**: ~96 triangles, ~61 vertices per hex (target)
+  - 80K hexes × 96 tris = 7.7M triangles — well within budget
+  - 500K hexes × 96 tris = 48M triangles — feasible with LOD
+- **Skirt ring**: additional ring of downward-facing triangles at each hex edge (~12 extra triangles). Vertex shader positions them based on neighbor elevation.
 
-### Skirt Depth Guide
-
-```
-Tier 5 (mountain):  skirt extends to tier 3 level  (2 tiers)
-Tier 4 (highland):  skirt extends to tier 2 level  (2 tiers)
-Tier 3 (hills):     skirt extends to tier 1 level  (2 tiers)
-Tier 2 (plains):    skirt extends to tier 0 level  (2 tiers)
-Tier 1 (shallow):   skirt extends to tier 0 level  (1 tier)
-Tier 0 (deep ocean): no skirt needed (lowest tier)
-```
-
-This means a mountain hex next to an ocean hex will have its rocky skirt visible for 5 tiers of height difference, creating dramatic cliff faces.
-
-### Asset Pipeline Options
-
-**Option A: Blender-authored models (highest quality)**
-- Model each terrain type in Blender
-- Export as glTF (.glb)
-- Load in Babylon.js via `SceneLoader.ImportMeshAsync`
-- Best for final art, worst for iteration speed
-
-**Option B: Procedural generation (fastest iteration)**
-- Generate tile models programmatically in Babylon.js
-- `MeshBuilder.CreateCylinder` for hex column base
-- Displacement noise for top surface variation
-- Different noise profiles per terrain type
-- Best for prototyping, can be replaced with Blender models later
-
-**Option C: Hybrid (recommended)**
-- Start with procedural generation for all terrain types
-- Replace with Blender models one type at a time as art direction solidifies
-- The thin-instance system doesn't care where the source mesh came from
-
-### Procedural Generation Sketch
+### Mesh Generation
 
 ```typescript
-function createTerrainMesh(type: TerrainType, scene: Scene): Mesh {
-  // Base hex column
-  const hex = MeshBuilder.CreateCylinder(`hex_${type}`, {
-    height: TIER_HEIGHTS[type.tier],
-    diameterTop: HEX_RADIUS * 2,
-    diameterBottom: HEX_RADIUS * 2,
-    tessellation: 6,           // hexagonal cross-section
-    subdivisions: 4,           // vertical segments for skirt detail
+function createSharedHexMesh(scene: Scene): Mesh {
+  // Create a flat hex disc with enough subdivision for displacement
+  const hex = MeshBuilder.CreateDisc("hexTemplate", {
+    radius: HEX_RADIUS,
+    tessellation: 6,        // hexagonal shape
+    sideOrientation: Mesh.DOUBLESIDE,
   }, scene);
 
-  // Displace top vertices based on terrain profile
-  const positions = hex.getVerticesData(VertexBuffer.PositionKind);
-  for (let i = 0; i < positions.length; i += 3) {
-    if (isTopVertex(positions, i, type.tier)) {
-      const noise = terrainNoise(positions[i], positions[i+2], type);
-      positions[i + 1] += noise; // Y displacement
-    }
-  }
-  hex.updateVerticesData(VertexBuffer.PositionKind, positions);
-  hex.bakeCurrentTransformIntoVertices();
+  // Subdivide twice for ~96 triangles on the top face
+  // (or build custom geometry with concentric hex rings of vertices)
+
+  // Add skirt vertices: duplicate each edge vertex, offset downward
+  // These will be positioned by the vertex shader based on neighbor data
+
   return hex;
 }
 ```
+
+The mesh is created once at initialization. All 80K+ thin instances share this single mesh. Terrain differentiation happens entirely in the shader.
+
+### Terrain Parameter Tuning
+
+Instead of modeling each terrain type, you tune a **parameter table**:
+
+```typescript
+const TERRAIN_PARAMS: Record<TerrainType, TerrainProfile> = {
+  deep_ocean:    { tier: 0, height: -2.0, amplitude: 0.1,  frequency: 0.5, ridged: false },
+  shallow_ocean: { tier: 1, height: -0.5, amplitude: 0.05, frequency: 1.0, ridged: false },
+  lake:          { tier: 1, height: -0.3, amplitude: 0.02, frequency: 0.5, ridged: false },
+  plains:        { tier: 2, height:  0.0, amplitude: 0.1,  frequency: 1.0, ridged: false },
+  desert:        { tier: 2, height:  0.0, amplitude: 0.2,  frequency: 0.8, ridged: false },
+  forest:        { tier: 3, height:  0.3, amplitude: 0.3,  frequency: 1.5, ridged: false },
+  hills:         { tier: 3, height:  0.5, amplitude: 0.4,  frequency: 2.0, ridged: false },
+  mountain:      { tier: 5, height:  2.0, amplitude: 1.0,  frequency: 3.0, ridged: true  },
+  // ... etc
+};
+```
+
+Iteration is instant — change a number, see the result next frame. No mesh rebuilding, no asset pipeline. Expose these in a dev UI for live tuning.
 
 ---
 
@@ -373,208 +540,80 @@ The editor expands from 2 modes to 3:
 
 ## Terrain Transitions & Merging
 
-The fundamental challenge: **thin instances share geometry**, but a lake hex surrounded by other lakes should look different from a lake hex bordered by mountains. Same-type hexes should merge seamlessly (no visible hex grid); different-type hexes need explicit transition visuals.
+The fundamental challenge: a lake hex surrounded by other lakes should look like one continuous body of water (no visible hex grid), while a lake hex bordered by mountains needs a visible shore transition.
 
-### Two-Layer Architecture: Base Tiles + Edge Pieces
+The shader-driven approach solves both automatically:
 
-Each hex is rendered as two components:
+### Same-Type Merging (Automatic)
 
-```
-Layer 1: BASE TILE (thin instances, ~17 draw calls)
-  - Fills the full hex footprint
-  - NO border/edge features — designed to tile seamlessly with same-type neighbors
-  - A lake base tile is just flat water filling the entire hex
-  - A plains base tile is flat grass filling the entire hex
-
-Layer 2: EDGE PIECES (thin instances, placed per-edge where terrain differs)
-  - Small meshes covering one hex edge (~1/6 of the hex perimeter)
-  - Only placed where this hex's terrain type ≠ neighbor's terrain type
-  - Provides the visual transition: shores, treelines, cliff faces, etc.
-  - NOT placed between same-type hexes → hex boundary disappears
-```
-
-This solves both problems:
-- **Same-type merging**: no edge pieces between adjacent lakes → continuous water surface
-- **Different-type transitions**: shore piece between lake and plains → visible coastline
-
-### Visual Example
+When the fragment shader detects `neighborType == myType`:
+- No edge blending is applied → pure material
+- Both hexes' vertex displacement fades to the **same meeting height** at the shared edge
+- World-space triplanar texturing ensures no texture seam at the boundary
+- **The hex grid line is completely invisible** between same-type hexes
+- Multiple lake hexes → continuous flat water surface
 
 ```
 Three lake hexes + one plains hex:
 
     ┌─────────┐
-    │  LAKE   │         ← base tile: flat water
+    │  LAKE   │         ← flat water surface
     │         │
-    ├─ ─ ─ ─ ┤         ← NO edge piece (same type) → seamless water
+    ├─ ─ ─ ─ ┤         ← same type: shader applies no blend → seamless
     │  LAKE   │
     │         │
-    ├─────────┤         ← NO edge piece (same type) → seamless water
+    ├─ ─ ─ ─ ┤         ← same type: seamless
     │  LAKE   │
-    │      ≈≈≈│shore    ← EDGE PIECE: lake→plains shore on right edge
-    ├─────────┤
+    │      ≈≈≈│shore    ← different type: shader blends lake→plains material
+    ├─────────┤            + vertex displacement meets at shared edge height
     │ PLAINS  │
     │         │
     └─────────┘
 ```
 
-### Edge Piece Types
+### Different-Type Transitions (Shader-Driven)
 
-Edge pieces are categorized by the transition they represent. Each is a thin-instance group.
+When `neighborType != myType`, the shader applies contextual blending near the hex edge:
 
-| Edge Piece | When Placed | Visual |
-|------------|-------------|--------|
-| `shore` | Water ↔ Land (any tier 0-1 ↔ tier 2+) | Sandy/rocky beach strip |
-| `cliff` | Low land ↔ High land (2+ tier difference) | Vertical rock face |
-| `slope` | Adjacent land tiers (1 tier difference) | Gentle grassy/rocky incline |
-| `treeline` | Open land ↔ Forest/Jungle | Trees thinning to grass |
-| `waterline` | Lake ↔ Ocean types | Subtle water color boundary |
-| `ice_edge` | Tundra ↔ Non-tundra | Frost/snow fading to earth |
-| `desert_edge` | Desert ↔ Non-desert green | Sand-to-grass gradient |
+| Transition | Vertex Behavior | Fragment Behavior |
+|------------|----------------|-------------------|
+| Water ↔ Land | Heights meet at a "shore height" midpoint | Blend water→sand→grass, add foam |
+| Low ↔ High land (2+ tiers) | Sharp height difference, cliff-like | Blend in rock/cliff material at transition |
+| Adjacent land (1 tier) | Gradual slope at edge | Smooth material blend |
+| Open ↔ Forest | Slight height increase toward forest | Blend grass→undergrowth→canopy color |
+| Any ↔ Tundra | Heights meet normally | Blend in frost/ice texture |
+| Any ↔ Desert | Heights meet normally | Blend in sand texture |
 
-Not every terrain pair needs a unique edge piece. A lookup table maps terrain pair → edge piece type:
+The transition type is determined implicitly from the terrain parameters — no lookup table needed. The shader computes height difference and terrain category (water vs land) from the uniform `terrainParams` table.
 
-```typescript
-type EdgePieceType = 'shore' | 'cliff' | 'slope' | 'treeline' | 'waterline' | 'ice_edge' | 'desert_edge' | 'generic';
+### Edge Height Meeting Point
 
-function getEdgePiece(terrainA: TerrainType, terrainB: TerrainType): EdgePieceType | null {
-  // Same terrain type → no edge piece (seamless merge)
-  if (terrainA === terrainB) return null;
+When two hexes of different types share an edge, their vertex displacement must agree on a shared height at the boundary. The vertex shader blends:
 
-  const tierA = TERRAIN_TIERS[terrainA];
-  const tierB = TERRAIN_TIERS[terrainB];
-  const isWaterA = tierA <= 1;
-  const isWaterB = tierB <= 1;
+```
+Meeting height = average of both terrains' tier heights
 
-  // Water ↔ Land
-  if (isWaterA !== isWaterB) return 'shore';
+Edge 0.6-1.0 of hex → lerp from (tier_height + noise) toward meeting_height
+```
 
-  // Both water but different types
-  if (isWaterA && isWaterB) return 'waterline';
+This creates natural slopes, shores, and cliffs without any explicit transition geometry:
+- Lake (tier 1, height -0.3) next to plains (tier 2, height 0.0) → meeting at -0.15 → gentle shore slope
+- Plains (tier 2, height 0.0) next to mountain (tier 5, height 2.0) → meeting at 1.0 → dramatic cliff face
+- Mountain skirt vertices extend down to plains height → visible rock wall
 
-  // Large elevation difference
-  if (Math.abs(tierA - tierB) >= 2) return 'cliff';
+### Skirt Vertices
 
-  // Small elevation difference
-  if (tierA !== tierB) return 'slope';
+The shared hex mesh includes a ring of skirt vertices at each edge. The vertex shader positions these based on neighbor terrain:
 
-  // Same tier, different type — contextual
-  if (terrainA === 'forest' || terrainB === 'forest' ||
-      terrainA === 'jungle' || terrainB === 'jungle') return 'treeline';
-  if (terrainA === 'tundra' || terrainB === 'tundra') return 'ice_edge';
-  if (terrainA === 'desert' || terrainB === 'desert') return 'desert_edge';
-
-  return 'generic';
+```glsl
+if (isSkirtVertex) {
+    // Extend downward to the lower of the two terrains
+    float neighborHeight = terrainParams[int(neighborType)].x;
+    localPosition.y = min(tierHeight, neighborHeight) - SKIRT_DEPTH;
 }
 ```
 
-### Edge Piece Geometry
-
-Each edge piece is a **wedge-shaped mesh** covering one edge of the hex:
-
-```
-        Hex center
-           *
-          /|\
-         / | \
-        /  |  \
-       / EDGE  \
-      /  PIECE  \
-     /_____|_____\
-     v1          v2      ← hex boundary vertices
-```
-
-- Spans from hex center to the edge midpoint to the two edge vertices
-- ~8-16 triangles per edge piece
-- Oriented in model space so it can be instanced along any of the 6 edges via rotation
-- One model per edge piece type, rotated to the correct edge via the instance matrix
-
-### Edge Piece Instance Data
-
-```typescript
-interface EdgePieceInstance {
-  h3: string;           // which hex this edge belongs to
-  edge: number;         // edge index 0-5
-  type: EdgePieceType;  // shore, cliff, slope, etc.
-}
-```
-
-Instance matrix encodes:
-1. Translation to hex position on globe
-2. Rotation to align with globe surface normal
-3. Additional rotation around the normal to orient to the correct edge (edge × 60°)
-
-### Rendering Budget
-
-| Component | Draw Calls | Typical Instance Count |
-|-----------|-----------|----------------------|
-| Base tiles (~17 terrain types) | ~17 | 80,000 total |
-| Edge pieces (~8 types) | ~8 | ~100,000 total (many hexes have 3-4 differing edges) |
-| Rivers | 1 | 1 merged mesh |
-| **Total** | **~26** | — |
-
-~26 draw calls is still very comfortable. Edge piece instances add ~8 MB GPU buffer (100K × 80 bytes).
-
-### Edge Piece Rebuild
-
-Edge pieces are **recomputed whenever terrain changes**:
-
-```typescript
-function rebuildEdgePieces(hexes: Map<string, HexState>): EdgePieceInstance[] {
-  const pieces: EdgePieceInstance[] = [];
-
-  for (const [h3, state] of hexes) {
-    const neighbors = gridDisk(h3, 1).filter(n => n !== h3); // 6 neighbors
-
-    for (let edge = 0; edge < 6; edge++) {
-      const neighbor = neighbors[edge];
-      const neighborState = hexes.get(neighbor);
-      const neighborTerrain = neighborState?.terrain ?? 'deep_ocean';
-
-      const pieceType = getEdgePiece(state.terrain, neighborTerrain);
-      if (pieceType) {
-        pieces.push({ h3, edge, type: pieceType });
-      }
-    }
-  }
-
-  return pieces;
-}
-```
-
-This rebuild is O(N) where N = total hexes. For 80K hexes: ~480K neighbor lookups, completes in <50ms. Can be optimized to rebuild only affected hexes on local terrain changes.
-
-### Skirt Geometry (Still Needed)
-
-Edge pieces handle the **horizontal transition** between terrain types. Skirts handle the **vertical gap** between different elevation tiers. Both are needed:
-
-- **Edge piece**: visual transition (shore, treeline, cliff texture)
-- **Skirt**: structural fill preventing see-through gaps between hexes at different heights
-
-Base tile models still include skirt geometry extending 2 tiers below their surface. The skirts are only visible where there's a significant elevation difference AND the edge piece doesn't fully cover the gap.
-
-### Same-Type Merging Details
-
-For merging to look seamless, base tile models must:
-
-1. **Have matching edge profiles** — the surface height/texture at all 6 edges must be identical across all instances of the same type. This means terrain noise/displacement must fade to a consistent value at hex edges.
-
-2. **Use world-space texturing** — texture coordinates based on world position (triplanar mapping), not model-local UVs. This prevents visible texture seams between adjacent same-type hexes.
-
-3. **Match material properties exactly** — same roughness, color, normal map at the boundary.
-
-```typescript
-// In the procedural terrain mesh generator:
-function terrainNoise(x: number, z: number, type: TerrainType): number {
-  const distFromCenter = Math.sqrt(x*x + z*z) / HEX_RADIUS;
-  const centerNoise = fbm(x, z, type.noiseProfile);
-
-  // Fade displacement to zero near hex edges → seamless same-type tiling
-  const edgeFade = smoothstep(0.7, 1.0, distFromCenter);
-  return centerNoise * (1 - edgeFade);
-}
-```
-
-This ensures the hex edge is always at a consistent height, so adjacent same-type hexes connect perfectly. The terrain variation (bumps, dunes, mounds) only appears in the center ~70% of each hex.
+Skirts are only visible where there's a significant elevation difference between neighbors. Between same-height hexes, skirts are hidden below the surface.
 
 ---
 

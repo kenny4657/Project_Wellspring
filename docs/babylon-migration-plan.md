@@ -154,95 +154,87 @@ A spinning 3D globe with atmosphere that you can orbit, zoom, and tilt. No hexes
 
 ---
 
-## Phase 2: Terrain Tile Models + Hex Grid (Days 3-7)
+## Phase 2: Shader-Driven Hex Terrain on Globe (Days 3-7)
 
 ### Goal
-Generate the hex grid on the globe and render terrain-type tile models as per-type thin instance groups. Each hex has an assignable terrain type with a unique 3D model. Performance target: 60fps with 80K hexes across ~17 terrain types (~17 draw calls).
+Render all hexes on the globe using a single shared hex mesh with a shader-driven terrain system. Each hex has an assignable terrain type — the vertex shader creates the terrain shape, the fragment shader selects the material and handles transitions. Performance target: 60fps with 80K hexes in **2 draw calls** (hexes + rivers).
 
-See [hex-terrain-design.md](hex-terrain-design.md) for full terrain type catalog, model specs, and transition handling.
+See [hex-terrain-design.md](hex-terrain-design.md) for full terrain type catalog, shader design, and transition handling.
 
 ### Tasks
 
 1. **Create `src/lib/world/terrain-types.ts`**
-   - Define terrain type enum and properties:
+   - Define terrain type enum, parameter table, and material properties:
      ```typescript
-     interface TerrainTypeDef {
+     interface TerrainProfile {
        id: string;
        name: string;
-       tier: number;          // elevation tier 0-5
-       defaultColor: string;  // base color when unpainted
+       tier: number;           // elevation tier 0-5
+       height: number;         // world-space base height
+       amplitude: number;      // noise displacement strength
+       frequency: number;      // noise frequency
+       ridged: boolean;        // ridged noise for mountains
+       color: [number, number, number]; // base RGB
      }
      ```
-   - Define ~17 initial terrain types with tiers (deep_ocean through mountain, including lake)
-   - Define tier height constants (world-space units per tier)
+   - Define ~17 terrain types with tunable parameters
+   - Parameters are uploaded to the GPU as a uniform buffer
 
-2. **Create `src/lib/engine/hex-tiles.ts`**
-   - **Procedural tile model generation** (prototype phase):
-     ```typescript
-     function createTerrainMesh(type: TerrainTypeDef, scene: Scene): Mesh {
-       // Hex cylinder base at terrain tier height
-       // Displace top vertices with terrain-specific noise
-       // Add skirt geometry extending 2 tiers below
-     }
-     ```
-   - Generate one source mesh per terrain type on init
-   - Later: replace procedural models with Blender-authored glTF assets
+2. **Create shared hex mesh**
+   - One subdivided hex disc (~96 triangles, ~61 vertices) + skirt ring
+   - Created once at initialization, shared by all instances
+   - All terrain differentiation happens in the shader, not geometry
 
 3. **Create `src/lib/engine/hex-renderer.ts`**
-   - Manage per-terrain-type thin instance groups:
+   - Single thin-instance group for ALL hexes:
      ```typescript
      class HexRenderer {
-       private groups: Map<string, ThinInstanceGroup>;  // terrainType → group
-       private hexIndex: Map<string, { terrain: string; bufferIndex: number }>;
+       private mesh: Mesh;                              // shared hex template
+       private matrices: Float32Array;                   // 16 floats per hex
+       private terrainData: Float32Array;                // 8 floats per hex (type + 6 neighbors + pad)
+       private colors: Float32Array;                     // 4 floats per hex (province tint)
+       private hexIndex: Map<string, number>;            // h3 → buffer index
 
-       setHexTerrain(h3: string, terrain: string): void;  // move between groups
-       setHexColor(h3: string, color: string): void;       // update color buffer
-       clearHexColor(h3: string): void;
+       setHexTerrain(h3: string, terrain: string): void; // update 7 values (self + neighbors)
+       setHexColor(h3: string, color: string): void;
      }
      ```
-   - Each `ThinInstanceGroup` holds:
-     - Source mesh (from hex-tiles.ts)
-     - `Float32Array` for instance matrices (16 floats each)
-     - `Float32Array` for instance colors (4 floats each)
-     - Current instance count
-     - `Map<string, number>` for h3→bufferIndex within the group
+   - Terrain change = update 7 floats in `terrainData` buffer → `bufferUpdated("terrainData")`
+   - No group switching, no edge piece rebuild
 
-4. **Generate hex grid positions**
-   - Use H3 `getRes0Cells()` + `cellToChildren()` to enumerate all cells at target resolution
-   - For each cell: compute globe position + surface-tangent rotation matrix
+4. **Build Node Material for terrain shader**
+   - Vertex shader:
+     - Read `terrainData` instance attribute → look up terrain params
+     - Compute noise displacement based on terrain profile
+     - Fade displacement to meeting height at hex edges (neighbor-aware)
+     - Position skirt vertices based on elevation difference
+   - Fragment shader:
+     - Select base material (color, roughness) from terrain type
+     - World-space triplanar texturing (seamless between same-type hexes)
+     - Blend materials at edges where `neighborType != myType`
+     - Apply province/country color tint from instance `color` attribute
+
+5. **Generate hex grid positions**
+   - Use H3 `getRes0Cells()` + `cellToChildren()` to enumerate all cells
+   - Compute globe position + surface-tangent rotation matrix per hex
    - All hexes start as `deep_ocean` (default world is all ocean)
-   - The `/api/land-hexes` endpoint is no longer needed for world building — hex positions come directly from H3 at any resolution
+   - Populate `terrainData` with initial type + neighbor types
 
-5. **Instance matrix computation**
-   - For each hex:
-     ```typescript
-     const pos = latLngToWorld(lat, lng, EARTH_RADIUS_KM + tierHeight);
-     const normal = pos.normalize();
-     // Build rotation matrix aligning hex flat-face with sphere surface
-     // Compose: rotation × translation
-     matrix.copyToArray(matricesData, index * 16);
-     ```
-   - When terrain type changes: recompute matrix with new tier height
-
-6. **Per-instance color buffer**
-   - `Float32Array(groupSize * 4)` per group — RGBA province/country tint
-   - Unpainted hexes use alpha=0 (terrain model's natural color shows)
-   - Painted hexes use alpha=0.6-0.85 (tint over terrain)
-   - `thinInstanceSetBuffer("color", colorData, 4, false)` — dynamic buffer
-
-7. **Material setup**
-   - PBR material per terrain type (or shared with per-type color):
-     - Base color from terrain type definition
-     - Instance color attribute multiplied as tint overlay
-     - Lit by scene lights (terrain should respond to atmosphere/sun)
-     - Hex edge darkening via fragment shader distance-to-edge
+6. **Per-instance attribute setup**
+   ```typescript
+   mesh.thinInstanceSetBuffer("matrix", matrices, 16, true);          // static positions
+   mesh.thinInstanceSetBuffer("terrainData", terrainData, 8, false);  // dynamic terrain
+   mesh.thinInstanceSetBuffer("color", colors, 4, false);             // dynamic paint
+   ```
 
 ### Validation
 - Globe covered in ocean hex tiles (default world)
-- `setHexTerrain(h3, 'mountain')` visually changes the hex to a mountain model
+- `setHexTerrain(h3, 'mountain')` visually changes hex shape via shader displacement
+- Same-type adjacent hexes merge seamlessly (no visible hex grid between two lakes)
+- Different-type adjacent hexes show smooth terrain transition
 - `setHexColor(h3, '#C45B5B')` tints the hex with a province color
-- Terrain changes are smooth (no frame hitches on group buffer rebuild)
-- 17 draw calls confirmed via Babylon Inspector
+- Terrain change updates 7 buffer values → no frame hitch
+- **2 draw calls** confirmed via Babylon Inspector
 - 60fps maintained during orbit/zoom with 80K hexes
 
 ---

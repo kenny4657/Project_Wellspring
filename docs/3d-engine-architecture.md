@@ -115,15 +115,16 @@ Plus full game engine capabilities: Havok physics, particle systems, PBR materia
 
 ### Hex Rendering Strategy
 
-1. **Per-terrain-type thin instance groups** — ~17 terrain types, each with a unique 3D tile model, rendered as a separate thin-instance group (~17 draw calls total)
-2. **Per-instance color buffer** — RGBA tint per hex for province/country painting, O(1) color updates
-3. **Terrain type changes** — moving a hex between groups is O(1) (swap-remove + append to new group buffer)
-4. **LOD (Level of Detail)** — H3 res 3 (~41K) zoomed out, res 4 (~288K) mid-zoom, res 5 at close zoom
-5. **Elevation via terrain tiers** — 6 discrete elevation tiers (0-5), baked into tile model height + instance matrix position
-6. **Deep skirt geometry** — each tile model extends 2 tiers below its surface, hiding gaps between different-height neighbors
-7. **Hit testing** — ray-sphere intersection → lat/lng → `latLngToCell()` (O(1) via h3-js)
+1. **Shader-driven single mesh** — one subdivided hex template (~96 tris), ALL hexes as one thin-instance group, **2 draw calls total** (hexes + rivers)
+2. **Per-instance terrain data** — 8 floats per hex: terrain type + 6 neighbor types. Vertex shader displaces geometry; fragment shader selects material and blends transitions
+3. **Per-instance color buffer** — RGBA tint per hex for province/country painting, O(1) color updates
+4. **Terrain type changes** — update 7 floats in buffer (self + 6 neighbors). No group switching, no mesh rebuild
+5. **Same-type merging** — shader applies no blend between same-type neighbors + world-space texturing → hex grid invisible within terrain regions
+6. **Different-type transitions** — shader blends materials + displacement meets at shared edge height → automatic shores, cliffs, treelines
+7. **LOD (Level of Detail)** — H3 res 3 (~41K) zoomed out, res 4 (~288K) mid-zoom, res 5 at close zoom
+8. **Hit testing** — ray-sphere intersection → lat/lng → `latLngToCell()` (O(1) via h3-js)
 
-See [hex-terrain-design.md](hex-terrain-design.md) for full terrain type catalog, model specifications, and transition handling.
+See [hex-terrain-design.md](hex-terrain-design.md) for full terrain type catalog, shader design, and transition handling.
 
 ### Migration Scope
 
@@ -168,10 +169,9 @@ No shipped hex strategy game (Civ 6, Humankind, Old World) plays on a true spher
 | 2026-04-19 | Babylon.js 9.0 over CesiumJS | CesiumJS is a GIS viewer, not a game engine. No physics, particles, animation. |
 | 2026-04-19 | Babylon.js 9.0 over Godot/Unity WebGL | Web-first requirement. 25-40MB WASM downloads are prohibitive. |
 | 2026-04-19 | Hybrid SvelteKit + canvas over full engine UI | Keep UI accessible, styled with Tailwind, SSR for non-game pages. |
-| 2026-04-19 | Per-terrain-type thin instance groups over single flat hex group | Each terrain type needs a unique 3D model. ~17 draw calls is trivial vs. 1, but enables visual identity per terrain. |
+| 2026-04-19 | Shader-driven single mesh over per-terrain-type mesh groups | Fully procedural approach: 1 shared hex mesh, vertex/fragment shader handles all terrain shape + material + transitions. 2 draw calls instead of 26. Terrain changes are buffer updates, not group switches. |
 | 2026-04-19 | Custom world building over real-world geography | Game worlds should not be constrained by Earth's geography. Terrain types are freely assignable per hex. |
-| 2026-04-19 | Terrain tile models over stylized hex columns | Hex columns only differentiate by height. Full tile models give each terrain type a unique silhouette (mountain peaks, rolling hills, ocean troughs). |
-| 2026-04-19 | Deep skirts over edge-matched transitions (initially) | Simpler to implement, works with thin instances. Edge-matched transitions can be added later for visual polish. |
-| 2026-04-19 | Procedural tile generation → Blender glTF pipeline | Start with programmatic models for fast iteration. Replace with authored assets as art direction solidifies. |
+| 2026-04-19 | Noise-displaced shared mesh over pre-made tile models | All terrain variation via vertex shader noise profiles. Faster iteration (tune parameters, not rebuild meshes), seamless same-type merging, automatic edge transitions. Trade-off: less silhouette control than authored models, sufficient at 45km hex scale. |
+| 2026-04-19 | Shader-based transitions over edge piece geometry | Fragment shader blends materials at hex edges where terrain differs. No separate transition meshes, no rebuild on terrain change. Same-type merging is automatic (no blend applied). |
 | 2026-04-19 | Keep H3 for hex grid | Despite not using real-world geography, H3 provides grid generation, neighbor lookups, and O(1) picking for free. 12 pentagons are hideable as ocean. |
 | 2026-04-19 | H3 LOD (res 3/4/5) over fixed resolution | Balance visual fidelity with performance across zoom levels. |
