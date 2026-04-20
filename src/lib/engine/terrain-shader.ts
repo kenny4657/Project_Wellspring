@@ -8,6 +8,7 @@
  */
 import { ShaderMaterial } from '@babylonjs/core/Materials/shaderMaterial';
 import { Effect } from '@babylonjs/core/Materials/effect';
+import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import type { Scene } from '@babylonjs/core/scene';
 import { TERRAIN_COUNT, packTerrainParams } from '$lib/world/terrain-types';
 
@@ -291,28 +292,16 @@ export function createTerrainMaterial(scene: Scene): ShaderMaterial {
 		needAlphaBlending: false,
 	});
 
-	// Upload terrain parameters
+	// Upload terrain parameters as flat float arrays
+	// GLSL uniform vec4 arr[N] is set via setFloats with N*4 values
 	const { params, colors } = packTerrainParams();
-
-	// Set uniform arrays (4 floats per terrain type)
-	for (let i = 0; i < TERRAIN_COUNT; i++) {
-		material.setFloat4(
-			`terrainParams[${i}]`,
-			params[i * 4 + 0], params[i * 4 + 1], params[i * 4 + 2], params[i * 4 + 3]
-		);
-		material.setFloat4(
-			`terrainColors[${i}]`,
-			colors[i * 4 + 0], colors[i * 4 + 1], colors[i * 4 + 2], colors[i * 4 + 3]
-		);
-	}
+	material.setFloats('terrainParams', Array.from(params));
+	material.setFloats('terrainColors', Array.from(colors));
 
 	// Sun direction (matches globe.ts directional light)
-	material.setVector3('sunDirection', new (Vector3 as any)(-1, 0.5, 0.3).normalize());
+	material.setVector3('sunDirection', new Vector3(-1, 0.5, 0.3).normalize());
 
 	material.backFaceCulling = true;
 
 	return material;
 }
-
-// Re-export Vector3 for the material setup
-import { Vector3 } from '@babylonjs/core/Maths/math.vector';
