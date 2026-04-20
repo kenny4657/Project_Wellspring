@@ -7,7 +7,7 @@
  * Uses Babylon's ShaderMaterial with custom instance attributes.
  */
 import { ShaderMaterial } from '@babylonjs/core/Materials/shaderMaterial';
-import { Effect } from '@babylonjs/core/Materials/effect';
+import { ShaderStore } from '@babylonjs/core/Engines/shaderStore';
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import type { Scene } from '@babylonjs/core/scene';
 import { TERRAIN_COUNT, packTerrainParams } from '$lib/world/terrain-types';
@@ -19,6 +19,7 @@ precision highp float;
 
 // Babylon.js standard uniforms
 uniform mat4 viewProjection;
+uniform mat4 world;  // thin instance base world matrix
 
 // Terrain parameter table
 uniform vec4 terrainParams[${TERRAIN_COUNT}];   // [height, amplitude, frequency, ridged]
@@ -30,8 +31,13 @@ attribute vec3 normal;
 attribute vec2 uv;    // local hex UV: position within hex, -1 to 1
 attribute vec2 uv2;   // x: 0 = top face, 1 = skirt vertex
 
-// Instance attributes
-attribute mat4 world;          // instance transform (position + rotation on globe)
+// Instance matrix (Babylon thin instances split mat4 into four vec4 rows)
+attribute vec4 world0;
+attribute vec4 world1;
+attribute vec4 world2;
+attribute vec4 world3;
+
+// Custom instance attributes
 attribute vec4 terrainData0;   // [terrainType, neighbor0, neighbor1, neighbor2]
 attribute vec4 terrainData1;   // [neighbor3, neighbor4, neighbor5, padding]
 attribute vec4 color;          // province/country tint RGBA
@@ -145,8 +151,11 @@ void main() {
     // Distance from hex center (0 at center, 1 at edge)
     float distFromCenter = length(uv);
 
+    // Reconstruct instance world matrix from four vec4 rows
+    mat4 instanceWorld = world * mat4(world0, world1, world2, world3);
+
     // Compute world position for noise seed (use instance transform)
-    vec4 worldOrigin = world * vec4(0.0, 0.0, 0.0, 1.0);
+    vec4 worldOrigin = instanceWorld * vec4(0.0, 0.0, 0.0, 1.0);
     vec3 noiseSeed = worldOrigin.xyz * 0.01; // scale down for good noise frequency
 
     // Terrain displacement
@@ -189,9 +198,9 @@ void main() {
     displacedPos.y = finalHeight;
 
     // Transform to world space
-    vec4 worldPos = world * vec4(displacedPos, 1.0);
+    vec4 worldPos = instanceWorld * vec4(displacedPos, 1.0);
     vWorldPos = worldPos.xyz;
-    vWorldNormal = normalize((world * vec4(normal, 0.0)).xyz);
+    vWorldNormal = normalize((instanceWorld * vec4(normal, 0.0)).xyz);
 
     gl_Position = viewProjection * worldPos;
 }
@@ -279,26 +288,36 @@ void main() {
  * Create the terrain ShaderMaterial with terrain parameter uniforms.
  */
 export function createTerrainMaterial(scene: Scene): ShaderMaterial {
-	// Register shader code with Babylon's effect system
-	Effect.ShadersStore['terrainVertexShader'] = VERTEX_SHADER;
-	Effect.ShadersStore['terrainFragmentShader'] = FRAGMENT_SHADER;
+	// Register shader code with Babylon's shader store
+	ShaderStore.ShadersStore['terrainVertexShader'] = VERTEX_SHADER;
+	ShaderStore.ShadersStore['terrainFragmentShader'] = FRAGMENT_SHADER;
+	console.log('[Terrain] Registered shaders. Store keys:', Object.keys(ShaderStore.ShadersStore).filter(k => k.includes('terrain')));
 
 	const material = new ShaderMaterial('terrainMat', scene, {
 		vertex: 'terrain',
 		fragment: 'terrain',
 	}, {
-		attributes: ['position', 'normal', 'uv', 'uv2', 'world', 'terrainData0', 'terrainData1', 'color'],
-		uniforms: ['viewProjection', 'terrainParams', 'terrainColors', 'sunDirection'],
+		attributes: [
+			'position', 'normal', 'uv', 'uv2',
+			'world0', 'world1', 'world2', 'world3',
+			'terrainData0', 'terrainData1',
+			'color'
+		],
+		uniforms: [
+			'world', 'worldView', 'worldViewProjection', 'view', 'projection',
+			'viewProjection',
+			'terrainParams', 'terrainColors', 'sunDirection'
+		],
+		defines: ['#define INSTANCES', '#define THIN_INSTANCES'],
 		needAlphaBlending: false,
 	});
 
 	// Upload terrain parameters as flat float arrays
-	// GLSL uniform vec4 arr[N] is set via setFloats with N*4 values
 	const { params, colors } = packTerrainParams();
 	material.setFloats('terrainParams', Array.from(params));
 	material.setFloats('terrainColors', Array.from(colors));
 
-	// Sun direction (matches globe.ts directional light)
+	// Sun direction
 	material.setVector3('sunDirection', new Vector3(-1, 0.5, 0.3).normalize());
 
 	material.backFaceCulling = true;

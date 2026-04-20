@@ -177,8 +177,8 @@ export class HexRenderer {
 	// ── Private helpers ──
 
 	private computeMatrix(lat: number, lng: number, index: number): void {
-		// Position on globe surface
-		const r = EARTH_RADIUS_KM;
+		// Position slightly above globe surface to avoid z-fighting
+		const r = EARTH_RADIUS_KM + 5; // 5km above surface
 		_pos.copyFrom(latLngToWorld(lat, lng, r));
 
 		// Surface normal = normalized position (for a sphere centered at origin)

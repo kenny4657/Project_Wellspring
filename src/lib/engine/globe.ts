@@ -80,38 +80,29 @@ export async function createGlobeEngine(
 	globeMat.specularColor = new Color3(0.15, 0.15, 0.15);
 	globe.material = globeMat;
 
-	// ── Geospatial Camera ───────────────────────────────────
-	const camera = new GeospatialCamera('geoCam', scene, {
-		planetRadius: EARTH_RADIUS_KM,
-		pickPredicate: (mesh) => mesh === globe
-	});
-
-	const startCenter = latLngToWorld(35, -20, EARTH_RADIUS_KM);
-	camera.center = startCenter;
-	camera.radius = EARTH_RADIUS_KM * 3;
-	camera.pitch = 0;
-	camera.yaw = 0;
-
-	camera.limits.radiusMin = EARTH_RADIUS_KM * 1.01;
-	camera.limits.radiusMax = EARTH_RADIUS_KM * 5;
-	camera.limits.pitchMax = Math.PI / 2.5;
-
+	// ── Camera ──────────────────────────────────────────────
+	// Use ArcRotateCamera for initial debugging — GeospatialCamera can be restored later
+	const { ArcRotateCamera } = await import('@babylonjs/core/Cameras/arcRotateCamera');
+	const camera = new ArcRotateCamera('cam', -Math.PI / 2, Math.PI / 3, EARTH_RADIUS_KM * 1.5, Vector3.Zero(), scene);
+	camera.lowerRadiusLimit = EARTH_RADIUS_KM * 1.05;
+	camera.upperRadiusLimit = EARTH_RADIUS_KM * 5;
+	camera.minZ = 1;       // near clip
+	camera.maxZ = EARTH_RADIUS_KM * 20;  // far clip
 	camera.attachControl(canvas, true);
 
-	// ── Atmosphere ──────────────────────────────────────────
+	// ── Atmosphere (disabled for debugging) ─────────────────
 	let atmosphere: Atmosphere | null = null;
-	if (Atmosphere.IsSupported(engine)) {
-		atmosphere = new Atmosphere('atmosphere', scene, [sunLight], {
-			exposure: 1.0,
-			isLinearSpaceLight: false,
-			isLinearSpaceComposition: false,
-			isSkyViewLutEnabled: true,
-			isAerialPerspectiveLutEnabled: true,
-			originHeight: 0
-		});
-	} else {
-		console.warn('[Globe] Atmosphere not supported on this device');
-	}
+	// TODO: re-enable once basic rendering works
+	// if (Atmosphere.IsSupported(engine)) {
+	// 	atmosphere = new Atmosphere('atmosphere', scene, [sunLight], {
+	// 		exposure: 1.0,
+	// 		isLinearSpaceLight: false,
+	// 		isLinearSpaceComposition: false,
+	// 		isSkyViewLutEnabled: true,
+	// 		isAerialPerspectiveLutEnabled: true,
+	// 		originHeight: 0
+	// 	});
+	// }
 
 	// ── Hex Grid ────────────────────────────────────────────
 	report('Generating hex grid...');
@@ -139,8 +130,18 @@ export async function createGlobeEngine(
 	const hexRadiusKm = H3_RES === 3 ? 59 : H3_RES === 4 ? 22 : 10;
 
 	const hexMesh = createHexMesh(hexRadiusKm, 3, scene); // 3 subdivisions
-	const terrainMat = createTerrainMaterial(scene);
-	hexMesh.material = terrainMat;
+
+	// For now, use StandardMaterial to validate hex geometry + positioning
+	const hexMat = new StandardMaterial('hexMat', scene);
+	hexMat.diffuseColor = new Color3(0.55, 0.65, 0.30); // green
+	hexMat.emissiveColor = new Color3(0.3, 0.4, 0.15); // self-lit for visibility
+	hexMat.specularColor = new Color3(0.1, 0.1, 0.1);
+	hexMat.backFaceCulling = false; // show both sides
+	hexMesh.material = hexMat;
+
+	// Keep terrain material reference for later
+	// const terrainMat = createTerrainMaterial(scene);
+	// hexMesh.material = terrainMat;
 
 	// ── Hex Renderer ────────────────────────────────────────
 	report('Building hex instances...');
@@ -150,6 +151,22 @@ export async function createGlobeEngine(
 	hexRenderer.initFromCells(allCells, 'deep_ocean');
 
 	report(`Initialized ${allCells.length.toLocaleString()} hex instances`);
+
+	// Debug: log mesh state
+	console.log('[Globe] Hex mesh vertices:', hexMesh.getTotalVertices());
+	console.log('[Globe] Hex mesh thin instance count:', hexMesh.thinInstanceCount);
+	console.log('[Globe] Hex mesh material:', hexMesh.material?.name);
+	console.log('[Globe] Hex mesh isVisible:', hexMesh.isVisible);
+	console.log('[Globe] Hex mesh isEnabled:', hexMesh.isEnabled());
+
+	// Debug: check rendering on first frame
+	scene.onAfterRenderObservable.addOnce(() => {
+		console.log('[Globe] Active meshes:', scene.getActiveMeshes().length);
+		console.log('[Globe] Total meshes:', scene.meshes.length);
+		for (const m of scene.meshes) {
+			console.log(`[Globe] Mesh "${m.name}": vertices=${m.getTotalVertices()}, visible=${m.isVisible}, enabled=${m.isEnabled()}, instances=${m.thinInstanceCount}`);
+		}
+	});
 
 	// ── Render Loop ─────────────────────────────────────────
 	engine.runRenderLoop(() => {
@@ -168,10 +185,9 @@ export async function createGlobeEngine(
 			engine.dispose();
 		},
 
-		flyTo(lat: number, lng: number, altitude: number = EARTH_RADIUS_KM * 0.5) {
-			const targetCenter = latLngToWorld(lat, lng, EARTH_RADIUS_KM);
-			const targetRadius = EARTH_RADIUS_KM + altitude;
-			camera.flyToAsync(undefined, undefined, targetRadius, targetCenter, 2000);
+		flyTo(_lat: number, _lng: number, _altitude: number = EARTH_RADIUS_KM * 0.5) {
+			// TODO: restore flyTo when GeospatialCamera is re-enabled
+			console.log('[Globe] flyTo not yet implemented with ArcRotateCamera');
 		},
 
 		setHexTerrain(h3: string, terrain: TerrainTypeId) {
