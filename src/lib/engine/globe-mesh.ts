@@ -294,6 +294,34 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 			hexRadius /= n;
 		}
 
+		// ── Deep ocean fast path: flat hex, no subdivision ──
+		const deepOcean = isWaterHex && coastInfo && !coastInfo.hasCoastline;
+
+		if (deepOcean) {
+			// Simple center + corners fan — 6 triangles instead of 384
+			const flatR = radius * (1 + tierH);
+
+			// Center vertex
+			positions.push(cell.center.x * flatR, cell.center.y * flatR, cell.center.z * flatR);
+			normals.push(cell.center.x, cell.center.y, cell.center.z);
+			colors.push(color[0], color[1], color[2], 1.0);
+			const centerOff = vOff++;
+
+			// Corner vertices
+			for (let i = 0; i < n; i++) {
+				const c = cell.corners[i];
+				positions.push(c.x * flatR, c.y * flatR, c.z * flatR);
+				normals.push(c.x, c.y, c.z);
+				colors.push(color[0], color[1], color[2], 1.0);
+				vOff++;
+			}
+			// Fan triangles (CW from outside)
+			for (let i = 0; i < n; i++) {
+				indices.push(centerOff, centerOff + 1 + (i + 1) % n, centerOff + 1 + i);
+			}
+
+		} else {
+
 		// ── Subdivided top face ─────────────────────────────
 		for (let i = 0; i < n; i++) {
 			const c0 = cell.corners[(i + 1) % n];
@@ -318,22 +346,13 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 
 					let h: number;
 					if (isWaterHex && coastInfo!.hasCoastline) {
-						// Sota-style: cosine ramp ONLY toward coastline edges.
-						// Water-water boundaries stay flat (excluded from border calc).
-						// This creates continuous ocean surfaces with natural shorelines.
 						const distToCoast = distToNearestCoastEdge(
 							ux, uy, uz, cell, coastInfo!.coastlineEdges
 						);
-						// t: 0 at coastline edge, 1 deep in water (far from coast)
 						const t = Math.min(distToCoast / hexRadius, 1.0);
-						// cosrp: cosine interpolation — smooth ramp from 0 (at coast) to full depth
 						const mu = (1 - Math.cos(t * Math.PI)) / 2;
 						h = tierH * mu + noiseH * NOISE_AMP * 0.3;
-					} else if (isWaterHex) {
-						// Fully surrounded by water — flat at full depth, no bowl
-						h = tierH + noiseH * NOISE_AMP * 0.3;
 					} else {
-						// Land hexes: flat tier height + global noise
 						h = tierH + noiseH * NOISE_AMP;
 					}
 
@@ -357,24 +376,48 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 				for (let k = 0; k < 3; k++) {
 					positions.push(displaced[k * 3], displaced[k * 3 + 1], displaced[k * 3 + 2]);
 					normals.push(nx, ny, nz);
-					colors.push(color[0], color[1], color[2], 1.0); // alpha=1 = top face
+					colors.push(color[0], color[1], color[2], 1.0);
 					indices.push(vOff++);
 				}
 			}
 		}
 
-		// ── Side walls ──────────────────────────────────────
+		// ── Side walls: ONLY at edges with height difference ─
+		// Skip walls between same-height neighbors to eliminate fissures
 		for (let i = 0; i < n; i++) {
 			const c0 = cell.corners[i];
 			const c1 = cell.corners[(i + 1) % n];
 
-			// Wall top = tier height + noise at each corner (matches terrain surface)
+			// Find neighbor across this edge
+			const edgeMidX = (c0.x + c1.x) * 0.5;
+			const edgeMidY = (c0.y + c1.y) * 0.5;
+			const edgeMidZ = (c0.z + c1.z) * 0.5;
+			const dirX = edgeMidX - cell.center.x;
+			const dirY = edgeMidY - cell.center.y;
+			const dirZ = edgeMidZ - cell.center.z;
+
+			let neighborHeight = cell.heightLevel;
+			for (const nId of cell.neighbors) {
+				const nb = cellById.get(nId);
+				if (!nb) continue;
+				const ndx = nb.center.x - cell.center.x;
+				const ndy = nb.center.y - cell.center.y;
+				const ndz = nb.center.z - cell.center.z;
+				if (dirX * ndx + dirY * ndy + dirZ * ndz > 0) {
+					// Check if this neighbor is the one across this edge (closest in edge direction)
+					neighborHeight = nb.heightLevel;
+					break;
+				}
+			}
+
+			// Skip wall if neighbor is at same height — no cliff needed
+			if (neighborHeight === cell.heightLevel) continue;
+
 			const wn0 = fbmNoise(c0.x * NOISE_SCALE, c0.y * NOISE_SCALE, c0.z * NOISE_SCALE);
 			const wn1 = fbmNoise(c1.x * NOISE_SCALE, c1.y * NOISE_SCALE, c1.z * NOISE_SCALE);
 			const topR0 = radius * (1 + tierH + wn0 * NOISE_AMP);
 			const topR1 = radius * (1 + tierH + wn1 * NOISE_AMP);
 
-			// Wall normal: outward from hex center
 			const midX = (c0.x + c1.x) * 0.5;
 			const midY = (c0.y + c1.y) * 0.5;
 			const midZ = (c0.z + c1.z) * 0.5;
@@ -386,7 +429,6 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 
 			const wallOff = vOff;
 
-			// 4 wall vertices — top matches terrain surface, bottom at floor
 			positions.push(c0.x * topR0, c0.y * topR0, c0.z * topR0);
 			normals.push(wnx, wny, wnz);
 			colors.push(color[0], color[1], color[2], 0.0);
@@ -407,6 +449,8 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 			indices.push(wallOff + 1, wallOff + 3, wallOff + 2);
 			vOff += 4;
 		}
+
+		} // end of non-deep-ocean block
 
 		totalVerticesPerCell.push(vOff - startVOff);
 	}
