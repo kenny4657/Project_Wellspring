@@ -102,21 +102,19 @@ export async function createGlobeEngine(
 	fillLight.intensity = 1.0;
 	fillLight.diffuse = new Color3(0.7, 0.75, 0.9);
 
-	// Camera headlight — always illuminates what the camera sees
-	const cameraLight = new PointLight('cameraLight', camera.position.clone(), scene);
-	cameraLight.intensity = 3.0;
-	cameraLight.diffuse = new Color3(1, 1, 1);
-	cameraLight.range = EARTH_RADIUS_KM * 10;
-
 	// No globe sphere — hex tiles ARE the surface.
-	// A sphere underneath causes z-fighting artifacts with overlapping hex tiles.
-	// The camera pickPredicate uses a virtual sphere for interaction only.
 	const globe: any = null;
 
 	// ── Geospatial Camera ───────────────────────────────────
 	const camera = new GeospatialCamera('geoCam', scene, {
 		planetRadius: EARTH_RADIUS_KM
 	});
+
+	// Camera headlight — always illuminates what the camera sees
+	const cameraLight = new PointLight('cameraLight', camera.position.clone(), scene);
+	cameraLight.intensity = 3.0;
+	cameraLight.diffuse = new Color3(1, 1, 1);
+	cameraLight.range = EARTH_RADIUS_KM * 10;
 
 	const startCenter = latLngToWorld(35, -20, EARTH_RADIUS_KM);
 	camera.center = startCenter;
