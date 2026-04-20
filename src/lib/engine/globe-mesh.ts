@@ -211,7 +211,9 @@ function getCoastlineInfo(cell: HexCell, cellById: Map<number, HexCell>): Coastl
 		if (closestNId >= 0) {
 			const neighbor = cellById.get(closestNId)!;
 			neighborHeights[i] = neighbor.heightLevel;
-			if (neighbor.heightLevel === cell.heightLevel) {
+			if (neighbor.heightLevel >= cell.heightLevel) {
+				// Same height or neighbor is higher → no ramp from our side.
+				// Higher neighbor ramps down to us from their side.
 				coastlineEdges[i] = false;
 				sameHeightCount++;
 			}
