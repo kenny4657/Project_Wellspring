@@ -225,9 +225,11 @@ export async function createGlobeEngine(
 	(window as any).__camera = camera;
 
 	// ── Render Loop ─────────────────────────────────────────
+	// Set initial camera position for shader
+	terrainMat.setVector3('cameraPos', camera.position);
+
 	engine.runRenderLoop(() => {
 		cameraLight.position.copyFrom(camera.position);
-		// Pass camera position to custom terrain shader for camera-following light
 		terrainMat.setVector3('cameraPos', camera.position);
 		scene.render();
 	});

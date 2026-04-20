@@ -256,8 +256,8 @@ void main() {
     vec3 toCamera = normalize(cameraPos - vWorldPos);
     float camDiffuse = max(dot(N, toCamera), 0.0);
 
-    // Combine: high ambient + sun + camera light
-    float light = 0.45 + 0.25 * sunDiffuse + 0.30 * camDiffuse;
+    // Combine: very high ambient + sun + camera light
+    float light = 0.70 + 0.15 * sunDiffuse + 0.15 * camDiffuse;
     vec3 litColor = baseColor * light;
 
     // Subtle hex edge line
