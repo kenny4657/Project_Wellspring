@@ -430,6 +430,9 @@ function computeSurfaceHeight(
 			h -= COAST_ROUNDING * coastMid * coastBlend * 4;
 		}
 
+		// Land hexes must never dip below sea level — prevents false puddles
+		if (!isWaterHex) h = Math.max(h, -0.001);
+
 		return h;
 	}
 
