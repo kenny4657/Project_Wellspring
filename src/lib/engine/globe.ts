@@ -12,6 +12,7 @@ import { MeshBuilder } from '@babylonjs/core/Meshes/meshBuilder';
 import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
 import { DirectionalLight } from '@babylonjs/core/Lights/directionalLight';
 import { HemisphericLight } from '@babylonjs/core/Lights/hemisphericLight';
+import { PointLight } from '@babylonjs/core/Lights/pointLight';
 import { GeospatialCamera } from '@babylonjs/core/Cameras/geospatialCamera';
 import { Atmosphere } from '@babylonjs/addons/atmosphere/atmosphere';
 
@@ -38,7 +39,6 @@ import '@babylonjs/core/Shaders/default.fragment';
 import { EARTH_RADIUS_KM, latLngToWorld } from '$lib/geo/coords';
 import { createHexMesh } from '$lib/engine/hex-mesh';
 import { HexRenderer } from '$lib/engine/hex-renderer';
-import { createTerrainMaterial } from '$lib/engine/terrain-shader';
 import { pickHexAtScreen } from '$lib/engine/picking';
 import { type TerrainTypeId, TERRAIN_PROFILES } from '$lib/world/terrain-types';
 import { getRes0Cells, cellToChildren } from 'h3-js';
@@ -97,10 +97,16 @@ export async function createGlobeEngine(
 	sunLight.intensity = 2.0;
 	sunLight.diffuse = new Color3(1, 0.98, 0.92);
 
-	// Fill light from opposite side to reduce dark hemisphere
+	// Fill light from opposite side
 	const fillLight = new DirectionalLight('fill', new Vector3(1, -0.3, -0.5).normalize(), scene);
 	fillLight.intensity = 1.0;
 	fillLight.diffuse = new Color3(0.7, 0.75, 0.9);
+
+	// Camera headlight — always illuminates what the camera sees
+	const cameraLight = new PointLight('cameraLight', camera.position.clone(), scene);
+	cameraLight.intensity = 3.0;
+	cameraLight.diffuse = new Color3(1, 1, 1);
+	cameraLight.range = EARTH_RADIUS_KM * 10;
 
 	// No globe sphere — hex tiles ARE the surface.
 	// A sphere underneath causes z-fighting artifacts with overlapping hex tiles.
@@ -169,10 +175,15 @@ export async function createGlobeEngine(
 	// from sphere curvature without excessive overlap that causes z-fighting.
 	const hexRadiusKm = H3_RES === 3 ? 75 : H3_RES === 4 ? 28 : 12;
 
-	const hexMesh = createHexMesh(hexRadiusKm, 3, scene); // 3 subdivisions
+	const hexMesh = createHexMesh(hexRadiusKm, 3, scene);
 
-	const terrainMat = createTerrainMaterial(scene);
-	hexMesh.material = terrainMat;
+	// Use Babylon's StandardMaterial so all scene lights work automatically.
+	// Per-hex terrain colors are applied via instance color buffers.
+	const hexMat = new StandardMaterial('hexMat', scene);
+	hexMat.diffuseColor = new Color3(1, 1, 1); // white base — instance color provides the actual color
+	hexMat.specularColor = new Color3(0.2, 0.2, 0.2);
+	hexMat.backFaceCulling = false;
+	hexMesh.material = hexMat;
 
 	// ── Hex Renderer ────────────────────────────────────────
 	report('Building hex instances...');
@@ -219,6 +230,8 @@ export async function createGlobeEngine(
 
 	// ── Render Loop ─────────────────────────────────────────
 	engine.runRenderLoop(() => {
+		// Keep headlight at camera position
+		cameraLight.position.copyFrom(camera.position);
 		scene.render();
 	});
 

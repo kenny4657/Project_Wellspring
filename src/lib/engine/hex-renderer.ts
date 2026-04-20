@@ -1,19 +1,17 @@
 /**
  * Hex renderer — manages thin instances for all hex tiles on the globe.
  *
- * All hexes share one mesh template. Terrain shape, material, and transitions
- * are driven by per-instance attributes read by the terrain shader:
- *   - matrix (16 floats): position + rotation on globe
- *   - terrainData (8 floats): terrain type + 6 neighbor types + padding
- *   - color (4 floats): province/country tint RGBA
+ * Uses Babylon's native instance color system (ColorInstanceKind) so
+ * StandardMaterial lighting works automatically. Terrain type determines
+ * the instance color via the TERRAIN_PROFILES color table.
  */
-import { Matrix, Quaternion, Vector3 } from '@babylonjs/core/Maths/math.vector';
+import { Matrix, Vector3 } from '@babylonjs/core/Maths/math.vector';
+import { VertexBuffer } from '@babylonjs/core/Buffers/buffer';
 import { type Mesh } from '@babylonjs/core/Meshes/mesh';
 import { cellToLatLng, gridDisk } from 'h3-js';
 import { latLngToWorld, EARTH_RADIUS_KM } from '$lib/geo/coords';
-import { TERRAIN_TYPES, type TerrainTypeId } from '$lib/world/terrain-types';
+import { TERRAIN_TYPES, TERRAIN_PROFILES, type TerrainTypeId } from '$lib/world/terrain-types';
 
-// Reusable temp vectors to avoid allocation in hot loops
 const _pos = Vector3.Zero();
 const _up = Vector3.Zero();
 const _fwd = Vector3.Zero();
@@ -22,9 +20,8 @@ const _right = Vector3.Zero();
 export class HexRenderer {
 	private mesh: Mesh;
 	private matrices: Float32Array;
-	private terrainData0: Float32Array;  // [terrainType, neighbor0, neighbor1, neighbor2] per hex
-	private terrainData1: Float32Array;  // [neighbor3, neighbor4, neighbor5, padding] per hex
-	private colors: Float32Array;
+	private instanceColors: Float32Array; // RGBA per hex — terrain type color
+	private hexTerrain: Float32Array;     // terrain type index per hex (for lookup)
 	private hexIndex: Map<string, number> = new Map();
 	private neighborMap: Map<string, string[]> = new Map();
 	private count: number = 0;
@@ -32,146 +29,96 @@ export class HexRenderer {
 	constructor(mesh: Mesh, capacity: number) {
 		this.mesh = mesh;
 		this.matrices = new Float32Array(capacity * 16);
-		this.terrainData0 = new Float32Array(capacity * 4);
-		this.terrainData1 = new Float32Array(capacity * 4);
-		this.colors = new Float32Array(capacity * 4);
+		this.instanceColors = new Float32Array(capacity * 4);
+		this.hexTerrain = new Float32Array(capacity);
 	}
 
 	/**
 	 * Initialize all hexes from H3 cell list.
-	 * Computes globe positions, builds neighbor map, sets default terrain.
 	 */
 	initFromCells(cells: string[], defaultTerrain: TerrainTypeId = 'deep_ocean'): void {
 		this.count = cells.length;
-		const cellSet = new Set(cells);
 		const terrainIndex = TERRAIN_TYPES[defaultTerrain];
+		const profile = TERRAIN_PROFILES[terrainIndex];
 
 		for (let i = 0; i < cells.length; i++) {
 			const h3 = cells[i];
 			this.hexIndex.set(h3, i);
 
-			// Compute neighbors (filter to cells in our grid)
+			// Compute neighbors
 			const disk = gridDisk(h3, 1);
 			const neighbors = disk.filter(n => n !== h3);
-			// Pad to exactly 6 neighbors (pentagons have 5)
 			while (neighbors.length < 6) neighbors.push(neighbors[0] || h3);
 			this.neighborMap.set(h3, neighbors);
 
-			// Compute instance matrix (position + rotation on globe)
+			// Compute instance matrix
 			const [lat, lng] = cellToLatLng(h3);
 			this.computeMatrix(lat, lng, i);
 
-			// Set default terrain data (split across two vec4 buffers)
-			this.terrainData0[i * 4 + 0] = terrainIndex; // terrain type
-			this.terrainData0[i * 4 + 1] = terrainIndex; // neighbor 0
-			this.terrainData0[i * 4 + 2] = terrainIndex; // neighbor 1
-			this.terrainData0[i * 4 + 3] = terrainIndex; // neighbor 2
-			this.terrainData1[i * 4 + 0] = terrainIndex; // neighbor 3
-			this.terrainData1[i * 4 + 1] = terrainIndex; // neighbor 4
-			this.terrainData1[i * 4 + 2] = terrainIndex; // neighbor 5
-			this.terrainData1[i * 4 + 3] = 0;            // padding
-
-			// Default color: fully transparent (no tint)
-			this.colors[i * 4 + 0] = 0;
-			this.colors[i * 4 + 1] = 0;
-			this.colors[i * 4 + 2] = 0;
-			this.colors[i * 4 + 3] = 0;
+			// Set terrain type and instance color
+			this.hexTerrain[i] = terrainIndex;
+			this.instanceColors[i * 4 + 0] = profile.color[0];
+			this.instanceColors[i * 4 + 1] = profile.color[1];
+			this.instanceColors[i * 4 + 2] = profile.color[2];
+			this.instanceColors[i * 4 + 3] = 1.0;
 		}
 
-		// Second pass: set neighbor terrain data (now that all hexes are indexed)
-		for (let i = 0; i < cells.length; i++) {
-			const h3 = cells[i];
-			const neighbors = this.neighborMap.get(h3)!;
-			for (let e = 0; e < 6; e++) {
-				const ni = this.hexIndex.get(neighbors[e]);
-				if (ni !== undefined) {
-					const neighborType = this.terrainData0[ni * 4 + 0]; // neighbor's terrain type
-					if (e < 3) {
-						this.terrainData0[i * 4 + 1 + e] = neighborType;
-					} else {
-						this.terrainData1[i * 4 + (e - 3)] = neighborType;
-					}
-				}
-			}
-		}
-
-		// Upload buffers as separate vec4 attributes (WebGL max attribute size is vec4)
+		// Upload buffers
 		this.mesh.thinInstanceSetBuffer('matrix', this.matrices, 16, true);
-		this.mesh.thinInstanceRegisterAttribute('terrainData0', 4);
-		this.mesh.thinInstanceSetBuffer('terrainData0', this.terrainData0, 4, false);
-		this.mesh.thinInstanceRegisterAttribute('terrainData1', 4);
-		this.mesh.thinInstanceSetBuffer('terrainData1', this.terrainData1, 4, false);
-		this.mesh.thinInstanceRegisterAttribute('color', 4);
-		this.mesh.thinInstanceSetBuffer('color', this.colors, 4, false);
+
+		// Use Babylon's native instance color system
+		this.mesh.thinInstanceSetBuffer('color', this.instanceColors, 4, false);
+		// Enable instance colors on the mesh so StandardMaterial uses them
+		this.mesh.hasVertexAlpha = false;
 	}
 
 	/**
-	 * Change a hex's terrain type. Updates this hex + 6 neighbors' buffers.
+	 * Change a hex's terrain type.
 	 */
 	setHexTerrain(h3: string, terrain: TerrainTypeId): void {
 		const idx = this.hexIndex.get(h3);
 		if (idx === undefined) return;
 
 		const terrainIndex = TERRAIN_TYPES[terrain];
+		const profile = TERRAIN_PROFILES[terrainIndex];
 
-		// Update this hex's terrain type
-		this.terrainData0[idx * 4 + 0] = terrainIndex;
+		this.hexTerrain[idx] = terrainIndex;
+		this.instanceColors[idx * 4 + 0] = profile.color[0];
+		this.instanceColors[idx * 4 + 1] = profile.color[1];
+		this.instanceColors[idx * 4 + 2] = profile.color[2];
+		this.instanceColors[idx * 4 + 3] = 1.0;
 
-		// Update all neighbors' data pointing back to this hex
-		const neighbors = this.neighborMap.get(h3);
-		if (neighbors) {
-			for (let e = 0; e < 6; e++) {
-				const neighborH3 = neighbors[e];
-				const ni = this.hexIndex.get(neighborH3);
-				if (ni === undefined) continue;
-
-				// Find which edge of the neighbor points back to this hex
-				const neighborNeighbors = this.neighborMap.get(neighborH3);
-				if (!neighborNeighbors) continue;
-				for (let ne = 0; ne < 6; ne++) {
-					if (neighborNeighbors[ne] === h3) {
-						if (ne < 3) {
-							this.terrainData0[ni * 4 + 1 + ne] = terrainIndex;
-						} else {
-							this.terrainData1[ni * 4 + (ne - 3)] = terrainIndex;
-						}
-						break;
-					}
-				}
-
-				// Also update this hex's neighbor data
-				const neighborType = this.terrainData0[ni * 4 + 0];
-				if (e < 3) {
-					this.terrainData0[idx * 4 + 1 + e] = neighborType;
-				} else {
-					this.terrainData1[idx * 4 + (e - 3)] = neighborType;
-				}
-			}
-		}
-
-		this.mesh.thinInstanceBufferUpdated('terrainData0');
-		this.mesh.thinInstanceBufferUpdated('terrainData1');
+		this.mesh.thinInstanceBufferUpdated('color');
 	}
 
 	/**
-	 * Set a hex's province/country color tint.
+	 * Set a hex's color directly (for province/country tint).
 	 */
 	setHexColor(h3: string, r: number, g: number, b: number, a: number): void {
 		const idx = this.hexIndex.get(h3);
 		if (idx === undefined) return;
 
-		this.colors[idx * 4 + 0] = r;
-		this.colors[idx * 4 + 1] = g;
-		this.colors[idx * 4 + 2] = b;
-		this.colors[idx * 4 + 3] = a;
+		this.instanceColors[idx * 4 + 0] = r;
+		this.instanceColors[idx * 4 + 1] = g;
+		this.instanceColors[idx * 4 + 2] = b;
+		this.instanceColors[idx * 4 + 3] = a;
 		this.mesh.thinInstanceBufferUpdated('color');
 	}
 
 	/**
-	 * Clear a hex's color tint (make fully transparent).
+	 * Clear a hex's color back to its terrain type color.
 	 */
 	clearHexColor(h3: string): void {
-		this.setHexColor(h3, 0, 0, 0, 0);
+		const idx = this.hexIndex.get(h3);
+		if (idx === undefined) return;
+
+		const terrainIndex = this.hexTerrain[idx];
+		const profile = TERRAIN_PROFILES[terrainIndex];
+		this.instanceColors[idx * 4 + 0] = profile.color[0];
+		this.instanceColors[idx * 4 + 1] = profile.color[1];
+		this.instanceColors[idx * 4 + 2] = profile.color[2];
+		this.instanceColors[idx * 4 + 3] = 1.0;
+		this.mesh.thinInstanceBufferUpdated('color');
 	}
 
 	/**
@@ -180,30 +127,20 @@ export class HexRenderer {
 	getHexTerrain(h3: string): TerrainTypeId | null {
 		const idx = this.hexIndex.get(h3);
 		if (idx === undefined) return null;
-		const typeIndex = this.terrainData0[idx * 4 + 0];
+		const typeIndex = this.hexTerrain[idx];
 		const entries = Object.entries(TERRAIN_TYPES);
 		const entry = entries.find(([, v]) => v === typeIndex);
 		return entry ? entry[0] as TerrainTypeId : null;
 	}
 
-	/** Total hex count */
 	get hexCount(): number { return this.count; }
-
-	/** Check if an H3 cell is in the grid */
 	hasHex(h3: string): boolean { return this.hexIndex.has(h3); }
 
-	// ── Private helpers ──
-
 	private computeMatrix(lat: number, lng: number, index: number): void {
-		// Position above globe sphere surface so flat hex tiles are fully visible
-		// (flat tiles on curved sphere dip below surface at edges otherwise)
 		const r = EARTH_RADIUS_KM + 15;
 		_pos.copyFrom(latLngToWorld(lat, lng, r));
-
-		// Surface normal = normalized position (for a sphere centered at origin)
 		_pos.normalizeToRef(_up);
 
-		// Compute tangent frame: right = cross(worldUp, normal), fwd = cross(normal, right)
 		const worldUp = Math.abs(_up.y) < 0.999
 			? Vector3.UpReadOnly
 			: Vector3.RightReadOnly;
@@ -213,7 +150,6 @@ export class HexRenderer {
 		Vector3.CrossToRef(_up, _right, _fwd);
 		_fwd.normalize();
 
-		// Build rotation matrix from tangent frame
 		const mat = Matrix.Identity();
 		Matrix.FromValuesToRef(
 			_right.x, _right.y, _right.z, 0,
