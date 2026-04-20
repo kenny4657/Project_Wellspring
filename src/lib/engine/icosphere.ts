@@ -1,22 +1,20 @@
 /**
  * Icosahedral hex grid on a sphere.
- * Ported from ardazishvili/Sota (MIT-like license).
+ * Ported from ardazishvili/Sota.
  *
- * Algorithm:
- * 1. Start with icosahedron (12 vertices, 20 triangles)
- * 2. For each triangle, lay out a 2D hex grid
- * 3. Project each hex center + corners onto the sphere via barycentric + slerp
- * 4. Deduplicate shared hexes at triangle boundaries
+ * Key difference from previous attempt: corners are NEVER skipped.
+ * All 6 corners are projected even if outside the current triangle,
+ * and the deduplication system merges them from adjacent triangles.
  */
 
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 
 export interface HexCell {
 	id: number;
-	center: Vector3;        // position on unit sphere
-	corners: Vector3[];     // 5 or 6 corner positions on unit sphere
-	neighbors: Set<number>; // IDs of adjacent cells
-	terrain: number;        // terrain type index
+	center: Vector3;
+	corners: Vector3[];
+	neighbors: Set<number>;
+	terrain: number;
 	isPentagon: boolean;
 }
 
@@ -26,14 +24,9 @@ function icoPoints(): Vector3[] {
 	const s = 2 / Math.sqrt(5);
 	const c = 1 / Math.sqrt(5);
 	const pts: Vector3[] = [];
-
-	pts.push(new Vector3(0, 1, 0)); // top
+	pts.push(new Vector3(0, 1, 0));
 	for (let i = 0; i < 5; i++) {
-		pts.push(new Vector3(
-			s * Math.cos(i * 2 * Math.PI / 5),
-			c,
-			s * Math.sin(i * 2 * Math.PI / 5)
-		));
+		pts.push(new Vector3(s * Math.cos(i * 2 * Math.PI / 5), c, s * Math.sin(i * 2 * Math.PI / 5)));
 	}
 	for (let i = 0; i < 6; i++) {
 		const v = pts[i];
@@ -44,17 +37,14 @@ function icoPoints(): Vector3[] {
 
 function icoIndices(): [number, number, number][] {
 	const tris: [number, number, number][] = [];
-	// Upper cap
 	for (let i = 0; i < 5; i++) tris.push([(i + 1) % 5 + 1, 0, i + 1]);
-	// Lower cap
 	for (let i = 0; i < 5; i++) tris.push([(i + 1) % 5 + 7, 6, i + 7]);
-	// Middle band
 	for (let i = 0; i < 5; i++) tris.push([i + 1, (7 - i) % 5 + 7, (i + 1) % 5 + 1]);
 	for (let i = 0; i < 5; i++) tris.push([i + 1, (8 - i) % 5 + 7, (7 - i) % 5 + 7]);
 	return tris;
 }
 
-// ── Barycentric + Slerp projection ──
+// ── Projection ──
 
 function barycentric(x: number, z: number): [number, number, number] {
 	const l3 = z * 2.0 / Math.sqrt(3.0);
@@ -64,74 +54,54 @@ function barycentric(x: number, z: number): [number, number, number] {
 }
 
 function slerp(a: Vector3, b: Vector3, t: number): Vector3 {
-	const dot = Vector3.Dot(a, b);
-	const clamped = Math.max(-1, Math.min(1, dot));
-	const omega = Math.acos(clamped);
-	if (Math.abs(omega) < 1e-10) return a.clone();
-	const sinOmega = Math.sin(omega);
-	const wa = Math.sin((1 - t) * omega) / sinOmega;
-	const wb = Math.sin(t * omega) / sinOmega;
-	return new Vector3(
-		a.x * wa + b.x * wb,
-		a.y * wa + b.y * wb,
-		a.z * wa + b.z * wb
-	);
+	if (t <= 0) return a.clone();
+	if (t >= 1) return b.clone();
+	const dot = Math.max(-1, Math.min(1, Vector3.Dot(a, b)));
+	const omega = Math.acos(dot);
+	if (omega < 1e-10) return a.clone();
+	const so = Math.sin(omega);
+	const wa = Math.sin((1 - t) * omega) / so;
+	const wb = Math.sin(t * omega) / so;
+	return new Vector3(a.x * wa + b.x * wb, a.y * wa + b.y * wb, a.z * wa + b.z * wb);
 }
 
 function map2dTo3d(x: number, z: number, s1: Vector3, s2: Vector3, s3: Vector3): Vector3 {
 	const [l1, l2, l3] = barycentric(x, z);
 	if (Math.abs(l3 - 1) < 1e-10) return s3.clone();
-	const l2s = l2 / (l1 + l2);
-	const p12 = slerp(s1, s2, l2s);
-	return slerp(p12, s3, l3);
+	const l2s = l2 / (l1 + l2 + 1e-15);
+	const p12 = slerp(s1, s2, Math.max(0, Math.min(1, l2s)));
+	return slerp(p12, s3, Math.max(0, Math.min(1, l3)));
 }
 
-// ── Discrete key for deduplication ──
+// ── Discrete key ──
 
 function discreteKey(v: Vector3, step: number): string {
-	const x = Math.round(v.x / step);
-	const y = Math.round(v.y / step);
-	const z = Math.round(v.z / step);
-	return `${x},${y},${z}`;
+	return `${Math.round(v.x / step)},${Math.round(v.y / step)},${Math.round(v.z / step)}`;
 }
 
-// ── Main generation ──
+// ── Generation ──
 
-/**
- * Generate an icosahedral hex grid on a unit sphere.
- *
- * @param resolution Number of hexes along each edge of an icosahedron face.
- *   Higher = more hexes. Total ≈ 10 * resolution² + 2.
- * @returns Array of HexCells on the unit sphere
- */
 export function generateIcoHexGrid(resolution: number): HexCell[] {
 	const icoVerts = icoPoints();
 	const icoTris = icoIndices();
 
-	const r = (1.0 / 2) / (resolution + 1);  // hex small radius in 2D space
-	const R = r * 2 / Math.sqrt(3);           // hex circumradius in 2D space
+	const r = (1.0 / 2) / (resolution + 1);
+	const R = r * 2 / Math.sqrt(3);
 	const diameter = 2 * R;
 	const startX = -0.5;
-	const startZ = 0;
-
 	const keyStep = r / 3.0;
 
-	// Polygon maps: discreteKey → cell data
-	const cellMap = new Map<string, { center: Vector3; corners: Vector3[]; isPentagon: boolean }>();
-	const cellKeyToId = new Map<string, number>();
-	let nextId = 0;
-
-	// Neighbor tracking per triangle patch
-	const globalNeighbors = new Map<number, Set<number>>();
-
-	// Functions for triangle boundary
 	const f1 = (x: number) => Math.sqrt(3) * x + Math.sqrt(3) / 2;
 	const f2 = (x: number) => -Math.sqrt(3) * x + Math.sqrt(3) / 2;
 
-	// Pentagon detection
+	// cellMap stores hex data keyed by discretized sphere position
+	const cellMap = new Map<string, { center: Vector3; corners: Vector3[]; isPentagon: boolean }>();
+	const cellKeyToId = new Map<string, number>();
+	const globalNeighbors = new Map<number, Set<number>>();
+	let nextId = 0;
+
 	const isPentagonIJ = (i: number, j: number): boolean => {
-		return (i === resolution + 1) ||
-			(i === 0 && (j === 0 || j === resolution + 1));
+		return (i === resolution + 1) || (i === 0 && (j === 0 || j === resolution + 1));
 	};
 
 	for (let t = 0; t < 20; t++) {
@@ -140,23 +110,18 @@ export function generateIcoHexGrid(resolution: number): HexCell[] {
 		const v1 = icoVerts[i1];
 		const v2 = icoVerts[i2];
 
-		// Track cells created in this triangle for neighbor detection
-		const patchCells = new Map<string, number>(); // "i,j" → cellId
+		const patchCells = new Map<string, number>();
 
 		for (let i = 0; i < resolution + 2; i++) {
 			for (let j = 0; j < resolution + 2; j++) {
-				// 2D hex center position within triangle
 				let cx = startX + 2 * r * j;
-				const cz = startZ + diameter * 3.0 * i / 4.0;
-				if (i & 1) cx += r; // odd row offset
+				const cz = diameter * 3.0 * i / 4.0;
+				if (i & 1) cx += r;
 
-				// Skip if clearly outside triangle
+				// Skip hexes clearly outside triangle (with generous tolerance)
 				if (cz < -r / 2 || cz > f1(cx) + r / 2 || cz > f2(cx) + r / 2) continue;
 
-				// Project center to sphere
 				const mappedCenter = map2dTo3d(cx, cz, v0, v1, v2).normalize();
-
-				// Deduplicate
 				const key = discreteKey(mappedCenter, keyStep);
 				const isPent = isPentagonIJ(i, j);
 
@@ -171,43 +136,37 @@ export function generateIcoHexGrid(resolution: number): HexCell[] {
 				const cell = cellMap.get(key)!;
 				patchCells.set(`${i},${j}`, cellId);
 
-				// Generate 6 corner points
-				const numCorners = isPent ? 5 : 6;
-				const startAngle = -Math.PI / 6;
-				for (let k = 0; k < numCorners; k++) {
-					const angle = startAngle + k * Math.PI / 3;
+				// Generate ALL 6 corners — don't skip any
+				// Corners outside triangle will project via slerp extrapolation
+				// Adjacent triangles will contribute their own corners, merged by dedup
+				for (let k = 0; k < 6; k++) {
+					const angle = -Math.PI / 6 + k * Math.PI / 3;
 					const px = cx + Math.cos(angle) * R;
 					const pz = cz + Math.sin(angle) * R;
 
-					// Skip corners that are far outside the triangle
-					// (close corners are fine — they'll be projected correctly by slerp)
-					if (pz >= -r * 1.5 && pz <= f1(px) + r * 1.5 && pz <= f2(px) + r * 1.5) {
-						const mappedCorner = map2dTo3d(px, pz, v0, v1, v2).normalize();
-						// Avoid duplicate corners (check distance)
-						let isDupe = false;
-						for (const existing of cell.corners) {
-							if (Vector3.Distance(existing, mappedCorner) < keyStep * 0.5) {
-								isDupe = true;
-								break;
-							}
+					const mappedCorner = map2dTo3d(px, pz, v0, v1, v2).normalize();
+
+					// Deduplicate corners by distance
+					let isDupe = false;
+					for (const existing of cell.corners) {
+						if (Vector3.DistanceSquared(existing, mappedCorner) < keyStep * keyStep * 0.25) {
+							isDupe = true;
+							break;
 						}
-						if (!isDupe) cell.corners.push(mappedCorner);
 					}
+					if (!isDupe) cell.corners.push(mappedCorner);
 				}
 			}
 		}
 
-		// Build neighbor relationships within this triangle patch
+		// Neighbors within this patch
 		for (const [ij, cellId] of patchCells) {
 			const [i, j] = ij.split(',').map(Number);
-			// 6 axial neighbors in offset coordinates
-			const neighborOffsets = (i & 1)
-				? [[0, -1], [0, 1], [-1, 0], [-1, 1], [1, 0], [1, 1]]   // odd row
-				: [[0, -1], [0, 1], [-1, -1], [-1, 0], [1, -1], [1, 0]]; // even row
-
-			for (const [di, dj] of neighborOffsets) {
-				const nKey = `${i + di},${j + dj}`;
-				const nId = patchCells.get(nKey);
+			const offsets = (i & 1)
+				? [[0, -1], [0, 1], [-1, 0], [-1, 1], [1, 0], [1, 1]]
+				: [[0, -1], [0, 1], [-1, -1], [-1, 0], [1, -1], [1, 0]];
+			for (const [di, dj] of offsets) {
+				const nId = patchCells.get(`${i + di},${j + dj}`);
 				if (nId !== undefined && nId !== cellId) {
 					globalNeighbors.get(cellId)!.add(nId);
 					globalNeighbors.get(nId)!.add(cellId);
@@ -216,11 +175,10 @@ export function generateIcoHexGrid(resolution: number): HexCell[] {
 		}
 	}
 
-	// Sort corners of each cell by angle around center
+	// Sort corners angularly and limit to 5-6
 	for (const [, cell] of cellMap) {
 		if (cell.corners.length < 3) continue;
 		const n = cell.center;
-		// Build local tangent frame
 		const up = Math.abs(n.y) < 0.999 ? Vector3.Up() : Vector3.Right();
 		const right = Vector3.Cross(up, n).normalize();
 		const fwd = Vector3.Cross(n, right).normalize();
@@ -228,23 +186,32 @@ export function generateIcoHexGrid(resolution: number): HexCell[] {
 		cell.corners.sort((a, b) => {
 			const da = a.subtract(n);
 			const db = b.subtract(n);
-			const angleA = Math.atan2(Vector3.Dot(da, fwd), Vector3.Dot(da, right));
-			const angleB = Math.atan2(Vector3.Dot(db, fwd), Vector3.Dot(db, right));
-			return angleA - angleB;
+			return Math.atan2(Vector3.Dot(da, fwd), Vector3.Dot(da, right))
+				- Math.atan2(Vector3.Dot(db, fwd), Vector3.Dot(db, right));
 		});
+
+		// Limit: hexagons get 6, pentagons get 5
+		const maxCorners = cell.isPentagon ? 5 : 6;
+		if (cell.corners.length > maxCorners) {
+			// Keep corners most evenly spaced (take every N-th)
+			const step = cell.corners.length / maxCorners;
+			const kept: Vector3[] = [];
+			for (let i = 0; i < maxCorners; i++) {
+				kept.push(cell.corners[Math.round(i * step) % cell.corners.length]);
+			}
+			cell.corners = kept;
+		}
 	}
 
-	// Build final cell array
+	// Build final array
 	const cells: HexCell[] = [];
 	for (const [key, data] of cellMap) {
+		if (data.corners.length < 3) continue; // skip degenerate
 		const id = cellKeyToId.get(key)!;
 		cells.push({
-			id,
-			center: data.center,
-			corners: data.corners,
+			id, center: data.center, corners: data.corners,
 			neighbors: globalNeighbors.get(id) || new Set(),
-			terrain: 0, // default: deep_ocean
-			isPentagon: data.isPentagon
+			terrain: 0, isPentagon: data.isPentagon
 		});
 	}
 

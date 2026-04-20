@@ -20,7 +20,7 @@ import '@babylonjs/core/Animations/animatable';
 
 import { EARTH_RADIUS_KM, latLngToWorld } from '$lib/geo/coords';
 import { generateIcoHexGrid, type HexCell } from '$lib/engine/icosphere';
-import { buildGlobeMesh, updateCellColor, computeVertexStarts } from '$lib/engine/globe-mesh';
+import { buildGlobeMesh, updateCellTerrain } from '$lib/engine/globe-mesh';
 import { pickHexAtScreen } from '$lib/engine/picking';
 import { TERRAIN_TYPES, type TerrainTypeId } from '$lib/world/terrain-types';
 
@@ -110,19 +110,15 @@ export async function createGlobeEngine(
 	report('Building globe mesh...');
 	await tick();
 
-	const globeMesh = buildGlobeMesh(cells, EARTH_RADIUS_KM, scene);
-	const vertexStarts = computeVertexStarts(cells);
+	const { mesh: globeMesh, vertexStarts, totalVerticesPerCell } = buildGlobeMesh(cells, EARTH_RADIUS_KM, scene);
 
-	// Material: StandardMaterial with vertex colors
 	const mat = new StandardMaterial('globeMat', scene);
 	mat.diffuseColor = new Color3(1, 1, 1);
 	mat.specularColor = new Color3(0.15, 0.15, 0.15);
 	mat.backFaceCulling = true;
 	globeMesh.material = mat;
-	// Enable vertex colors
-	globeMesh.useVertexColors = true;
 
-	report(`Globe mesh: ${(globeMesh.getTotalVertices()).toLocaleString()} vertices`);
+	report(`Globe mesh: ${globeMesh.getTotalVertices().toLocaleString()} vertices, ${cells.length} cells`);
 
 	// ── Picking / Painting ──────────────────────────────────
 	let onHexClickCallback: ((cellIndex: number) => void) | null = null;
@@ -171,7 +167,7 @@ export async function createGlobeEngine(
 
 		setHexTerrain(cellIndex: number, terrain: TerrainTypeId) {
 			cells[cellIndex].terrain = TERRAIN_TYPES[terrain];
-			updateCellColor(globeMesh, cells, cellIndex, vertexStarts);
+			updateCellTerrain(globeMesh, cells, cellIndex, vertexStarts, totalVerticesPerCell, EARTH_RADIUS_KM);
 		},
 
 		get hexCount() { return cells.length; },
