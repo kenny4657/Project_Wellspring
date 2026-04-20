@@ -179,21 +179,9 @@ void main() {
     // Meeting height
     float meetingHeight = (tierHeight + neighborHeight) * 0.5;
 
-    // Final Y
-    float finalHeight;
-    if (uv2.x > 0.5) {
-        // Skirt vertex: only extend downward if there's an elevation difference
-        float heightDiff = abs(tierHeight - neighborHeight);
-        if (heightDiff > 0.1) {
-            finalHeight = min(tierHeight, neighborHeight) - 5.0;
-        } else {
-            // Same elevation — collapse skirt to surface level (invisible)
-            finalHeight = tierHeight;
-        }
-    } else {
-        float th = tierHeight + displacement * (1.0 - edgeFade);
-        finalHeight = mix(th, meetingHeight, edgeFade);
-    }
+    // Final Y displacement
+    float th = tierHeight + displacement * (1.0 - edgeFade);
+    float finalHeight = mix(th, meetingHeight, edgeFade);
 
     vec3 displacedPos = position;
     displacedPos.y = finalHeight;
@@ -264,17 +252,9 @@ void main() {
     float NdotL = max(dot(vWorldNormal, sunDirection), 0.0);
     vec3 litColor = baseColor * (0.85 + 0.15 * NdotL);
 
-    // Subtle hex edge line (only on top face, not skirts)
-    if (vIsSkirt < 0.5) {
-        float edgeDarken = smoothstep(0.88, 0.96, distFromCenter) * 0.1;
-        litColor *= (1.0 - edgeDarken);
-    }
-
-    // Skirt: hide by making it match the base color (no darkening)
-    // Skirts only matter when adjacent hexes have different elevation tiers
-    if (vIsSkirt > 0.5) {
-        litColor = baseColor * 0.85;
-    }
+    // Subtle hex edge line
+    float edgeDarken = smoothstep(0.88, 0.96, distFromCenter) * 0.08;
+    litColor *= (1.0 - edgeDarken);
 
     // Province/country tint
     if (vColor.a > 0.0) {

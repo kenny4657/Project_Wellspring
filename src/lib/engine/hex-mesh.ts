@@ -120,26 +120,8 @@ export function createHexMesh(radius: number, subdivisions: number, scene: Scene
 		innerStart += innerRing.length;
 	}
 
-	// ── Skirt ring: duplicate outermost vertices ──
-	const outerRing = vertexRings[ringCount];
-	const skirtStart = topVertexCount;
-	for (const [x, z] of outerRing) {
-		positions.push(x, 0, z); // Y will be displaced downward by shader
-		uvs.push(x / radius, z / radius);
-		uvs2.push(1, 0); // skirt vertex marker
-	}
-
-	// Triangulate skirt: connect outer top vertices to skirt vertices
-	const outerStart = topVertexCount - outerRing.length;
-	for (let i = 0; i < outerRing.length; i++) {
-		const next = (i + 1) % outerRing.length;
-		const topA = outerStart + i;
-		const topB = outerStart + next;
-		const botA = skirtStart + i;
-		const botB = skirtStart + next;
-		indices.push(topA, botA, topB);
-		indices.push(topB, botA, botB);
-	}
+	// Skirts removed — not needed until terrain elevation varies between hexes.
+	// Will be re-added when terrain painting creates elevation differences.
 
 	// ── Build mesh ──
 	const mesh = new Mesh('hexTemplate', scene);
