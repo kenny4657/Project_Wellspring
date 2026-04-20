@@ -140,21 +140,10 @@ export async function createGlobeEngine(
 	camera.attachControl(canvas, true);
 
 	// ── Atmosphere ──────────────────────────────────────────
-	let atmosphere: Atmosphere | null = null;
-	if (Atmosphere.IsSupported(engine)) {
-		try {
-			atmosphere = new Atmosphere('atmosphere', scene, [sunLight], {
-				exposure: 2.0,
-				isLinearSpaceLight: false,
-				isLinearSpaceComposition: false,
-				isSkyViewLutEnabled: true,
-				isAerialPerspectiveLutEnabled: false, // disable aerial perspective darkening
-				originHeight: 0
-			});
-		} catch (e) {
-			console.error('[Globe] Atmosphere failed:', e);
-		}
-	}
+	// Disabled during development — the atmosphere's globe compositor
+	// blocks close-up zoom and darkens the terrain.
+	// TODO: re-enable and configure originHeight/exposure once terrain is solid
+	const atmosphere: Atmosphere | null = null;
 
 	// ── Hex Grid ────────────────────────────────────────────
 	report('Generating hex grid...');
