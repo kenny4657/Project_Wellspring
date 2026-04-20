@@ -1,46 +1,52 @@
 /**
- * Hex picking — ray-sphere intersection to identify which H3 hex
- * the user clicked on.
+ * Hex picking — ray-sphere intersection, then find nearest hex cell center.
  */
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import type { Scene } from '@babylonjs/core/scene';
 import type { Camera } from '@babylonjs/core/Cameras/camera';
-import { latLngToCell } from 'h3-js';
-import { worldToLatLng, EARTH_RADIUS_KM } from '$lib/geo/coords';
+import type { HexCell } from './icosphere';
+import { EARTH_RADIUS_KM } from '$lib/geo/coords';
 
 /**
- * Pick the H3 cell under a screen coordinate by ray-sphere intersection.
+ * Pick the hex cell under a screen coordinate.
  *
- * @returns H3 cell index or null if the click missed the globe
+ * @returns Cell index or -1 if missed
  */
 export function pickHexAtScreen(
 	scene: Scene,
 	camera: Camera,
 	screenX: number,
 	screenY: number,
-	h3Resolution: number
-): string | null {
-	// Create picking ray from screen coordinates
+	cells: HexCell[],
+	radius: number
+): number {
 	const ray = scene.createPickingRay(screenX, screenY, undefined, camera);
 
-	// Intersect with sphere of radius EARTH_RADIUS_KM centered at origin
-	const r = EARTH_RADIUS_KM + 10; // slightly above surface to match hex offset
+	// Intersect with sphere
 	const origin = ray.origin;
 	const dir = ray.direction;
-
-	const oc = origin; // sphere center is at origin
 	const a = Vector3.Dot(dir, dir);
-	const b = 2.0 * Vector3.Dot(oc, dir);
-	const c = Vector3.Dot(oc, oc) - r * r;
+	const b = 2.0 * Vector3.Dot(origin, dir);
+	const c = Vector3.Dot(origin, origin) - radius * radius;
 	const discriminant = b * b - 4.0 * a * c;
 
-	if (discriminant < 0) return null; // miss
+	if (discriminant < 0) return -1;
 
 	const t = (-b - Math.sqrt(discriminant)) / (2.0 * a);
-	if (t < 0) return null; // behind camera
+	if (t < 0) return -1;
 
-	const hitPoint = origin.add(dir.scale(t));
-	const { lat, lng } = worldToLatLng(hitPoint);
+	const hitPoint = origin.add(dir.scale(t)).normalize();
 
-	return latLngToCell(lat, lng, h3Resolution);
+	// Find nearest cell center
+	let bestIdx = -1;
+	let bestDist = Infinity;
+	for (let i = 0; i < cells.length; i++) {
+		const dist = Vector3.DistanceSquared(hitPoint, cells[i].center);
+		if (dist < bestDist) {
+			bestDist = dist;
+			bestIdx = i;
+		}
+	}
+
+	return bestIdx;
 }

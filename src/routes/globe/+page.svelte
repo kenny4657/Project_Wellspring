@@ -20,8 +20,8 @@
 			hexCount = engine.hexCount;
 
 			// Wire up click-to-paint
-			engine.onHexClick = (h3: string) => {
-				engine!.setHexTerrain(h3, selectedTerrain);
+			engine.onHexClick = (cellIndex: number) => {
+				engine!.setHexTerrain(cellIndex, selectedTerrain);
 			};
 
 			loading = false;
