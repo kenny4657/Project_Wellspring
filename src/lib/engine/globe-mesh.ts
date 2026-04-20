@@ -288,24 +288,6 @@ function distToBorderWithTarget(
 	return { dist: minDist, target };
 }
 
-/** Distance to nearest EXCLUDED edge (land-land edges for land hexes).
- *  Used to prevent the coastline ramp from affecting vertices near land-land walls. */
-function distToExcludedEdge(
-	vx: number, vy: number, vz: number,
-	cell: HexCell, borderInfo: HexBorderInfo
-): number {
-	const n = cell.corners.length;
-	let minDist = Infinity;
-	for (let i = 0; i < n; i++) {
-		if (!borderInfo.excludedEdges[i]) continue; // only excluded edges
-		const a = cell.corners[i];
-		const b = cell.corners[(i + 1) % n];
-		const d = distToSegment(vx, vy, vz, a.x, a.y, a.z, b.x, b.y, b.z);
-		if (d < minDist) minDist = d;
-	}
-	return minDist;
-}
-
 // ── Build Globe Mesh ────────────────────────────────────────
 
 export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): {
@@ -409,23 +391,16 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 
 					let h: number;
 					if (borderInfo.hasBorder) {
+						// Sota-style distance_to_border with per-edge targets.
+						// Both water AND land hexes ramp at coastlines → they meet at sea level.
+						// Water→water depth transitions ramp to neighbor's height.
 						const { dist, target: borderTarget } = distToBorderWithTarget(ux, uy, uz, cell, borderInfo);
 						const t = Math.min(dist / hexRadius, 1.0);
-						let mu = (1 - Math.cos(t * Math.PI)) / 2;
+						const mu = (1 - Math.cos(t * Math.PI)) / 2;
 
-						// For LAND hexes: don't ramp vertices near land-land (excluded) edges.
-						// Without this, the ramp pulls corners shared with higher land down
-						// to sea level, creating 127km gaps that walls can't cover.
-						// Blend: near water edge → full ramp (mu from cosine).
-						//        near land edge → no ramp (mu=1, flat tier height).
-						if (!isWaterHex) {
-							const dExcl = distToExcludedEdge(ux, uy, uz, cell, borderInfo);
-							// ratio: 0 = at land edge, 1 = far from land edges
-							const landProx = Math.min(dExcl / hexRadius, 1.0);
-							// When close to a land edge (landProx→0), force mu→1 (no ramp)
-							mu = mu + (1 - mu) * (1 - landProx);
-						}
-
+						// Noise coefficient must MATCH at shared borders:
+						// - Water↔water: border noise = NOISE_AMP (flat neighbor uses full noise)
+						// - Water↔land: border noise = NOISE_AMP * 0.3 (both sides use 0.3 at coast)
 						const isWaterNeighborBorder = borderTarget < -0.001;
 						const borderNoise = isWaterNeighborBorder ? NOISE_AMP : NOISE_AMP * 0.3;
 						const interiorNoise = isWaterHex ? NOISE_AMP * 0.3 : NOISE_AMP;
@@ -523,7 +498,6 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 
 		totalVerticesPerCell.push(vOff - startVOff);
 	}
-
 
 	const positionsF32 = new Float32Array(positions);
 	const colorsF32 = new Float32Array(colors);
