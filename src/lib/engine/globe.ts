@@ -171,11 +171,9 @@ export async function createGlobeEngine(
 	// from sphere curvature without excessive overlap that causes z-fighting.
 	const hexRadiusKm = H3_RES === 3 ? 75 : H3_RES === 4 ? 28 : 12;
 
-	const hexMesh = createHexMesh(hexRadiusKm, 3, scene);
+	const hexMesh = createHexMesh(hexRadiusKm, 10, scene); // 10 subdivisions = 100 quads = 200 tris
 
-	// CustomMaterial = StandardMaterial + custom shader injection
-	// Gets Babylon's full lighting AND our terrain displacement/blending
-	const hexMat = createTerrainMaterial(scene);
+	const hexMat = createTerrainMaterial(scene, hexRadiusKm);
 	hexMesh.material = hexMat;
 
 	// ── Hex Renderer ────────────────────────────────────────
