@@ -119,7 +119,7 @@ export async function createGlobeEngine(
 
 	// Camera headlight — always illuminates what the camera sees
 	const cameraLight = new PointLight('cameraLight', camera.position.clone(), scene);
-	cameraLight.intensity = 3.0;
+	cameraLight.intensity = 1.0;
 	cameraLight.diffuse = new Color3(1, 1, 1);
 	cameraLight.range = EARTH_RADIUS_KM * 10;
 
@@ -129,7 +129,7 @@ export async function createGlobeEngine(
 	camera.pitch = 0;
 	camera.yaw = 0;
 
-	camera.limits.radiusMin = EARTH_RADIUS_KM + 50; // ~50km above surface
+	camera.limits.radiusMin = EARTH_RADIUS_KM + 5; // ~5km above surface
 	camera.limits.radiusMax = EARTH_RADIUS_KM * 5;
 	camera.limits.pitchMax = Math.PI / 2.5;
 
@@ -186,7 +186,7 @@ export async function createGlobeEngine(
 	// Per-hex terrain colors are applied via instance color buffers.
 	const hexMat = new StandardMaterial('hexMat', scene);
 	hexMat.diffuseColor = new Color3(1, 1, 1); // white base — instance color provides the actual color
-	hexMat.specularColor = new Color3(0.2, 0.2, 0.2);
+	hexMat.specularColor = new Color3(0, 0, 0); // no specular — prevents white hotspots
 	hexMat.backFaceCulling = false;
 	hexMesh.material = hexMat;
 
