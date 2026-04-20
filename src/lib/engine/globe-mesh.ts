@@ -214,8 +214,15 @@ function getCoastlineInfo(cell: HexCell, cellById: Map<number, HexCell>): Coastl
 			const neighbor = cellById.get(closestNId)!;
 			neighborHeights[i] = neighbor.heightLevel;
 			if (neighbor.heightLevel === cell.heightLevel) exactSameCount++;
-			if (neighbor.heightLevel >= cell.heightLevel) {
-				// Same height or neighbor is higher → no ramp from our side.
+
+			const neighborIsLand = neighbor.heightLevel >= 2;
+			const cellIsWater = cell.heightLevel <= 1;
+
+			if (cellIsWater && neighborIsLand) {
+				// Water → Land: ALWAYS ramp (coastline). Water rises toward sea level.
+				// Keep coastlineEdges[i] = true, neighborHeight stays as land level
+			} else if (neighbor.heightLevel >= cell.heightLevel) {
+				// Same height or neighbor is higher → no ramp from our side
 				coastlineEdges[i] = false;
 				sameHeightCount++;
 			}
