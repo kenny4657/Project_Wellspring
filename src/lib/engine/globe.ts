@@ -111,7 +111,7 @@ export async function createGlobeEngine(
 	report('Building globe mesh...');
 	await tick();
 
-	const { mesh: globeMesh, vertexStarts, totalVerticesPerCell } = buildGlobeMesh(cells, EARTH_RADIUS_KM, scene);
+	const { mesh: globeMesh, vertexStarts, totalVerticesPerCell, colorsBuffer, positionsBuffer } = buildGlobeMesh(cells, EARTH_RADIUS_KM, scene);
 
 	const mat = new StandardMaterial('globeMat', scene);
 	mat.diffuseColor = new Color3(1, 1, 1);
@@ -120,11 +120,7 @@ export async function createGlobeEngine(
 	// Vertex colors multiply with diffuseColor — white diffuse means vertex colors show through
 	globeMesh.material = mat;
 	globeMesh.hasVertexAlpha = false;
-
-	// Debug: check vertex color data
-	const vColors = globeMesh.getVerticesData(VertexBuffer.ColorKind);
-	console.log('[Globe] Vertex colors:', vColors ? vColors.length / 4 + ' vertices' : 'NONE');
-	if (vColors) console.log('[Globe] First color:', vColors[0], vColors[1], vColors[2], vColors[3]);
+	globeMesh.isPickable = true;
 
 	report(`Globe mesh: ${globeMesh.getTotalVertices().toLocaleString()} vertices, ${cells.length} cells`);
 
@@ -144,7 +140,7 @@ export async function createGlobeEngine(
 				const rect = canvas.getBoundingClientRect();
 				const x = e.clientX - rect.left;
 				const y = e.clientY - rect.top;
-				const idx = pickHexAtScreen(scene, camera, x, y, cells, EARTH_RADIUS_KM);
+				const idx = pickHexAtScreen(scene, globeMesh, x, y, cells);
 				if (idx >= 0) onHexClickCallback?.(idx);
 			}
 			pointerDownPos = null;
@@ -175,7 +171,7 @@ export async function createGlobeEngine(
 
 		setHexTerrain(cellIndex: number, terrain: TerrainTypeId) {
 			cells[cellIndex].terrain = TERRAIN_TYPES[terrain];
-			updateCellTerrain(globeMesh, cells, cellIndex, vertexStarts, totalVerticesPerCell, EARTH_RADIUS_KM);
+			updateCellTerrain(globeMesh, cells, cellIndex, vertexStarts, totalVerticesPerCell, EARTH_RADIUS_KM, colorsBuffer, positionsBuffer);
 		},
 
 		get hexCount() { return cells.length; },

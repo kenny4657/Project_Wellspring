@@ -1,47 +1,37 @@
 /**
- * Hex picking — ray-sphere intersection, then find nearest hex cell center.
+ * Hex picking — use Babylon's scene.pick() against the actual globe mesh,
+ * then find the nearest hex cell center to the hit point.
  */
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import type { Scene } from '@babylonjs/core/scene';
-import type { Camera } from '@babylonjs/core/Cameras/camera';
+import type { Mesh } from '@babylonjs/core/Meshes/mesh';
 import type { HexCell } from './icosphere';
-import { EARTH_RADIUS_KM } from '$lib/geo/coords';
 
 /**
  * Pick the hex cell under a screen coordinate.
+ * Uses Babylon's built-in picking against the globe mesh for accurate results.
  *
  * @returns Cell index or -1 if missed
  */
 export function pickHexAtScreen(
 	scene: Scene,
-	camera: Camera,
+	globeMesh: Mesh,
 	screenX: number,
 	screenY: number,
-	cells: HexCell[],
-	radius: number
+	cells: HexCell[]
 ): number {
-	const ray = scene.createPickingRay(screenX, screenY, undefined, camera);
+	const pickResult = scene.pick(screenX, screenY, (mesh) => mesh === globeMesh);
 
-	// Intersect with sphere
-	const origin = ray.origin;
-	const dir = ray.direction;
-	const a = Vector3.Dot(dir, dir);
-	const b = 2.0 * Vector3.Dot(origin, dir);
-	const c = Vector3.Dot(origin, origin) - radius * radius;
-	const discriminant = b * b - 4.0 * a * c;
+	if (!pickResult?.hit || !pickResult.pickedPoint) return -1;
 
-	if (discriminant < 0) return -1;
-
-	const t = (-b - Math.sqrt(discriminant)) / (2.0 * a);
-	if (t < 0) return -1;
-
-	const hitPoint = origin.add(dir.scale(t)).normalize();
+	// Normalize the hit point to unit sphere for comparison with cell centers
+	const hitNorm = pickResult.pickedPoint.normalize();
 
 	// Find nearest cell center
 	let bestIdx = -1;
 	let bestDist = Infinity;
 	for (let i = 0; i < cells.length; i++) {
-		const dist = Vector3.DistanceSquared(hitPoint, cells[i].center);
+		const dist = Vector3.DistanceSquared(hitNorm, cells[i].center);
 		if (dist < bestDist) {
 			bestDist = dist;
 			bestIdx = i;

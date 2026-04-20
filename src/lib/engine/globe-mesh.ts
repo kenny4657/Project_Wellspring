@@ -36,6 +36,8 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 	mesh: Mesh;
 	vertexStarts: number[];
 	totalVerticesPerCell: number[];
+	colorsBuffer: Float32Array;
+	positionsBuffer: Float32Array;
 } {
 	const positions: number[] = [];
 	const indices: number[] = [];
@@ -84,15 +86,18 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 		vOff += 1 + n;
 	}
 
+	const positionsF32 = new Float32Array(positions);
+	const colorsF32 = new Float32Array(colors);
+
 	const mesh = new Mesh('globeHex', scene);
 	const vertexData = new VertexData();
-	vertexData.positions = new Float32Array(positions);
+	vertexData.positions = positionsF32;
 	vertexData.indices = new Uint32Array(indices);
 	vertexData.normals = new Float32Array(normals);
-	vertexData.colors = new Float32Array(colors);
-	vertexData.applyToMesh(mesh, true); // updatable = true
+	vertexData.colors = colorsF32;
+	vertexData.applyToMesh(mesh, true);
 
-	return { mesh, vertexStarts, totalVerticesPerCell };
+	return { mesh, vertexStarts, totalVerticesPerCell, colorsBuffer: colorsF32, positionsBuffer: positionsF32 };
 }
 
 /**
@@ -104,7 +109,9 @@ export function updateCellTerrain(
 	cellIndex: number,
 	vertexStarts: number[],
 	totalVerticesPerCell: number[],
-	radius: number
+	radius: number,
+	colorsBuffer: Float32Array,
+	positionsBuffer: Float32Array
 ): void {
 	const cell = cells[cellIndex];
 	const color = getTerrainColor(cell.terrain);
@@ -114,39 +121,34 @@ export function updateCellTerrain(
 	const count = totalVerticesPerCell[cellIndex];
 	if (count === 0) return;
 
-	// Update colors
-	const colorsArr = mesh.getVerticesData(VertexBuffer.ColorKind);
-	if (colorsArr) {
-		for (let i = 0; i < count; i++) {
-			const idx = (start + i) * 4;
-			colorsArr[idx] = color[0];
-			colorsArr[idx + 1] = color[1];
-			colorsArr[idx + 2] = color[2];
-			colorsArr[idx + 3] = 1;
-		}
-		mesh.updateVerticesData(VertexBuffer.ColorKind, colorsArr);
-		console.log(`[Mesh] Updated cell ${cellIndex}: color=[${color}], start=${start}, count=${count}`);
-	} else {
-		console.warn('[Mesh] No color data found on mesh!');
+	// Update colors in retained buffer
+	for (let i = 0; i < count; i++) {
+		const idx = (start + i) * 4;
+		colorsBuffer[idx] = color[0];
+		colorsBuffer[idx + 1] = color[1];
+		colorsBuffer[idx + 2] = color[2];
+		colorsBuffer[idx + 3] = 1;
 	}
 
-	// Update positions (height change)
-	const posArr = mesh.getVerticesData(VertexBuffer.PositionKind);
-	if (posArr) {
-		const n = cell.corners.length;
+	// Update positions in retained buffer
+	const n = cell.corners.length;
+	positionsBuffer[start * 3] = cell.center.x * r;
+	positionsBuffer[start * 3 + 1] = cell.center.y * r;
+	positionsBuffer[start * 3 + 2] = cell.center.z * r;
+	for (let i = 0; i < n; i++) {
+		const c = cell.corners[i];
+		positionsBuffer[(start + 1 + i) * 3] = c.x * r;
+		positionsBuffer[(start + 1 + i) * 3 + 1] = c.y * r;
+		positionsBuffer[(start + 1 + i) * 3 + 2] = c.z * r;
+	}
 
-		// Center
-		posArr[(start) * 3] = cell.center.x * r;
-		posArr[(start) * 3 + 1] = cell.center.y * r;
-		posArr[(start) * 3 + 2] = cell.center.z * r;
-
-		// Corners
-		for (let i = 0; i < n; i++) {
-			const c = cell.corners[i];
-			posArr[(start + 1 + i) * 3] = c.x * r;
-			posArr[(start + 1 + i) * 3 + 1] = c.y * r;
-			posArr[(start + 1 + i) * 3 + 2] = c.z * r;
-		}
-		mesh.updateVerticesData(VertexBuffer.PositionKind, posArr);
+	// Push to GPU via the internal vertex buffer's update method
+	const colorVB = mesh.getVertexBuffer(VertexBuffer.ColorKind);
+	if (colorVB) {
+		colorVB.getBuffer().update(colorsBuffer);
+	}
+	const posVB = mesh.getVertexBuffer(VertexBuffer.PositionKind);
+	if (posVB) {
+		posVB.getBuffer().update(positionsBuffer);
 	}
 }
