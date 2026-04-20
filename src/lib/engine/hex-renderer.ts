@@ -22,16 +22,18 @@ const _right = Vector3.Zero();
 export class HexRenderer {
 	private mesh: Mesh;
 	private matrices: Float32Array;
-	private terrainData: Float32Array;
+	private terrainData0: Float32Array;  // [terrainType, neighbor0, neighbor1, neighbor2] per hex
+	private terrainData1: Float32Array;  // [neighbor3, neighbor4, neighbor5, padding] per hex
 	private colors: Float32Array;
 	private hexIndex: Map<string, number> = new Map();
-	private neighborMap: Map<string, string[]> = new Map(); // h3 → 6 neighbor h3s
+	private neighborMap: Map<string, string[]> = new Map();
 	private count: number = 0;
 
 	constructor(mesh: Mesh, capacity: number) {
 		this.mesh = mesh;
 		this.matrices = new Float32Array(capacity * 16);
-		this.terrainData = new Float32Array(capacity * 8);
+		this.terrainData0 = new Float32Array(capacity * 4);
+		this.terrainData1 = new Float32Array(capacity * 4);
 		this.colors = new Float32Array(capacity * 4);
 	}
 
@@ -59,12 +61,15 @@ export class HexRenderer {
 			const [lat, lng] = cellToLatLng(h3);
 			this.computeMatrix(lat, lng, i);
 
-			// Set default terrain data
-			this.terrainData[i * 8 + 0] = terrainIndex;
-			for (let e = 0; e < 6; e++) {
-				this.terrainData[i * 8 + 1 + e] = terrainIndex;
-			}
-			this.terrainData[i * 8 + 7] = 0; // padding
+			// Set default terrain data (split across two vec4 buffers)
+			this.terrainData0[i * 4 + 0] = terrainIndex; // terrain type
+			this.terrainData0[i * 4 + 1] = terrainIndex; // neighbor 0
+			this.terrainData0[i * 4 + 2] = terrainIndex; // neighbor 1
+			this.terrainData0[i * 4 + 3] = terrainIndex; // neighbor 2
+			this.terrainData1[i * 4 + 0] = terrainIndex; // neighbor 3
+			this.terrainData1[i * 4 + 1] = terrainIndex; // neighbor 4
+			this.terrainData1[i * 4 + 2] = terrainIndex; // neighbor 5
+			this.terrainData1[i * 4 + 3] = 0;            // padding
 
 			// Default color: fully transparent (no tint)
 			this.colors[i * 4 + 0] = 0;
@@ -80,19 +85,22 @@ export class HexRenderer {
 			for (let e = 0; e < 6; e++) {
 				const ni = this.hexIndex.get(neighbors[e]);
 				if (ni !== undefined) {
-					this.terrainData[i * 8 + 1 + e] = this.terrainData[ni * 8 + 0];
+					const neighborType = this.terrainData0[ni * 4 + 0]; // neighbor's terrain type
+					if (e < 3) {
+						this.terrainData0[i * 4 + 1 + e] = neighborType;
+					} else {
+						this.terrainData1[i * 4 + (e - 3)] = neighborType;
+					}
 				}
 			}
 		}
 
-		// Upload buffers
-		// Babylon splits instance attributes into vec4 chunks in the shader.
-		// 'matrix' (16 floats) → mat4 'world' (automatically handled)
-		// 'terrainData' (8 floats) → two vec4 attributes: 'terrainData0' + 'terrainData1'
-		// 'color' (4 floats) → vec4 'color'
+		// Upload buffers as separate vec4 attributes (WebGL max attribute size is vec4)
 		this.mesh.thinInstanceSetBuffer('matrix', this.matrices, 16, true);
-		this.mesh.thinInstanceRegisterAttribute('terrainData', 8);
-		this.mesh.thinInstanceSetBuffer('terrainData', this.terrainData, 8, false);
+		this.mesh.thinInstanceRegisterAttribute('terrainData0', 4);
+		this.mesh.thinInstanceSetBuffer('terrainData0', this.terrainData0, 4, false);
+		this.mesh.thinInstanceRegisterAttribute('terrainData1', 4);
+		this.mesh.thinInstanceSetBuffer('terrainData1', this.terrainData1, 4, false);
 		this.mesh.thinInstanceRegisterAttribute('color', 4);
 		this.mesh.thinInstanceSetBuffer('color', this.colors, 4, false);
 	}
@@ -107,7 +115,7 @@ export class HexRenderer {
 		const terrainIndex = TERRAIN_TYPES[terrain];
 
 		// Update this hex's terrain type
-		this.terrainData[idx * 8 + 0] = terrainIndex;
+		this.terrainData0[idx * 4 + 0] = terrainIndex;
 
 		// Update all neighbors' data pointing back to this hex
 		const neighbors = this.neighborMap.get(h3);
@@ -122,17 +130,27 @@ export class HexRenderer {
 				if (!neighborNeighbors) continue;
 				for (let ne = 0; ne < 6; ne++) {
 					if (neighborNeighbors[ne] === h3) {
-						this.terrainData[ni * 8 + 1 + ne] = terrainIndex;
+						if (ne < 3) {
+							this.terrainData0[ni * 4 + 1 + ne] = terrainIndex;
+						} else {
+							this.terrainData1[ni * 4 + (ne - 3)] = terrainIndex;
+						}
 						break;
 					}
 				}
 
 				// Also update this hex's neighbor data
-				this.terrainData[idx * 8 + 1 + e] = this.terrainData[ni * 8 + 0];
+				const neighborType = this.terrainData0[ni * 4 + 0];
+				if (e < 3) {
+					this.terrainData0[idx * 4 + 1 + e] = neighborType;
+				} else {
+					this.terrainData1[idx * 4 + (e - 3)] = neighborType;
+				}
 			}
 		}
 
-		this.mesh.thinInstanceBufferUpdated('terrainData');
+		this.mesh.thinInstanceBufferUpdated('terrainData0');
+		this.mesh.thinInstanceBufferUpdated('terrainData1');
 	}
 
 	/**
@@ -162,7 +180,7 @@ export class HexRenderer {
 	getHexTerrain(h3: string): TerrainTypeId | null {
 		const idx = this.hexIndex.get(h3);
 		if (idx === undefined) return null;
-		const typeIndex = this.terrainData[idx * 8 + 0];
+		const typeIndex = this.terrainData0[idx * 4 + 0];
 		const entries = Object.entries(TERRAIN_TYPES);
 		const entry = entries.find(([, v]) => v === typeIndex);
 		return entry ? entry[0] as TerrainTypeId : null;

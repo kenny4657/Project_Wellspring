@@ -210,17 +210,18 @@ export async function createGlobeEngine(
 
 	canvas.addEventListener('pointerup', (e) => {
 		if (e.button === 0 && pointerDownPos) {
-			// Only paint if the pointer didn't move much (click, not drag)
 			const dx = e.clientX - pointerDownPos.x;
 			const dy = e.clientY - pointerDownPos.y;
 			const dist = Math.sqrt(dx * dx + dy * dy);
 			if (dist < 5) {
-				// This was a click, not a drag — paint the hex
 				const rect = canvas.getBoundingClientRect();
 				const x = e.clientX - rect.left;
 				const y = e.clientY - rect.top;
+				console.log(`[Globe] Click at screen (${x.toFixed(0)}, ${y.toFixed(0)})`);
 				const h3 = pickHexAtScreen(scene, camera, x, y, H3_RES);
+				console.log(`[Globe] Picked hex: ${h3}, hasHex: ${h3 ? hexRenderer.hasHex(h3) : 'N/A'}`);
 				if (h3 && hexRenderer.hasHex(h3)) {
+					console.log(`[Globe] Painting hex ${h3}`);
 					onHexClickCallback?.(h3);
 				}
 			}
