@@ -182,8 +182,14 @@ void main() {
     // Final Y
     float finalHeight;
     if (uv2.x > 0.5) {
-        // Skirt: extend below
-        finalHeight = min(tierHeight, neighborHeight) - 30.0;
+        // Skirt vertex: only extend downward if there's an elevation difference
+        float heightDiff = abs(tierHeight - neighborHeight);
+        if (heightDiff > 0.1) {
+            finalHeight = min(tierHeight, neighborHeight) - 5.0;
+        } else {
+            // Same elevation — collapse skirt to surface level (invisible)
+            finalHeight = tierHeight;
+        }
     } else {
         float th = tierHeight + displacement * (1.0 - edgeFade);
         finalHeight = mix(th, meetingHeight, edgeFade);
@@ -254,17 +260,20 @@ void main() {
         }
     }
 
-    // Lighting — high ambient so terrain is always clearly visible
+    // Lighting — bright, minimal shadow
     float NdotL = max(dot(vWorldNormal, sunDirection), 0.0);
-    vec3 litColor = baseColor * (0.75 + 0.25 * NdotL);
+    vec3 litColor = baseColor * (0.85 + 0.15 * NdotL);
 
-    // Hex edge darkening
-    float edgeDarken = smoothstep(0.85, 0.95, distFromCenter) * 0.15;
-    litColor *= (1.0 - edgeDarken);
+    // Subtle hex edge line (only on top face, not skirts)
+    if (vIsSkirt < 0.5) {
+        float edgeDarken = smoothstep(0.88, 0.96, distFromCenter) * 0.1;
+        litColor *= (1.0 - edgeDarken);
+    }
 
-    // Skirt darkening
+    // Skirt: hide by making it match the base color (no darkening)
+    // Skirts only matter when adjacent hexes have different elevation tiers
     if (vIsSkirt > 0.5) {
-        litColor *= 0.6;
+        litColor = baseColor * 0.85;
     }
 
     // Province/country tint
