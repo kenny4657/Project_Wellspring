@@ -115,11 +115,15 @@ Plus full game engine capabilities: Havok physics, particle systems, PBR materia
 
 ### Hex Rendering Strategy
 
-1. **Thin instances** — one hex geometry, 500K instances, single draw call (~40MB GPU buffer)
-2. **Data texture for colors** — 1 pixel per hex, `texSubImage2D` for O(1) color updates
-3. **LOD (Level of Detail)** — H3 res 3 (~41K) zoomed out, res 4 (~288K) mid-zoom, res 5 at close zoom
-4. **Terrain displacement** — sample elevation from 3D Tiles, offset hex vertices vertically
-5. **Hit testing** — ray-sphere intersection → lat/lng → `latLngToCell()` (O(1) via h3-js)
+1. **Per-terrain-type thin instance groups** — ~17 terrain types, each with a unique 3D tile model, rendered as a separate thin-instance group (~17 draw calls total)
+2. **Per-instance color buffer** — RGBA tint per hex for province/country painting, O(1) color updates
+3. **Terrain type changes** — moving a hex between groups is O(1) (swap-remove + append to new group buffer)
+4. **LOD (Level of Detail)** — H3 res 3 (~41K) zoomed out, res 4 (~288K) mid-zoom, res 5 at close zoom
+5. **Elevation via terrain tiers** — 6 discrete elevation tiers (0-5), baked into tile model height + instance matrix position
+6. **Deep skirt geometry** — each tile model extends 2 tiers below its surface, hiding gaps between different-height neighbors
+7. **Hit testing** — ray-sphere intersection → lat/lng → `latLngToCell()` (O(1) via h3-js)
+
+See [hex-terrain-design.md](hex-terrain-design.md) for full terrain type catalog, model specifications, and transition handling.
 
 ### Migration Scope
 
@@ -127,20 +131,24 @@ Current app is ~1,092 lines (single Svelte page + one API endpoint).
 
 | Task | Effort | Notes |
 |---|---|---|
-| Babylon.js scene + geospatial camera | 1-2 days | Starter template exists |
-| Atmosphere + lighting | 1 day | Built-in, configure only |
-| Hex thin instances on globe | 2-3 days | H3 lat/lng → 3D sphere position |
-| Terrain elevation | 3-5 days | 3D Tiles integration, vertex displacement |
-| Port geographic overlays (borders, rivers) | 3-5 days | TopoJSON → 3D line meshes on sphere |
-| Port painting interaction | 2-3 days | Ray picking → h3-js |
-| Port UI panels to Babylon bridge | 1-2 days | Svelte stores bridge |
-| **Total** | **~2-4 weeks** | Feature parity + terrain + atmosphere |
+| Babylon.js scene + geospatial camera | 1-2 days | **DONE** — Phase 1 complete |
+| Atmosphere + lighting | 1 day | **DONE** — included in Phase 1 |
+| Terrain tile models (procedural) | 2-3 days | ~17 terrain types, hex cylinder + noise displacement |
+| Per-terrain-type thin instance groups | 2-3 days | Instance buffer management, terrain type switching |
+| Terrain painting tools | 2-3 days | Terrain mode, brushes, area paint |
+| Port picking + political painting | 2-3 days | Ray picking → h3-js, province/country brushes |
+| Wire UI ↔ Engine via Svelte stores | 1-2 days | Svelte stores bridge |
+| Procedural world generation | 3-4 days | Simplex noise continent/biome generation |
+| Polish + scale testing + tile art | 3-5 days | LOD, ocean shader, Blender models |
+| **Total** | **~3-4 weeks** | Full 3D world builder with custom terrain |
 
 ### What This Enables
 
 After migration, the Babylon.js foundation supports:
-- Terrain elevation with hex displacement
+- Custom world building with ~17 terrain types
+- Unique 3D silhouettes per terrain (mountains look like mountains)
 - Atmospheric scattering (sunrise/sunset, weather)
+- Procedural world generation with tunable parameters
 - 3D game objects (units, cities, structures on hex tiles)
 - Fog of war, particles, visual effects
 - Physics (Havok) for projectiles, destruction
@@ -160,5 +168,10 @@ No shipped hex strategy game (Civ 6, Humankind, Old World) plays on a true spher
 | 2026-04-19 | Babylon.js 9.0 over CesiumJS | CesiumJS is a GIS viewer, not a game engine. No physics, particles, animation. |
 | 2026-04-19 | Babylon.js 9.0 over Godot/Unity WebGL | Web-first requirement. 25-40MB WASM downloads are prohibitive. |
 | 2026-04-19 | Hybrid SvelteKit + canvas over full engine UI | Keep UI accessible, styled with Tailwind, SSR for non-game pages. |
-| 2026-04-19 | Thin instances + data texture over GeoJSON | O(1) color updates, single draw call, 500K–1M hex capacity. |
+| 2026-04-19 | Per-terrain-type thin instance groups over single flat hex group | Each terrain type needs a unique 3D model. ~17 draw calls is trivial vs. 1, but enables visual identity per terrain. |
+| 2026-04-19 | Custom world building over real-world geography | Game worlds should not be constrained by Earth's geography. Terrain types are freely assignable per hex. |
+| 2026-04-19 | Terrain tile models over stylized hex columns | Hex columns only differentiate by height. Full tile models give each terrain type a unique silhouette (mountain peaks, rolling hills, ocean troughs). |
+| 2026-04-19 | Deep skirts over edge-matched transitions (initially) | Simpler to implement, works with thin instances. Edge-matched transitions can be added later for visual polish. |
+| 2026-04-19 | Procedural tile generation → Blender glTF pipeline | Start with programmatic models for fast iteration. Replace with authored assets as art direction solidifies. |
+| 2026-04-19 | Keep H3 for hex grid | Despite not using real-world geography, H3 provides grid generation, neighbor lookups, and O(1) picking for free. 12 pentagons are hideable as ocean. |
 | 2026-04-19 | H3 LOD (res 3/4/5) over fixed resolution | Balance visual fidelity with performance across zoom levels. |

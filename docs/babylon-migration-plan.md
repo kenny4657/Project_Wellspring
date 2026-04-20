@@ -2,11 +2,11 @@
 
 ## Overview
 
-Migrate the Country Painter from MapLibre GL JS (2D map with globe projection) to Babylon.js 9.0 (full 3D game engine with geospatial subsystem). This transforms the hex editor into a foundation for a 3D strategy game with terrain, atmospheric effects, and game-engine-level rendering.
+Migrate the Country Painter from MapLibre GL JS (2D map with globe projection) to Babylon.js 9.0 (full 3D game engine with geospatial subsystem). This transforms the hex editor into a foundation for a **3D strategy game with custom world building** — terrain tiles, atmospheric effects, and game-engine-level rendering.
 
 **Current state:** ~1,092 lines across 2 files. MapLibre renders ~80K H3 res-4 hexes as GeoJSON polygons with `setFeatureState()` coloring. SvelteKit app with Tailwind UI.
 
-**Target state:** Babylon.js 9.0 renders the globe, terrain, atmosphere, and 500K+ hexes via thin instances. SvelteKit continues to own all UI. The two communicate through Svelte stores and an event bus.
+**Target state:** Babylon.js 9.0 renders a 3D globe with per-terrain-type hex tile models, atmosphere, and custom world building tools. The world is **not constrained by real-world geography** — terrain types (mountains, oceans, forests, etc.) are freely assignable per hex. SvelteKit continues to own all UI.
 
 ---
 
@@ -17,19 +17,22 @@ src/
 ├── routes/
 │   ├── +page.svelte              # Top-level layout: sidebar UI + canvas
 │   ├── +page.ts                  # ssr = false
-│   └── api/land-hexes/+server.ts # H3 hex generation (KEEP AS-IS)
+│   └── api/land-hexes/+server.ts # H3 hex grid generation
 ├── lib/
 │   ├── engine/
 │   │   ├── globe.ts              # Babylon scene, engine, camera, atmosphere
-│   │   ├── hex-renderer.ts       # Thin instance hex mesh + data texture
-│   │   ├── overlays.ts           # Borders, rivers, lakes as GreasedLine meshes
-│   │   └── picking.ts           # Ray-sphere → lat/lng → h3 hit testing
+│   │   ├── hex-renderer.ts       # Per-terrain-type thin instance groups
+│   │   ├── hex-tiles.ts          # Load/manage hex tile models (glTF or procedural)
+│   │   └── picking.ts            # Ray-sphere → lat/lng → h3 hit testing
+│   ├── world/
+│   │   ├── terrain-types.ts      # Terrain type definitions, tiers, properties
+│   │   ├── world-map.ts          # Hex→terrain assignment, world state
+│   │   └── world-gen.ts          # Procedural world generation (optional)
 │   ├── stores/
-│   │   ├── map-state.ts          # Province/country/hex data (shared state)
+│   │   ├── world-state.ts        # World map + province/country data (shared state)
 │   │   └── ui-state.ts           # Tool, mode, selection, toggles
 │   └── geo/
-│       ├── coords.ts             # lat/lng ↔ ECEF conversion, hex positioning
-│       └── topo-loader.ts        # TopoJSON → 3D line geometry converter
+│       └── coords.ts             # Sphere coordinate math (decoupled from Earth)
 ├── app.css                       # Tailwind + custom styles
 └── app.html
 ```
@@ -39,9 +42,10 @@ src/
 | Layer | Responsibility | Tech |
 |-------|---------------|------|
 | **UI** | Sidebar, panels, tools, menus, modals, HUD | Svelte 5 + Tailwind |
-| **State** | Province/country data, hex assignments, editor mode | Svelte stores |
-| **Engine** | 3D rendering, camera, atmosphere, terrain, hexes | Babylon.js 9.0 |
-| **Geo** | Coordinate transforms, TopoJSON parsing, H3 operations | h3-js, topojson-client |
+| **State** | World map, terrain, province/country data, editor mode | Svelte stores |
+| **Engine** | 3D rendering, camera, atmosphere, terrain tiles, hexes | Babylon.js 9.0 |
+| **World** | Terrain type definitions, world generation, map state | Pure TypeScript |
+| **Geo** | Coordinate transforms, H3 operations | h3-js |
 
 The Svelte UI never touches Babylon.js objects directly. The engine layer exposes a clean API surface:
 
@@ -51,13 +55,11 @@ interface GlobeEngine {
   init(canvas: HTMLCanvasElement): Promise<void>;
   dispose(): void;
 
-  // Hex rendering
+  // Hex terrain
+  setHexTerrain(h3Index: string, terrain: TerrainType): void;
   setHexColor(h3Index: string, color: string): void;
   clearHexColor(h3Index: string): void;
-  refreshAllColors(hexToProvince: Record<string, string>, colorResolver: (h3: string) => string | null): void;
-
-  // Overlays
-  setLayerVisible(layer: 'borders' | 'rivers' | 'states' | 'grid', visible: boolean): void;
+  refreshAllColors(colorResolver: (h3: string) => string | null): void;
 
   // Camera
   flyTo(lat: number, lng: number, altitude?: number): void;
@@ -152,140 +154,145 @@ A spinning 3D globe with atmosphere that you can orbit, zoom, and tilt. No hexes
 
 ---
 
-## Phase 2: Hex Thin Instances on Globe (Days 3-5)
+## Phase 2: Terrain Tile Models + Hex Grid (Days 3-7)
 
 ### Goal
-Render all ~80K land hexes as thin instances on the globe surface. Each hex is individually colorable. Performance target: 60fps with 80K hexes, headroom for 500K.
+Generate the hex grid on the globe and render terrain-type tile models as per-type thin instance groups. Each hex has an assignable terrain type with a unique 3D model. Performance target: 60fps with 80K hexes across ~17 terrain types (~17 draw calls).
+
+See [hex-terrain-design.md](hex-terrain-design.md) for full terrain type catalog, model specs, and transition handling.
 
 ### Tasks
 
-1. **Create `src/lib/engine/hex-renderer.ts`**
-
-2. **Build hex template geometry**
-   - Regular hexagon: 6 outer vertices + center, 6 triangles
-   - Use `MeshBuilder.CreateDisc("hex", { radius: hexRadius, tessellation: 6 }, scene)` as the base mesh
-   - The radius in world units depends on globe scale. At globe radius = 1 unit, H3 res-4 hexes (~45km) subtend ~0.007 radians → radius ≈ 0.007 units
-
-3. **Compute instance matrices**
-   - For each hex in `landHexes`:
+1. **Create `src/lib/world/terrain-types.ts`**
+   - Define terrain type enum and properties:
      ```typescript
-     const pos = latLngToWorld(hex.lat, hex.lon, 1.001); // slightly above globe surface
-     const normal = pos.normalize(); // surface normal = position on unit sphere
-     const matrix = Matrix.Identity();
-     // Compose: translate to position, rotate to align flat face with surface
-     // Use lookAt or quaternion from normal to orient the hex
+     interface TerrainTypeDef {
+       id: string;
+       name: string;
+       tier: number;          // elevation tier 0-5
+       defaultColor: string;  // base color when unpainted
+     }
      ```
-   - Pack all matrices into `Float32Array(hexCount * 16)`
-   - This is computed once on load, not per-frame
+   - Define ~17 initial terrain types with tiers (deep_ocean through volcano)
+   - Define tier height constants (world-space units per tier)
 
-4. **Set up color buffer**
-   - `Float32Array(hexCount * 4)` — RGBA per hex
-   - Initialize all to transparent (alpha = 0)
-   - Register as thin instance attribute:
+2. **Create `src/lib/engine/hex-tiles.ts`**
+   - **Procedural tile model generation** (prototype phase):
      ```typescript
-     hexMesh.thinInstanceSetBuffer("matrix", matricesData, 16, true);  // static
-     hexMesh.thinInstanceSetBuffer("color", colorData, 4, false);      // dynamic
+     function createTerrainMesh(type: TerrainTypeDef, scene: Scene): Mesh {
+       // Hex cylinder base at terrain tier height
+       // Displace top vertices with terrain-specific noise
+       // Add skirt geometry extending 2 tiers below
+     }
      ```
+   - Generate one source mesh per terrain type on init
+   - Later: replace procedural models with Blender-authored glTF assets
 
-5. **H3 index → buffer index mapping**
-   - `Map<string, number>` mapping H3 cell ID to its index in the instance buffers
-   - Enables O(1) color updates: `setHexColor(h3, color)` → write 4 floats → `bufferUpdated("color")`
+3. **Create `src/lib/engine/hex-renderer.ts`**
+   - Manage per-terrain-type thin instance groups:
+     ```typescript
+     class HexRenderer {
+       private groups: Map<string, ThinInstanceGroup>;  // terrainType → group
+       private hexIndex: Map<string, { terrain: string; bufferIndex: number }>;
 
-6. **Data texture alternative** (evaluate during implementation)
-   - Instead of a color buffer attribute, use a texture where pixel (x, y) = hex color
-   - H3 index maps to texture coordinate
-   - Color update = `gl.texSubImage2D` on one pixel
-   - Requires a custom shader (Node Material or ShaderMaterial) to sample the texture using instance ID
-   - Advantage: updating 1 hex doesn't require re-uploading the entire color buffer
-   - Decision: start with color buffer (simpler), switch to data texture if update performance is a bottleneck
+       setHexTerrain(h3: string, terrain: string): void;  // move between groups
+       setHexColor(h3: string, color: string): void;       // update color buffer
+       clearHexColor(h3: string): void;
+     }
+     ```
+   - Each `ThinInstanceGroup` holds:
+     - Source mesh (from hex-tiles.ts)
+     - `Float32Array` for instance matrices (16 floats each)
+     - `Float32Array` for instance colors (4 floats each)
+     - Current instance count
+     - `Map<string, number>` for h3→bufferIndex within the group
 
-7. **Hex border rendering**
-   - Option A: Second thin-instance pass with `CreateDisc` in wireframe mode
-   - Option B: GreasedLine hex outlines (better visual control, screen-space width)
-   - Option C: Fragment shader edge detection (compute distance to hex edge in shader, darken near edges)
-   - Recommendation: Option C for performance — no extra geometry, just a shader tweak. Implement in the hex material's fragment shader.
+4. **Generate hex grid positions**
+   - Use H3 `getRes0Cells()` + `cellToChildren()` to enumerate all cells at target resolution
+   - For each cell: compute globe position + surface-tangent rotation matrix
+   - All hexes start as `deep_ocean` (default world is all ocean)
+   - The `/api/land-hexes` endpoint is no longer needed for world building — hex positions come directly from H3 at any resolution
 
-8. **Material setup**
-   - Custom `ShaderMaterial` or `NodeMaterial` that:
-     - Reads per-instance color from the color attribute
-     - Applies fill with configurable opacity (0.85 for painted, 0 for unpainted)
-     - Optionally darkens edges for hex border effect
-     - Supports unlit rendering (hex colors should be exact, not affected by lighting)
+5. **Instance matrix computation**
+   - For each hex:
+     ```typescript
+     const pos = latLngToWorld(lat, lng, EARTH_RADIUS_KM + tierHeight);
+     const normal = pos.normalize();
+     // Build rotation matrix aligning hex flat-face with sphere surface
+     // Compose: rotation × translation
+     matrix.copyToArray(matricesData, index * 16);
+     ```
+   - When terrain type changes: recompute matrix with new tier height
+
+6. **Per-instance color buffer**
+   - `Float32Array(groupSize * 4)` per group — RGBA province/country tint
+   - Unpainted hexes use alpha=0 (terrain model's natural color shows)
+   - Painted hexes use alpha=0.6-0.85 (tint over terrain)
+   - `thinInstanceSetBuffer("color", colorData, 4, false)` — dynamic buffer
+
+7. **Material setup**
+   - PBR material per terrain type (or shared with per-type color):
+     - Base color from terrain type definition
+     - Instance color attribute multiplied as tint overlay
+     - Lit by scene lights (terrain should respond to atmosphere/sun)
+     - Hex edge darkening via fragment shader distance-to-edge
 
 ### Validation
-- All 80K hexes visible on globe, correctly positioned and oriented
-- Zooming in shows individual hex shapes
-- `setHexColor` changes a single hex color in <1ms
-- `refreshAllColors` completes in <50ms for 80K hexes
-- 60fps maintained during orbit/zoom
+- Globe covered in ocean hex tiles (default world)
+- `setHexTerrain(h3, 'mountain')` visually changes the hex to a mountain model
+- `setHexColor(h3, '#C45B5B')` tints the hex with a province color
+- Terrain changes are smooth (no frame hitches on group buffer rebuild)
+- 17 draw calls confirmed via Babylon Inspector
+- 60fps maintained during orbit/zoom with 80K hexes
 
 ---
 
-## Phase 3: Geographic Overlays (Days 6-8)
+## Phase 3: Terrain Painting & World Building Tools (Days 8-10)
 
 ### Goal
-Render country borders, rivers, lakes, and state boundaries as 3D line/polygon meshes on the globe surface, replacing MapLibre's GeoJSON layers.
+The editor supports painting terrain types onto hexes — building continents, mountain ranges, islands, and oceans from a blank globe. This replaces the old geographic overlay system (TopoJSON borders/rivers) which is no longer needed since the world is custom-built.
 
 ### Tasks
 
-1. **Create `src/lib/geo/topo-loader.ts`**
-   - Load and parse the three TopoJSON files from `/data/`:
-     - `countries-10m.json` → country borders (lines) + land fill (polygons)
-     - `waterways-10m.json` → rivers (lines) + lakes (polygons)
-     - `states-10m.json` → state/province boundaries (lines)
-   - Convert to GeoJSON via `topojson-client` (same as current code)
-   - Handle antimeridian wrapping (port existing `fixAntiMeridian()`)
+1. **Add Terrain mode to editor**
+   - Third editor mode alongside Province and Country: `editorMode: 'terrain' | 'province' | 'country'`
+   - Terrain mode sidebar shows terrain type palette (icons + names for all ~17 types)
+   - Selected terrain type is the active "brush"
 
-2. **Create `src/lib/engine/overlays.ts`**
+2. **Terrain painting tools**
+   - **Single hex brush**: click assigns selected terrain type to hex under cursor
+   - **Area brush** (ring radius 1-3): paint terrain in a `gridDisk(h3, radius)` area
+   - **Fill brush**: flood-fill connected hexes sharing the same terrain type
+   - **Erase**: reset hex to `deep_ocean`
+   - Painting calls `engine.setHexTerrain(h3, terrainType)` for each affected hex
 
-3. **GeoJSON → 3D geometry conversion**
-   - For each GeoJSON feature:
+3. **Ocean rendering**
+   - The base globe sphere serves as the ocean floor / deep water
+   - Ocean hex tiles (deep_ocean, shallow_ocean) sit at low elevation tiers
+   - Water visual: apply Babylon's `WaterMaterial` or a custom animated shader to the globe sphere
+   - Land hexes rise above the water level, creating natural coastlines
+
+4. **Province/country borders as game objects**
+   - Instead of real-world border overlays, borders are derived from province assignments
+   - Render province boundaries as GreasedLine meshes along hex edges where adjacent hexes belong to different provinces
+   - Recompute on province/country changes (not every frame)
+   - Toggle visibility from UI
+
+5. **World state persistence**
+   - Update export format to version 3:
      ```typescript
-     function geoJsonToWorldPoints(coordinates: number[][]): Vector3[] {
-       return coordinates.map(([lng, lat]) =>
-         latLngToWorld(lat, lng, 1.002) // slightly above hex layer
-       );
-     }
+     { version: 3, hexResolution: 4,
+       hexes: { [h3]: { terrain: 'mountain', province?: 'prov_1' } },
+       provinces, countries, provinceToCountry }
      ```
-   - Line features (borders, rivers) → `GreasedLine` meshes
-     - Screen-space width (constant pixel width regardless of zoom)
-     - Color per overlay type (gold for borders, blue for rivers, orange for states)
-   - Polygon features (lakes) → `MeshBuilder.CreatePolygon` or triangulated mesh
-     - Project vertices onto sphere surface
-     - Use earcut or Babylon's built-in polygon triangulation
-
-4. **GreasedLine for borders/rivers**
-   ```typescript
-   import { GreasedLineMeshBuilder } from "@babylonjs/core";
-
-   const borderLine = GreasedLineMeshBuilder.CreateGreasedLine("borders", {
-     points: allBorderSegments, // array of Vector3 arrays
-     width: 2,                 // screen-space pixels
-   }, scene);
-   borderLine.material.color = new Color3(1, 0.84, 0); // gold
-   ```
-
-5. **Water rendering**
-   - Ocean: The globe background is already ocean color (the globe sphere shows through where there's no land)
-   - Actually, invert this: make the globe sphere blue/ocean colored, and render land as a separate layer
-   - Or: use the globe sphere as ocean, hex fill as land color
-
-6. **Layer visibility toggles**
-   - Each overlay is a separate Babylon.js mesh or mesh group
-   - `mesh.setEnabled(visible)` for toggling
-   - Map to existing UI toggle buttons
-
-7. **Performance considerations**
-   - Merge all border segments into a single GreasedLine mesh per overlay type
-   - Natural Earth 10m data has many vertices — consider simplifying with Douglas-Peucker before converting to 3D
-   - Lakes can use a simple flat blue material
+   - Import supports v2 (all hexes are plains, political data preserved) and v3
 
 ### Validation
-- Country borders render as gold lines on the globe
-- Rivers and lakes render in blue
-- State boundaries render in orange
-- All overlays togglable from existing UI buttons
-- No visual gaps at antimeridian or poles
+- Clicking a hex in terrain mode changes its 3D model (e.g., ocean → mountain)
+- Area brush paints terrain in a ring of hexes around click point
+- Province borders render automatically along political boundaries
+- Export/import round-trips terrain assignments correctly
+- Performance: terrain type changes are smooth (no visible lag)
 
 ---
 
@@ -423,114 +430,95 @@ Connect the existing Svelte sidebar UI to the Babylon.js engine. All current fea
 
 ---
 
-## Phase 6: Terrain Elevation (Days 14-18)
+## Phase 6: Procedural World Generation (Days 14-17)
 
 ### Goal
-Load real-world elevation data and displace hex vertices vertically, creating visible mountains, valleys, and coastal shelves.
+Auto-generate playable worlds instead of requiring manual hex-by-hex painting. Procedural generators create continents, mountain ranges, biome distribution, and coastlines.
 
 ### Tasks
 
-1. **Set up Cesium Ion account and access token**
-   - Register at cesium.com/ion
-   - Get access token for Cesium World Terrain (Asset ID 1)
-   - Store token in `.env` (excluded from git)
-
-2. **Load 3D Tiles terrain**
-   ```typescript
-   // Using Babylon's 3D Tiles integration
-   const tilesRenderer = new TilesRenderer({
-     ionAssetId: 1,
-     ionAccessToken: import.meta.env.VITE_CESIUM_TOKEN,
-   }, scene);
-   ```
-   - If Babylon's 3D Tiles API isn't suitable for elevation sampling, alternative:
-     - Use Mapbox Terrain RGB tiles or AWS Terrain Tiles
-     - Fetch elevation raster tiles, decode elevation from RGB values
-     - Build an elevation cache: `getElevation(lat, lng): number`
-
-3. **Elevation sampling for hex positions**
-   ```typescript
-   async function getHexElevation(lat: number, lng: number): Promise<number> {
-     // Option A: Raycast against loaded 3D Tiles terrain
-     // Option B: Sample from elevation tile cache
-     // Option C: Use a DEM heightmap texture lookup
-   }
-   ```
-
-4. **Displace hex instance matrices**
-   - After elevation data loads, update each hex's matrix:
-     ```typescript
-     for (let i = 0; i < hexCount; i++) {
-       const hex = landHexes[i];
-       const elevation = await getElevation(hex.lat, hex.lon);
-       const r = 1 + elevation / EARTH_RADIUS; // normalize to globe scale
-       const pos = latLngToWorld(hex.lat, hex.lon, r);
-       // Recompute matrix with new position
-       newMatrix.copyToArray(matricesData, i * 16);
-     }
-     hexMesh.thinInstanceBufferUpdated("matrix");
+1. **Create `src/lib/world/world-gen.ts`**
+   - Continent generation using multi-octave simplex noise on the sphere
+   - Noise value thresholds determine terrain type:
      ```
+     < -0.3  → deep_ocean
+     -0.3–0.0 → shallow_ocean
+     0.0–0.05 → coast
+     0.05–0.3 → plains/grassland
+     0.3–0.5  → forest/hills (secondary noise selects)
+     0.5–0.7  → highland
+     > 0.7    → mountain
+     ```
+   - Temperature gradient (latitude-based) shifts biomes: tundra at poles, jungle at equator
+   - Moisture gradient (secondary noise) shifts biomes: desert vs grassland vs forest
 
-5. **Visual terrain mesh (optional but recommended)**
-   - Don't just displace hexes — render terrain geometry between/beneath them
-   - Options:
-     - A) Use 3D Tiles terrain as a visual mesh beneath the hex layer
-     - B) Generate a custom terrain mesh from elevation data, hex-aligned
-     - C) Extrude hex meshes downward to create "hex columns" (strategy game style)
-   - Recommendation: Start with hex displacement only (A), add hex extrusion later for game feel
+2. **Generation parameters**
+   - Seed (reproducible worlds)
+   - Continent count / size
+   - Mountain frequency
+   - Ocean-to-land ratio
+   - Temperature/moisture influence
 
-6. **LOD for terrain**
-   - Close zoom: full elevation detail
-   - Far zoom: flattened or simplified elevation
-   - 3D Tiles handles this automatically if used as the terrain source
+3. **UI for world generation**
+   - "New World" dialog with parameter sliders
+   - "Regenerate" button with same seed + modified params
+   - Preview before committing (generate in background, show progress)
+
+4. **Island and feature placement**
+   - After base terrain: scatter islands, volcanoes, reefs at random ocean positions
+   - Mountain range continuity: use ridged noise to create linear mountain chains
+   - River placement: trace downhill paths from mountains to coast (future phase)
 
 ### Validation
-- Mountains visibly rise above sea level
-- Coastal hexes sit near zero elevation
-- No visual gaps between hexes at elevation transitions
-- Performance maintained (elevation is baked into matrices, not computed per-frame)
+- Generated worlds have recognizable continents, mountain ranges, coastlines
+- Different seeds produce different but plausible worlds
+- Generation completes in <5 seconds for 80K hexes
+- Generated world is editable (terrain painting still works after generation)
 
 ---
 
-## Phase 7: Polish & Scale Testing (Days 19-21)
+## Phase 7: Polish, Scale Testing & Tile Art (Days 18-22)
 
 ### Goal
-Resolution scaling test, visual polish, performance optimization, and cleanup.
+Resolution scaling test, visual polish, performance optimization, and tile model refinement.
 
 ### Tasks
 
 1. **Resolution scaling test**
-   - Generate hex data at resolution 5 (~560K hexes)
-   - Test thin instance rendering at 500K+ — measure FPS, memory, load time
+   - Generate hex grid at resolution 5 (~560K hexes)
+   - Test thin instance rendering at 500K+ across 17 groups — measure FPS, memory, load time
    - If needed, implement LOD:
-     - Compute res-3 parent cells and their aggregate colors
-     - At far zoom: render res-3 instances, at mid zoom: res-4, at close zoom: res-5
-     - Use `cellToParent()` and `cellToChildren()` from h3-js
+     - At far zoom: render res-3 instances (simplified terrain, ~41K hexes)
+     - At mid zoom: res-4 (~288K hexes)
+     - At close zoom: res-5 with full terrain detail
+     - Use `cellToParent()` / `cellToChildren()` from h3-js
 
-2. **Visual polish**
+2. **Tile model refinement**
+   - Replace procedural terrain models with Blender-authored glTF assets (one type at a time)
+   - Add surface detail: vertex color variation, normal maps per terrain type
+   - Tune skirt geometry depth and texturing
+   - Consider edge-matched transition pieces for critical pairings (land→ocean coast)
+
+3. **Visual polish**
    - Atmosphere tuning: sunrise/sunset colors, haze density
-   - Hex edge rendering: subtle darkened borders for painted hexes
-   - Ocean shader: animated water with subtle waves (Babylon's Water material or custom)
+   - Ocean shader: animated water with subtle waves on the globe sphere
    - Anti-aliasing: enable MSAA or FXAA post-process
    - Hex hover: glow or outline effect on hovered hex
+   - Province border lines: auto-generated GreasedLine along political boundaries
 
-3. **Performance optimization**
+4. **Performance optimization**
    - Profile with Babylon's Inspector: `scene.debugLayer.show()`
-   - Ensure single draw call for all hexes (thin instances)
-   - Texture compression for globe/terrain
-   - Frustum culling: thin instances cull as one unit — consider splitting into hemisphere chunks for back-face culling
+   - Confirm ~17 draw calls (one per terrain type group)
+   - Frustum culling: split terrain groups into hemisphere chunks for back-face culling
    - WebGPU: test with `new WebGPUEngine(canvas)` for draw-call improvement
 
-4. **Remove MapLibre dependencies**
+5. **Remove MapLibre dependencies**
    - Remove `maplibre-gl` from package.json
    - Remove `vendor/maplibre-gl/` directory
    - Remove MapLibre CSS import
+   - Remove TopoJSON data files (`countries-10m.json`, `waterways-10m.json`, `states-10m.json`)
+   - Remove `topojson-client`, `@turf/*` dependencies
    - Clean up any leftover MapLibre-specific code
-
-5. **Update export format**
-   - Bump version to 3
-   - Add `hexResolution` field (may vary with LOD)
-   - Maintain backwards compatibility: import v2 files still works
 
 ---
 
@@ -540,22 +528,24 @@ Resolution scaling test, visual polish, performance optimization, and cleanup.
 | Package | Purpose | Size (gzipped) |
 |---------|---------|----------------|
 | `@babylonjs/core` | Engine, scene, camera, meshes, materials | ~400-600KB |
-| `@babylonjs/materials` | PBR, water material, advanced materials | ~50KB |
-| `@babylonjs/geospatial` (if exists) | GeoCamera, Atmosphere, 3D Tiles | TBD |
+| `@babylonjs/addons` | Atmosphere (PBR scattering) | ~100KB |
+| `@babylonjs/materials` | Water material, advanced materials | ~50KB |
+| `@babylonjs/loaders` | glTF loader for hex tile models | ~50KB |
+| `simplex-noise` (or similar) | Procedural world generation | ~5KB |
 
 ### Remove
 | Package | Reason |
 |---------|--------|
 | `maplibre-gl` (vendored) | Replaced by Babylon.js |
-| `@turf/boolean-point-in-polygon` | Only used in hex generation API (keep if API stays) |
-| `@turf/intersect` | Only used in hex generation API (keep if API stays) |
-| `@turf/helpers` | Only used in hex generation API (keep if API stays) |
+| `@turf/boolean-point-in-polygon` | No longer needed (no geographic data processing) |
+| `@turf/intersect` | No longer needed |
+| `@turf/helpers` | No longer needed |
+| `topojson-client` | No longer needed (no real-world overlays) |
 
 ### Keep
 | Package | Reason |
 |---------|--------|
-| `h3-js` | H3 hex grid operations — used in both generation and picking |
-| `topojson-client` | TopoJSON parsing for borders/rivers/lakes |
+| `h3-js` | H3 hex grid — used for grid generation, neighbor lookups, and picking |
 
 ---
 
@@ -563,43 +553,47 @@ Resolution scaling test, visual polish, performance optimization, and cleanup.
 
 | Risk | Impact | Mitigation |
 |------|--------|------------|
-| Babylon.js 9.0 geospatial API is underdocumented or unstable | HIGH | Phase 1 validates the API immediately. Fallback: ArcRotateCamera on a sphere with custom atmosphere shader. The hex rendering (thin instances) is a mature, well-documented API regardless. |
-| Thin instances at 500K cause frame drops on integrated GPUs | MEDIUM | Implement LOD (res 3/4/5 by zoom level). Split into hemisphere chunks for culling. Test on target hardware early. |
-| Elevation data integration is complex | MEDIUM | Phase 6 is designed as optional — the app is fully functional after Phase 5. Elevation can be added incrementally. |
-| GreasedLine doesn't handle globe wrapping at antimeridian | LOW | Split line segments that cross the antimeridian into two segments (same approach as current `fixAntiMeridian`). |
-| Bundle size increase (~1MB+) | LOW | Acceptable for a game application. Tree-shake aggressively with deep imports. |
-| Export format backwards compatibility | LOW | Version field in export JSON. Import handler supports v2 and v3 formats. |
+| Babylon.js 9.0 geospatial API is underdocumented or unstable | HIGH | Phase 1 validates the API immediately. **RESOLVED**: GeospatialCamera is in `@babylonjs/core/Cameras`, Atmosphere in `@babylonjs/addons/atmosphere`. Both confirmed working in 9.3.1. |
+| Per-terrain-type thin instance groups add draw call overhead | MEDIUM | ~17 draw calls is trivial. WebGPU render bundles reduce this further. Profile in Phase 7. |
+| Terrain type change (moving hex between groups) causes frame hitch | MEDIUM | Buffer operations are O(1) per hex (swap-remove + append). Batch multiple changes and call `bufferUpdated` once per affected group. |
+| Tile model quality (procedural) doesn't look good enough | MEDIUM | Procedural models are the prototype. Replace with Blender-authored glTF assets per terrain type in Phase 7. The rendering system doesn't care where the mesh comes from. |
+| H3 pentagons (12 total) create visual artifacts | LOW | Place pentagons in ocean. At 80K hexes, 12 pentagons are unnoticeable. |
+| Bundle size increase (~1.5MB+) | LOW | Acceptable for a game application. Tree-shake aggressively with deep imports. |
+| Export format backwards compatibility | LOW | Version field in export JSON. Import handler supports v2 (political data only → all hexes become plains) and v3 (terrain + political). |
 
 ---
 
 ## What's Preserved
 
-- **All game data**: provinces, countries, hex assignments, colors — unchanged
-- **Save file format**: v2 import supported, v3 adds engine metadata
-- **UI layout and styling**: sidebar stays identical, just swap map canvas
-- **API endpoint**: `/api/land-hexes` unchanged — same hex generation pipeline
+- **Political layer**: provinces, countries, hex assignments, colors — unchanged concept
+- **UI layout and styling**: sidebar stays identical, expands with terrain mode
 - **H3 library**: same hex grid, same resolution system, same `latLngToCell` for picking
-- **Coastal hex handling**: same dynamic hex addition logic
+- **Save/load**: v2 import supported (political data migrated, terrain defaults to plains)
 
 ## What Changes
 
-- **Rendering backend**: MapLibre GeoJSON → Babylon.js thin instances
-- **Color management**: `setFeatureState()` → direct buffer writes
+- **World model**: real Earth geography → custom world building with assignable terrain types
+- **Rendering backend**: MapLibre GeoJSON → Babylon.js per-terrain-type thin instance groups
+- **Hex identity**: flat colored polygon → 3D terrain tile model with unique silhouette
+- **Color management**: `setFeatureState()` → per-group instance color buffers
 - **Picking**: MapLibre `queryRenderedFeatures` → ray-sphere intersection + h3-js
-- **Overlays**: MapLibre layers → GreasedLine meshes
-- **Projection**: MapLibre globe → Babylon.js 3D sphere
-- **File structure**: single 786-line file → modular `lib/engine/` + `lib/stores/` + `lib/geo/`
+- **Geographic overlays**: TopoJSON borders/rivers → removed (borders derived from province assignments)
+- **Elevation**: real-world DEM data → terrain type elevation tiers (discrete, designer-controlled)
+- **Editor modes**: 2 modes (province/country) → 3 modes (terrain/province/country)
+- **File structure**: single 786-line file → modular `lib/engine/` + `lib/world/` + `lib/stores/` + `lib/geo/`
 
 ---
 
-## Decision Points (Require Investigation at Implementation Time)
+## Decision Points
 
-1. **Geospatial package name**: Check npm for `@babylonjs/geospatial` vs bundled in core. This determines import paths for GeoCamera and Atmosphere.
+1. ~~**Geospatial package name**~~: **RESOLVED** — `GeospatialCamera` in `@babylonjs/core/Cameras/geospatialCamera`, `Atmosphere` in `@babylonjs/addons/atmosphere/atmosphere`.
 
-2. **Globe coordinate system**: If using Babylon's geospatial module, it likely uses ECEF (meters). If rolling our own, we use a unit sphere. This affects all coordinate math.
+2. **Globe coordinate system**: Using km-based coordinates matching `GeospatialCamera`'s `planetRadius` (EARTH_RADIUS_KM = 6371). **RESOLVED** in Phase 1 implementation.
 
 3. **Hex border rendering**: Shader-based edge detection vs. GreasedLine outlines vs. wireframe pass. Decide during Phase 2 based on visual quality.
 
-4. **Terrain source**: Cesium Ion 3D Tiles vs. Mapbox Terrain RGB vs. custom DEM. Decide during Phase 6 based on API availability and visual quality.
+4. **Tile model source**: Procedural (prototype) → Blender glTF (production). Start procedural, replace incrementally. Decision per terrain type during Phase 7.
 
 5. **Color update strategy**: Instance color buffer vs. data texture. Start with buffer, switch if per-hex update performance is insufficient.
+
+6. **Transition handling**: Deep skirts (Phase 2, simple) → edge-matched transition pieces (Phase 7, if needed). Start simple.
