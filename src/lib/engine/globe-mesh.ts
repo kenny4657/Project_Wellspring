@@ -174,88 +174,118 @@ function distToSegment(
 	return Math.sqrt(dx * dx + dy * dy + dz * dz);
 }
 
-interface CoastlineInfo {
-	hasCoastline: boolean;           // does this hex have edges where it needs to ramp down?
-	allSameHeight: boolean;          // are ALL neighbors at the exact same height level?
-	coastlineEdges: boolean[];       // per-edge: true if we ramp at this edge
-	neighborHeights: number[];       // per-edge: height of the neighbor (for ramp target)
+/** Border info for any hex — controls which edges get cosine ramps.
+ *  Works for both water hexes (coastline + depth transitions) and
+ *  land hexes (coastline smoothing toward water). */
+interface HexBorderInfo {
+	excludedEdges: boolean[];  // true = edge excluded from distance calc (no ramp)
+	edgeTargets: number[];     // ramp target height per non-excluded edge
+	allSameHeight: boolean;    // ALL neighbors at exact same height level (deep ocean fast path)
+	hasBorder: boolean;        // has at least one non-excluded edge
 }
 
-/** For a water hex, determine which edges face land neighbors (coastline edges).
- *  Replicates Sota's get_exclude_border_set() logic. */
-function getCoastlineInfo(cell: HexCell, cellById: Map<number, HexCell>): CoastlineInfo {
+/** Find the neighbor across a given hex edge (by edge midpoint direction). */
+function findNeighborAcrossEdge(cell: HexCell, edgeIdx: number, cellById: Map<number, HexCell>): HexCell | null {
 	const n = cell.corners.length;
-	const coastlineEdges: boolean[] = new Array(n).fill(true);
-	const neighborHeights: number[] = new Array(n).fill(cell.heightLevel);
-	let sameHeightCount = 0;
+	const midX = (cell.corners[edgeIdx].x + cell.corners[(edgeIdx + 1) % n].x) / 2;
+	const midY = (cell.corners[edgeIdx].y + cell.corners[(edgeIdx + 1) % n].y) / 2;
+	const midZ = (cell.corners[edgeIdx].z + cell.corners[(edgeIdx + 1) % n].z) / 2;
+	const dirX = midX - cell.center.x;
+	const dirY = midY - cell.center.y;
+	const dirZ = midZ - cell.center.z;
+
+	let closestNb: HexCell | null = null;
+	let closestDot = -Infinity;
+	for (const nId of cell.neighbors) {
+		const nb = cellById.get(nId);
+		if (!nb) continue;
+		const dot = dirX * (nb.center.x - cell.center.x) +
+		            dirY * (nb.center.y - cell.center.y) +
+		            dirZ * (nb.center.z - cell.center.z);
+		if (dot > closestDot) { closestDot = dot; closestNb = nb; }
+	}
+	return closestNb;
+}
+
+function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBorderInfo {
+	const n = cell.corners.length;
+	const excludedEdges: boolean[] = new Array(n).fill(false);
+	const edgeTargets: number[] = new Array(n).fill(0);
+	let excludedCount = 0;
 	let exactSameCount = 0;
+	const isWater = cell.heightLevel <= 1;
 
 	for (let i = 0; i < n; i++) {
-		const midX = (cell.corners[i].x + cell.corners[(i + 1) % n].x) / 2;
-		const midY = (cell.corners[i].y + cell.corners[(i + 1) % n].y) / 2;
-		const midZ = (cell.corners[i].z + cell.corners[(i + 1) % n].z) / 2;
-		const dirX = midX - cell.center.x;
-		const dirY = midY - cell.center.y;
-		const dirZ = midZ - cell.center.z;
+		const nb = findNeighborAcrossEdge(cell, i, cellById);
+		if (!nb) continue;
 
-		let closestNId = -1;
-		let closestDot = -Infinity;
-		for (const nId of cell.neighbors) {
-			const neighbor = cellById.get(nId);
-			if (!neighbor) continue;
-			const ndx = neighbor.center.x - cell.center.x;
-			const ndy = neighbor.center.y - cell.center.y;
-			const ndz = neighbor.center.z - cell.center.z;
-			const dot = dirX * ndx + dirY * ndy + dirZ * ndz;
-			if (dot > closestDot) { closestDot = dot; closestNId = nId; }
-		}
+		if (nb.heightLevel === cell.heightLevel) exactSameCount++;
+		const nbIsWater = nb.heightLevel <= 1;
 
-		if (closestNId >= 0) {
-			const neighbor = cellById.get(closestNId)!;
-			neighborHeights[i] = neighbor.heightLevel;
-			if (neighbor.heightLevel === cell.heightLevel) exactSameCount++;
-
-			const neighborIsLand = neighbor.heightLevel >= 2;
-			const cellIsWater = cell.heightLevel <= 1;
-
-			if (cellIsWater && neighborIsLand) {
-				// Water → Land: ALWAYS ramp (coastline). Water rises toward sea level.
-				// Keep coastlineEdges[i] = true, neighborHeight stays as land level
-			} else if (neighbor.heightLevel >= cell.heightLevel) {
-				// Same height or neighbor is higher → no ramp from our side
-				coastlineEdges[i] = false;
-				sameHeightCount++;
+		if (isWater) {
+			// ── Water hex edge logic ──
+			// Exclude: same-depth water, or this cell is deeper/equal → stay flat
+			if (nbIsWater && cell.heightLevel <= nb.heightLevel) {
+				excludedEdges[i] = true;
+				excludedCount++;
+			} else if (nbIsWater) {
+				// Shallower water → ramp down to deeper neighbor
+				edgeTargets[i] = getLevelHeight(nb.heightLevel);
+			} else {
+				// Water → land: ramp up to sea level
+				edgeTargets[i] = 0;
+			}
+		} else {
+			// ── Land hex edge logic ──
+			// Only ramp at water borders (coastline). All land-land edges excluded (walls handle those).
+			if (nbIsWater) {
+				// Land → water: ramp down to sea level
+				edgeTargets[i] = 0;
+				// NOT excluded — this edge gets a ramp
+			} else {
+				// Land → land: excluded (walls handle height transitions)
+				excludedEdges[i] = true;
+				excludedCount++;
 			}
 		}
 	}
 
 	return {
-		hasCoastline: sameHeightCount < n,
-		allSameHeight: exactSameCount >= n, // ALL neighbors at exact same height
-		coastlineEdges,
-		neighborHeights
+		excludedEdges,
+		edgeTargets,
+		allSameHeight: isWater && exactSameCount >= n,
+		hasBorder: excludedCount < n
 	};
 }
 
-/** Compute distance to nearest transition edge AND the neighbor's height at that edge */
-function distToNearestTransitionEdge(
+/** Compute minimum distance to ANY non-excluded edge, and return the ramp target.
+ *  At corners where multiple edges are equidistant (dist≈0), use the HIGHEST target
+ *  so all hexes sharing that corner converge to the same height. Without this,
+ *  a shallow hex at a land+deep+shallow corner might pick the deep edge (target=-0.020)
+ *  while land and deep both pick target=0 → 127km gap. */
+function distToBorderWithTarget(
 	vx: number, vy: number, vz: number,
-	cell: HexCell, info: CoastlineInfo
-): { dist: number; neighborHeight: number } {
+	cell: HexCell, borderInfo: HexBorderInfo
+): { dist: number; target: number } {
 	const n = cell.corners.length;
 	let minDist = Infinity;
-	let bestNeighborHeight = cell.heightLevel;
+	let target = -Infinity;
+	const EPS = 1e-4;
 	for (let i = 0; i < n; i++) {
-		if (!info.coastlineEdges[i]) continue;
+		if (borderInfo.excludedEdges[i]) continue;
 		const a = cell.corners[i];
 		const b = cell.corners[(i + 1) % n];
 		const d = distToSegment(vx, vy, vz, a.x, a.y, a.z, b.x, b.y, b.z);
-		if (d < minDist) {
+		if (d < minDist - EPS) {
 			minDist = d;
-			bestNeighborHeight = info.neighborHeights[i];
+			target = borderInfo.edgeTargets[i];
+		} else if (d < minDist + EPS) {
+			// Multiple edges at similar distance (corner) — use highest target
+			target = Math.max(target, borderInfo.edgeTargets[i]);
+			if (d < minDist) minDist = d;
 		}
 	}
-	return { dist: minDist, neighborHeight: bestNeighborHeight };
+	return { dist: minDist, target };
 }
 
 // ── Build Globe Mesh ────────────────────────────────────────
@@ -281,6 +311,7 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 	const cellById = new Map<number, HexCell>();
 	for (const c of cells) cellById.set(c.id, c);
 
+
 	for (let ci = 0; ci < cells.length; ci++) {
 		const cell = cells[ci];
 		const n = cell.corners.length;
@@ -293,12 +324,12 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 		const tierH = getLevelHeight(cell.heightLevel);
 		const isWaterHex = cell.heightLevel <= 1;
 
-		// Sota-style coastline: only bowl-dip water hexes at edges facing land.
-		// Water-water boundaries stay flat → continuous ocean surface.
-		let coastInfo: CoastlineInfo | null = null;
+		// Border info for coastline ramps — applies to BOTH water and land hexes.
+		// Water hexes: ramp at water→land and water→water depth transitions.
+		// Land hexes: ramp at land→water coastline edges (smooth slope to sea level).
+		const borderInfo = getHexBorderInfo(cell, cellById);
 		let hexRadius = 0;
-		if (isWaterHex) {
-			coastInfo = getCoastlineInfo(cell, cellById);
+		if (borderInfo.hasBorder) {
 			for (let i = 0; i < n; i++) {
 				const dx = cell.corners[i].x - cell.center.x;
 				const dy = cell.corners[i].y - cell.center.y;
@@ -308,9 +339,8 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 			hexRadius /= n;
 		}
 
-		// ── Deep ocean fast path: flat hex, no subdivision ──
-		// Only when ALL neighbors are at the exact same height (no edge mismatch)
-		const deepOcean = isWaterHex && coastInfo && coastInfo.allSameHeight;
+		// Deep ocean fast path: flat hex when ALL neighbors are same height water
+		const deepOcean = isWaterHex && borderInfo.allSameHeight;
 
 		if (deepOcean) {
 			// Simple center + corners fan — 6 triangles instead of 384
@@ -360,16 +390,23 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 					const noiseH = fbmNoise(ux * NOISE_SCALE, uy * NOISE_SCALE, uz * NOISE_SCALE);
 
 					let h: number;
-					if (isWaterHex && coastInfo!.hasCoastline) {
-						const { dist, neighborHeight } = distToNearestTransitionEdge(
-							ux, uy, uz, cell, coastInfo!
-						);
-						// t: 0 at transition edge, 1 deep inside this hex
+					if (borderInfo.hasBorder) {
+						// Sota-style distance_to_border with per-edge targets.
+						// Both water AND land hexes ramp at coastlines → they meet at sea level.
+						// Water→water depth transitions ramp to neighbor's height.
+						const { dist, target: borderTarget } = distToBorderWithTarget(ux, uy, uz, cell, borderInfo);
 						const t = Math.min(dist / hexRadius, 1.0);
-						// cosrp: smooth ramp from neighbor's height (at edge) to our height (inside)
 						const mu = (1 - Math.cos(t * Math.PI)) / 2;
-						const neighborH = getLevelHeight(neighborHeight);
-						h = neighborH + (tierH - neighborH) * mu + noiseH * NOISE_AMP * 0.3;
+
+						// Noise coefficient must MATCH at shared borders:
+						// - Water↔water: border noise = NOISE_AMP (flat neighbor uses full noise)
+						// - Water↔land: border noise = NOISE_AMP * 0.3 (both sides use 0.3 at coast)
+						const isWaterNeighborBorder = borderTarget < -0.001;
+						const borderNoise = isWaterNeighborBorder ? NOISE_AMP : NOISE_AMP * 0.3;
+						const interiorNoise = isWaterHex ? NOISE_AMP * 0.3 : NOISE_AMP;
+						const noiseCoeff = interiorNoise * mu + borderNoise * (1 - mu);
+
+						h = tierH * mu + borderTarget * (1 - mu) + noiseH * noiseCoeff;
 					} else {
 						h = tierH + noiseH * NOISE_AMP;
 					}
@@ -400,40 +437,25 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 			}
 		}
 
-		// ── Side walls: ONLY at cliff edges (no ramp) ──────
-		// Skip walls at: same-height edges, lower neighbors, and ramped edges
+		// ── Side walls ──────────────────────────────────────
+		// Water hexes: cosine ramps handle all transitions — no walls.
+		// Land hexes: walls only at land→land height transitions.
+		// Coastline edges (land→water) use smooth ramps, not walls.
+		if (isWaterHex) {
+			// Water hexes use cosine ramps — skip all walls
+		} else
 		for (let i = 0; i < n; i++) {
-			// If this edge has a cosine ramp, the ramp handles the transition — no wall needed
-			if (coastInfo && coastInfo.coastlineEdges[i]) continue;
 			const c0 = cell.corners[i];
 			const c1 = cell.corners[(i + 1) % n];
 
-			// Find neighbor across this edge
-			const edgeMidX = (c0.x + c1.x) * 0.5;
-			const edgeMidY = (c0.y + c1.y) * 0.5;
-			const edgeMidZ = (c0.z + c1.z) * 0.5;
-			const dirX = edgeMidX - cell.center.x;
-			const dirY = edgeMidY - cell.center.y;
-			const dirZ = edgeMidZ - cell.center.z;
+			const nb = findNeighborAcrossEdge(cell, i, cellById);
+			if (!nb) continue;
 
-			let neighborHeight = cell.heightLevel;
-			let bestDot = -Infinity;
-			for (const nId of cell.neighbors) {
-				const nb = cellById.get(nId);
-				if (!nb) continue;
-				const ndx = nb.center.x - cell.center.x;
-				const ndy = nb.center.y - cell.center.y;
-				const ndz = nb.center.z - cell.center.z;
-				const dot = dirX * ndx + dirY * ndy + dirZ * ndz;
-				if (dot > bestDot) {
-					bestDot = dot;
-					neighborHeight = nb.heightLevel;
-				}
-			}
+			// Skip coastline edges — ramp handles the transition smoothly
+			if (nb.heightLevel <= 1) continue;
 
-			// Only emit wall from the HIGHER hex (wall faces outward/downward).
-			// Skip if same height or if neighbor is higher (neighbor emits the wall).
-			if (neighborHeight >= cell.heightLevel) continue;
+			// Only emit wall from the HIGHER land hex.
+			if (nb.heightLevel >= cell.heightLevel) continue;
 
 			const wn0 = fbmNoise(c0.x * NOISE_SCALE, c0.y * NOISE_SCALE, c0.z * NOISE_SCALE);
 			const wn1 = fbmNoise(c1.x * NOISE_SCALE, c1.y * NOISE_SCALE, c1.z * NOISE_SCALE);
