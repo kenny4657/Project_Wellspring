@@ -39,6 +39,7 @@ import '@babylonjs/core/Shaders/default.fragment';
 import { EARTH_RADIUS_KM, latLngToWorld } from '$lib/geo/coords';
 import { createHexMesh } from '$lib/engine/hex-mesh';
 import { HexRenderer } from '$lib/engine/hex-renderer';
+import { createTerrainMaterial } from '$lib/engine/terrain-material';
 import { pickHexAtScreen } from '$lib/engine/picking';
 import { type TerrainTypeId, TERRAIN_PROFILES } from '$lib/world/terrain-types';
 import { getRes0Cells, cellToChildren } from 'h3-js';
@@ -172,11 +173,9 @@ export async function createGlobeEngine(
 
 	const hexMesh = createHexMesh(hexRadiusKm, 3, scene);
 
-	// StandardMaterial — Babylon's lighting system works automatically
-	const hexMat = new StandardMaterial('hexMat', scene);
-	hexMat.diffuseColor = new Color3(1, 1, 1);
-	hexMat.specularColor = new Color3(0, 0, 0);
-	hexMat.backFaceCulling = false;
+	// CustomMaterial = StandardMaterial + custom shader injection
+	// Gets Babylon's full lighting AND our terrain displacement/blending
+	const hexMat = createTerrainMaterial(scene);
 	hexMesh.material = hexMat;
 
 	// ── Hex Renderer ────────────────────────────────────────
