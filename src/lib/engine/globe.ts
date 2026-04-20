@@ -169,7 +169,9 @@ export async function createGlobeEngine(
 
 	// Hex circumradius from H3 cell area. Slight oversize (~8%) to eliminate gaps
 	// from sphere curvature without excessive overlap that causes z-fighting.
-	const hexRadiusKm = H3_RES === 3 ? 85 : H3_RES === 4 ? 30 : 14;
+	// Hex radius sized to tile without excessive overlap
+	// Too small = gaps, too big = z-fighting from overlap
+	const hexRadiusKm = H3_RES === 3 ? 72 : H3_RES === 4 ? 26 : 12;
 
 	const hexMesh = createHexMesh(hexRadiusKm, 2, scene); // 2 subdivisions = 96 triangles per hex
 

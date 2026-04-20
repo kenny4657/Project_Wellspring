@@ -90,26 +90,25 @@ export function createTerrainMaterial(scene: Scene, _hexRadius: number): CustomM
 		}
 
 		// Blend with neighbor terrain using transition mask
-		// Adapted from threejs-hex-map land.fragment.ts
 		vec4 terrainTransition(vec4 inputColor, float neighborType, float sector, float myTerrain) {
 			float neighborCell = getAtlasCell(int(neighborType + 0.5));
 			float myCell = getAtlasCell(int(myTerrain + 0.5));
 
-			// Skip if same texture cell or water→land (keep water on top)
-			if (neighborCell == myCell) return inputColor;
-			if (myTerrain <= 1.0 && neighborType > 1.0) return inputColor;
+			// Skip if same texture cell
+			if (abs(neighborCell - myCell) < 0.5) return inputColor;
 
 			vec2 otherUV = cellToUV(neighborCell);
 			vec4 otherColor = texture2D(terrainAtlas, otherUV);
 
-			// Blend mask for this sector direction (6 sectors in the texture)
+			// Blend mask for this sector direction
+			// The transition texture has 6 directional masks side by side
 			vec2 blendUV = vec2(
 				sector / 6.0 + vHexUV.x / 6.0,
-				1.0 - vHexUV.y / 6.0
+				vHexUV.y
 			);
 			vec4 blend = texture2D(transitionTex, blendUV);
 
-			float alpha = min(blend.r, clamp(neighborType - myTerrain, 0.0, 1.0));
+			float alpha = blend.r * 0.6;
 			return mix(inputColor, otherColor, alpha);
 		}
 	`);
