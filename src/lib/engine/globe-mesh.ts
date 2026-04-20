@@ -393,9 +393,11 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 			}
 		}
 
-		// ── Side walls: ONLY at edges with height difference ─
-		// Skip walls between same-height neighbors to eliminate fissures
+		// ── Side walls: ONLY at cliff edges (no ramp) ──────
+		// Skip walls at: same-height edges, lower neighbors, and ramped edges
 		for (let i = 0; i < n; i++) {
+			// If this edge has a cosine ramp, the ramp handles the transition — no wall needed
+			if (coastInfo && coastInfo.coastlineEdges[i]) continue;
 			const c0 = cell.corners[i];
 			const c1 = cell.corners[(i + 1) % n];
 
