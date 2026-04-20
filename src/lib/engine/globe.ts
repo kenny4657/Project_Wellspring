@@ -125,13 +125,13 @@ export async function createGlobeEngine(
 
 	const startCenter = latLngToWorld(35, -20, EARTH_RADIUS_KM);
 	camera.center = startCenter;
-	camera.radius = EARTH_RADIUS_KM * 2;
+	camera.radius = 20000; // start zoomed out
 	camera.pitch = 0;
 	camera.yaw = 0;
 
-	// Hexes are at EARTH_RADIUS_KM + 15. Camera must stay above them.
-	camera.limits.radiusMin = EARTH_RADIUS_KM + 100; // 100km above surface, ~85km above hex tiles
-	camera.limits.radiusMax = EARTH_RADIUS_KM * 5;
+	// radius = distance from camera to the center point (on globe surface), NOT from earth center
+	camera.limits.radiusMin = 50;   // 50km from surface
+	camera.limits.radiusMax = 40000; // far orbit
 	camera.limits.pitchMax = Math.PI / 2.5;
 
 	// Clip planes for km-scale rendering
