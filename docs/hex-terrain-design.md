@@ -182,23 +182,34 @@ A "river hex" terrain type would mean an entire 45km hex is a river — far too 
 All hexes sharing a terrain type share the same source mesh. Each terrain type is a separate thin-instance group.
 
 ```
-Terrain Type Registry
-┌─────────────┬──────────────┬───────────────┬──────────────────┐
-│ Terrain Type│ Source Mesh  │ Instance Count│ Draw Call        │
-├─────────────┼──────────────┼───────────────┼──────────────────┤
-│ deep_ocean  │ ocean.glb    │ ~25,000       │ 1                │
-│ plains      │ plains.glb   │ ~12,000       │ 1                │
-│ mountain    │ mountain.glb │ ~3,000        │ 1                │
-│ forest      │ forest.glb   │ ~8,000        │ 1                │
-│ lake        │ lake.glb     │ ~1,500        │ 1                │
-│ ...         │ ...          │ ...           │ ...              │
-├─────────────┼──────────────┼───────────────┼──────────────────┤
-│ TOTAL       │ ~17 meshes   │ ~80,000       │ ~17 draw calls   │
-│ + rivers    │ GreasedLine  │ 1 merged mesh │ +1 draw call     │
-└─────────────┴──────────────┴───────────────┴──────────────────┘
+Rendering Registry
+┌──────────────────┬──────────────┬───────────────┬──────────────────┐
+│ Component        │ Source Mesh  │ Instance Count│ Draw Calls       │
+├──────────────────┼──────────────┼───────────────┼──────────────────┤
+│ BASE TILES       │              │               │                  │
+│  deep_ocean      │ ocean.glb    │ ~25,000       │ 1                │
+│  plains          │ plains.glb   │ ~12,000       │ 1                │
+│  mountain        │ mountain.glb │ ~3,000        │ 1                │
+│  forest          │ forest.glb   │ ~8,000        │ 1                │
+│  lake            │ lake.glb     │ ~1,500        │ 1                │
+│  ...             │ ...          │ ...           │ ...              │
+│  (subtotal)      │ ~17 meshes   │ ~80,000       │ ~17              │
+├──────────────────┼──────────────┼───────────────┼──────────────────┤
+│ EDGE PIECES      │              │               │                  │
+│  shore           │ shore.glb    │ ~15,000       │ 1                │
+│  cliff           │ cliff.glb    │ ~8,000        │ 1                │
+│  slope           │ slope.glb    │ ~12,000       │ 1                │
+│  treeline        │ treeline.glb │ ~6,000        │ 1                │
+│  ...             │ ...          │ ...           │ ...              │
+│  (subtotal)      │ ~8 meshes    │ ~100,000      │ ~8               │
+├──────────────────┼──────────────┼───────────────┼──────────────────┤
+│ RIVERS           │ GreasedLine  │ 1 merged mesh │ 1                │
+├──────────────────┼──────────────┼───────────────┼──────────────────┤
+│ TOTAL            │ ~26 meshes   │ ~180,000 inst │ ~26 draw calls   │
+└──────────────────┴──────────────┴───────────────┴──────────────────┘
 ```
 
-~18 draw calls for 80K hexes + rivers. At 500K hexes, still ~18 — only instance counts grow.
+~26 draw calls for 80K hexes + transitions + rivers. Scales linearly with hex count — at 500K hexes, still ~26 draw calls.
 
 ### Instance Data Per Hex
 
@@ -360,25 +371,210 @@ The editor expands from 2 modes to 3:
 
 ---
 
-## Transition Handling
+## Terrain Transitions & Merging
 
-### Deep Skirts (Phase 1 — Simple)
+The fundamental challenge: **thin instances share geometry**, but a lake hex surrounded by other lakes should look different from a lake hex bordered by mountains. Same-type hexes should merge seamlessly (no visible hex grid); different-type hexes need explicit transition visuals.
 
-Each tile model includes skirt geometry extending 2 tiers below its surface. Adjacent hexes' skirts overlap, hiding gaps. No special transition logic needed.
+### Two-Layer Architecture: Base Tiles + Edge Pieces
 
-**Pros**: Simple, no per-edge computation, works with thin instances
-**Cons**: Skirt texturing is generic (same rock/dirt regardless of neighbor)
+Each hex is rendered as two components:
 
-### Edge-Matched Transitions (Phase 2 — If Needed)
+```
+Layer 1: BASE TILE (thin instances, ~17 draw calls)
+  - Fills the full hex footprint
+  - NO border/edge features — designed to tile seamlessly with same-type neighbors
+  - A lake base tile is just flat water filling the entire hex
+  - A plains base tile is flat grass filling the entire hex
 
-If deep skirts don't look good enough, add transition meshes along hex edges:
+Layer 2: EDGE PIECES (thin instances, placed per-edge where terrain differs)
+  - Small meshes covering one hex edge (~1/6 of the hex perimeter)
+  - Only placed where this hex's terrain type ≠ neighbor's terrain type
+  - Provides the visual transition: shores, treelines, cliff faces, etc.
+  - NOT placed between same-type hexes → hex boundary disappears
+```
 
-- For each hex edge, compare this hex's tier to the neighbor's tier
-- If different: place a transition mesh piece (cliff, slope, beach, etc.)
-- Transition pieces are their own thin-instance groups (cliff_2_to_0, slope_3_to_2, etc.)
-- Adds ~6 more draw calls but dramatically improves visual quality
+This solves both problems:
+- **Same-type merging**: no edge pieces between adjacent lakes → continuous water surface
+- **Different-type transitions**: shore piece between lake and plains → visible coastline
 
-This is what Civ 6 does. It's more work but creates the "polished strategy game" look.
+### Visual Example
+
+```
+Three lake hexes + one plains hex:
+
+    ┌─────────┐
+    │  LAKE   │         ← base tile: flat water
+    │         │
+    ├─ ─ ─ ─ ┤         ← NO edge piece (same type) → seamless water
+    │  LAKE   │
+    │         │
+    ├─────────┤         ← NO edge piece (same type) → seamless water
+    │  LAKE   │
+    │      ≈≈≈│shore    ← EDGE PIECE: lake→plains shore on right edge
+    ├─────────┤
+    │ PLAINS  │
+    │         │
+    └─────────┘
+```
+
+### Edge Piece Types
+
+Edge pieces are categorized by the transition they represent. Each is a thin-instance group.
+
+| Edge Piece | When Placed | Visual |
+|------------|-------------|--------|
+| `shore` | Water ↔ Land (any tier 0-1 ↔ tier 2+) | Sandy/rocky beach strip |
+| `cliff` | Low land ↔ High land (2+ tier difference) | Vertical rock face |
+| `slope` | Adjacent land tiers (1 tier difference) | Gentle grassy/rocky incline |
+| `treeline` | Open land ↔ Forest/Jungle | Trees thinning to grass |
+| `waterline` | Lake ↔ Ocean types | Subtle water color boundary |
+| `ice_edge` | Tundra ↔ Non-tundra | Frost/snow fading to earth |
+| `desert_edge` | Desert ↔ Non-desert green | Sand-to-grass gradient |
+
+Not every terrain pair needs a unique edge piece. A lookup table maps terrain pair → edge piece type:
+
+```typescript
+type EdgePieceType = 'shore' | 'cliff' | 'slope' | 'treeline' | 'waterline' | 'ice_edge' | 'desert_edge' | 'generic';
+
+function getEdgePiece(terrainA: TerrainType, terrainB: TerrainType): EdgePieceType | null {
+  // Same terrain type → no edge piece (seamless merge)
+  if (terrainA === terrainB) return null;
+
+  const tierA = TERRAIN_TIERS[terrainA];
+  const tierB = TERRAIN_TIERS[terrainB];
+  const isWaterA = tierA <= 1;
+  const isWaterB = tierB <= 1;
+
+  // Water ↔ Land
+  if (isWaterA !== isWaterB) return 'shore';
+
+  // Both water but different types
+  if (isWaterA && isWaterB) return 'waterline';
+
+  // Large elevation difference
+  if (Math.abs(tierA - tierB) >= 2) return 'cliff';
+
+  // Small elevation difference
+  if (tierA !== tierB) return 'slope';
+
+  // Same tier, different type — contextual
+  if (terrainA === 'forest' || terrainB === 'forest' ||
+      terrainA === 'jungle' || terrainB === 'jungle') return 'treeline';
+  if (terrainA === 'tundra' || terrainB === 'tundra') return 'ice_edge';
+  if (terrainA === 'desert' || terrainB === 'desert') return 'desert_edge';
+
+  return 'generic';
+}
+```
+
+### Edge Piece Geometry
+
+Each edge piece is a **wedge-shaped mesh** covering one edge of the hex:
+
+```
+        Hex center
+           *
+          /|\
+         / | \
+        /  |  \
+       / EDGE  \
+      /  PIECE  \
+     /_____|_____\
+     v1          v2      ← hex boundary vertices
+```
+
+- Spans from hex center to the edge midpoint to the two edge vertices
+- ~8-16 triangles per edge piece
+- Oriented in model space so it can be instanced along any of the 6 edges via rotation
+- One model per edge piece type, rotated to the correct edge via the instance matrix
+
+### Edge Piece Instance Data
+
+```typescript
+interface EdgePieceInstance {
+  h3: string;           // which hex this edge belongs to
+  edge: number;         // edge index 0-5
+  type: EdgePieceType;  // shore, cliff, slope, etc.
+}
+```
+
+Instance matrix encodes:
+1. Translation to hex position on globe
+2. Rotation to align with globe surface normal
+3. Additional rotation around the normal to orient to the correct edge (edge × 60°)
+
+### Rendering Budget
+
+| Component | Draw Calls | Typical Instance Count |
+|-----------|-----------|----------------------|
+| Base tiles (~17 terrain types) | ~17 | 80,000 total |
+| Edge pieces (~8 types) | ~8 | ~100,000 total (many hexes have 3-4 differing edges) |
+| Rivers | 1 | 1 merged mesh |
+| **Total** | **~26** | — |
+
+~26 draw calls is still very comfortable. Edge piece instances add ~8 MB GPU buffer (100K × 80 bytes).
+
+### Edge Piece Rebuild
+
+Edge pieces are **recomputed whenever terrain changes**:
+
+```typescript
+function rebuildEdgePieces(hexes: Map<string, HexState>): EdgePieceInstance[] {
+  const pieces: EdgePieceInstance[] = [];
+
+  for (const [h3, state] of hexes) {
+    const neighbors = gridDisk(h3, 1).filter(n => n !== h3); // 6 neighbors
+
+    for (let edge = 0; edge < 6; edge++) {
+      const neighbor = neighbors[edge];
+      const neighborState = hexes.get(neighbor);
+      const neighborTerrain = neighborState?.terrain ?? 'deep_ocean';
+
+      const pieceType = getEdgePiece(state.terrain, neighborTerrain);
+      if (pieceType) {
+        pieces.push({ h3, edge, type: pieceType });
+      }
+    }
+  }
+
+  return pieces;
+}
+```
+
+This rebuild is O(N) where N = total hexes. For 80K hexes: ~480K neighbor lookups, completes in <50ms. Can be optimized to rebuild only affected hexes on local terrain changes.
+
+### Skirt Geometry (Still Needed)
+
+Edge pieces handle the **horizontal transition** between terrain types. Skirts handle the **vertical gap** between different elevation tiers. Both are needed:
+
+- **Edge piece**: visual transition (shore, treeline, cliff texture)
+- **Skirt**: structural fill preventing see-through gaps between hexes at different heights
+
+Base tile models still include skirt geometry extending 2 tiers below their surface. The skirts are only visible where there's a significant elevation difference AND the edge piece doesn't fully cover the gap.
+
+### Same-Type Merging Details
+
+For merging to look seamless, base tile models must:
+
+1. **Have matching edge profiles** — the surface height/texture at all 6 edges must be identical across all instances of the same type. This means terrain noise/displacement must fade to a consistent value at hex edges.
+
+2. **Use world-space texturing** — texture coordinates based on world position (triplanar mapping), not model-local UVs. This prevents visible texture seams between adjacent same-type hexes.
+
+3. **Match material properties exactly** — same roughness, color, normal map at the boundary.
+
+```typescript
+// In the procedural terrain mesh generator:
+function terrainNoise(x: number, z: number, type: TerrainType): number {
+  const distFromCenter = Math.sqrt(x*x + z*z) / HEX_RADIUS;
+  const centerNoise = fbm(x, z, type.noiseProfile);
+
+  // Fade displacement to zero near hex edges → seamless same-type tiling
+  const edgeFade = smoothstep(0.7, 1.0, distFromCenter);
+  return centerNoise * (1 - edgeFade);
+}
+```
+
+This ensures the hex edge is always at a consistent height, so adjacent same-type hexes connect perfectly. The terrain variation (bumps, dunes, mounds) only appears in the center ~70% of each hex.
 
 ---
 
