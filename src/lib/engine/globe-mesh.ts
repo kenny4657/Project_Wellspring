@@ -258,23 +258,31 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 	};
 }
 
-/** Compute minimum distance to ANY non-excluded edge, and return
- *  the ramp target of the closest edge. */
+/** Compute minimum distance to ANY non-excluded edge, and return the ramp target.
+ *  At corners where multiple edges are equidistant (dist≈0), use the HIGHEST target
+ *  so all hexes sharing that corner converge to the same height. Without this,
+ *  a shallow hex at a land+deep+shallow corner might pick the deep edge (target=-0.020)
+ *  while land and deep both pick target=0 → 127km gap. */
 function distToBorderWithTarget(
 	vx: number, vy: number, vz: number,
 	cell: HexCell, borderInfo: HexBorderInfo
 ): { dist: number; target: number } {
 	const n = cell.corners.length;
 	let minDist = Infinity;
-	let target = 0;
+	let target = -Infinity;
+	const EPS = 1e-4;
 	for (let i = 0; i < n; i++) {
 		if (borderInfo.excludedEdges[i]) continue;
 		const a = cell.corners[i];
 		const b = cell.corners[(i + 1) % n];
 		const d = distToSegment(vx, vy, vz, a.x, a.y, a.z, b.x, b.y, b.z);
-		if (d < minDist) {
+		if (d < minDist - EPS) {
 			minDist = d;
 			target = borderInfo.edgeTargets[i];
+		} else if (d < minDist + EPS) {
+			// Multiple edges at similar distance (corner) — use highest target
+			target = Math.max(target, borderInfo.edgeTargets[i]);
+			if (d < minDist) minDist = d;
 		}
 	}
 	return { dist: minDist, target };
@@ -302,6 +310,7 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 	// Build cell-by-ID lookup for neighbor queries
 	const cellById = new Map<number, HexCell>();
 	for (const c of cells) cellById.set(c.id, c);
+
 
 	for (let ci = 0; ci < cells.length; ci++) {
 		const cell = cells[ci];
