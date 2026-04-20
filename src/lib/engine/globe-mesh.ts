@@ -390,7 +390,9 @@ function computeSurfaceHeight(
 	tierH: number,
 	isWaterHex: boolean
 ): number {
-	const noiseH = fbmNoise(ux * NOISE_SCALE, uy * NOISE_SCALE, uz * NOISE_SCALE);
+	// abs() ensures noise only displaces upward from tier height — prevents
+	// land from dipping below sea level and keeps all hex surfaces consistent.
+	const noiseH = Math.abs(fbmNoise(ux * NOISE_SCALE, uy * NOISE_SCALE, uz * NOISE_SCALE));
 
 	if (isWaterHex && borderInfo.allSameHeight) {
 		return tierH + noiseH * NOISE_AMP;
