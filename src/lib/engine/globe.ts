@@ -39,7 +39,6 @@ import '@babylonjs/core/Shaders/default.fragment';
 import { EARTH_RADIUS_KM, latLngToWorld } from '$lib/geo/coords';
 import { createHexMesh } from '$lib/engine/hex-mesh';
 import { HexRenderer } from '$lib/engine/hex-renderer';
-import { createTerrainMaterial } from '$lib/engine/terrain-shader';
 import { pickHexAtScreen } from '$lib/engine/picking';
 import { type TerrainTypeId, TERRAIN_PROFILES } from '$lib/world/terrain-types';
 import { getRes0Cells, cellToChildren } from 'h3-js';
@@ -173,9 +172,12 @@ export async function createGlobeEngine(
 
 	const hexMesh = createHexMesh(hexRadiusKm, 3, scene);
 
-	// Custom terrain shader — handles displacement, edge blending, and lighting
-	const terrainMat = createTerrainMaterial(scene);
-	hexMesh.material = terrainMat;
+	// StandardMaterial — Babylon's lighting system works automatically
+	const hexMat = new StandardMaterial('hexMat', scene);
+	hexMat.diffuseColor = new Color3(1, 1, 1);
+	hexMat.specularColor = new Color3(0, 0, 0);
+	hexMat.backFaceCulling = false;
+	hexMesh.material = hexMat;
 
 	// ── Hex Renderer ────────────────────────────────────────
 	report('Building hex instances...');
@@ -225,12 +227,8 @@ export async function createGlobeEngine(
 	(window as any).__camera = camera;
 
 	// ── Render Loop ─────────────────────────────────────────
-	// Set initial camera position for shader
-	terrainMat.setVector3('cameraPos', camera.position);
-
 	engine.runRenderLoop(() => {
 		cameraLight.position.copyFrom(camera.position);
-		terrainMat.setVector3('cameraPos', camera.position);
 		scene.render();
 	});
 

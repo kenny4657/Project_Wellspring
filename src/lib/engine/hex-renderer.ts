@@ -1,10 +1,8 @@
 /**
  * Hex renderer — manages thin instances for all hex tiles on the globe.
  *
- * Uses custom terrain shader with per-instance attributes:
- *   - terrainData0 (4 floats): terrain type + 3 neighbor types
- *   - terrainData1 (4 floats): 3 neighbor types + padding
- *   - color (4 floats): province/country tint RGBA
+ * Uses Babylon's native instance color system with StandardMaterial.
+ * Terrain type → color lookup from TERRAIN_PROFILES.
  */
 import { Matrix, Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { type Mesh } from '@babylonjs/core/Meshes/mesh';
@@ -20,9 +18,8 @@ const _right = Vector3.Zero();
 export class HexRenderer {
 	private mesh: Mesh;
 	private matrices: Float32Array;
-	private terrainData0: Float32Array;
-	private terrainData1: Float32Array;
 	private colors: Float32Array;
+	private hexTerrainIndex: Float32Array;
 	private hexIndex: Map<string, number> = new Map();
 	private neighborMap: Map<string, string[]> = new Map();
 	private count: number = 0;
@@ -30,14 +27,14 @@ export class HexRenderer {
 	constructor(mesh: Mesh, capacity: number) {
 		this.mesh = mesh;
 		this.matrices = new Float32Array(capacity * 16);
-		this.terrainData0 = new Float32Array(capacity * 4);
-		this.terrainData1 = new Float32Array(capacity * 4);
 		this.colors = new Float32Array(capacity * 4);
+		this.hexTerrainIndex = new Float32Array(capacity);
 	}
 
 	initFromCells(cells: string[], defaultTerrain: TerrainTypeId = 'deep_ocean'): void {
 		this.count = cells.length;
-		const terrainIndex = TERRAIN_TYPES[defaultTerrain];
+		const terrainIdx = TERRAIN_TYPES[defaultTerrain];
+		const profile = TERRAIN_PROFILES[terrainIdx];
 
 		for (let i = 0; i < cells.length; i++) {
 			const h3 = cells[i];
@@ -51,44 +48,14 @@ export class HexRenderer {
 			const [lat, lng] = cellToLatLng(h3);
 			this.computeMatrix(lat, lng, i);
 
-			this.terrainData0[i * 4 + 0] = terrainIndex;
-			this.terrainData0[i * 4 + 1] = terrainIndex;
-			this.terrainData0[i * 4 + 2] = terrainIndex;
-			this.terrainData0[i * 4 + 3] = terrainIndex;
-			this.terrainData1[i * 4 + 0] = terrainIndex;
-			this.terrainData1[i * 4 + 1] = terrainIndex;
-			this.terrainData1[i * 4 + 2] = terrainIndex;
-			this.terrainData1[i * 4 + 3] = 0;
-
-			this.colors[i * 4 + 0] = 0;
-			this.colors[i * 4 + 1] = 0;
-			this.colors[i * 4 + 2] = 0;
-			this.colors[i * 4 + 3] = 0;
-		}
-
-		// Set neighbor terrain data
-		for (let i = 0; i < cells.length; i++) {
-			const h3 = cells[i];
-			const neighbors = this.neighborMap.get(h3)!;
-			for (let e = 0; e < 6; e++) {
-				const ni = this.hexIndex.get(neighbors[e]);
-				if (ni !== undefined) {
-					const neighborType = this.terrainData0[ni * 4 + 0];
-					if (e < 3) {
-						this.terrainData0[i * 4 + 1 + e] = neighborType;
-					} else {
-						this.terrainData1[i * 4 + (e - 3)] = neighborType;
-					}
-				}
-			}
+			this.hexTerrainIndex[i] = terrainIdx;
+			this.colors[i * 4 + 0] = profile.color[0];
+			this.colors[i * 4 + 1] = profile.color[1];
+			this.colors[i * 4 + 2] = profile.color[2];
+			this.colors[i * 4 + 3] = 1.0;
 		}
 
 		this.mesh.thinInstanceSetBuffer('matrix', this.matrices, 16, true);
-		this.mesh.thinInstanceRegisterAttribute('terrainData0', 4);
-		this.mesh.thinInstanceSetBuffer('terrainData0', this.terrainData0, 4, false);
-		this.mesh.thinInstanceRegisterAttribute('terrainData1', 4);
-		this.mesh.thinInstanceSetBuffer('terrainData1', this.terrainData1, 4, false);
-		this.mesh.thinInstanceRegisterAttribute('color', 4);
 		this.mesh.thinInstanceSetBuffer('color', this.colors, 4, false);
 	}
 
@@ -96,40 +63,16 @@ export class HexRenderer {
 		const idx = this.hexIndex.get(h3);
 		if (idx === undefined) return;
 
-		const terrainIndex = TERRAIN_TYPES[terrain];
-		this.terrainData0[idx * 4 + 0] = terrainIndex;
+		const terrainIdx = TERRAIN_TYPES[terrain];
+		const profile = TERRAIN_PROFILES[terrainIdx];
 
-		const neighbors = this.neighborMap.get(h3);
-		if (neighbors) {
-			for (let e = 0; e < 6; e++) {
-				const neighborH3 = neighbors[e];
-				const ni = this.hexIndex.get(neighborH3);
-				if (ni === undefined) continue;
+		this.hexTerrainIndex[idx] = terrainIdx;
+		this.colors[idx * 4 + 0] = profile.color[0];
+		this.colors[idx * 4 + 1] = profile.color[1];
+		this.colors[idx * 4 + 2] = profile.color[2];
+		this.colors[idx * 4 + 3] = 1.0;
 
-				const neighborNeighbors = this.neighborMap.get(neighborH3);
-				if (!neighborNeighbors) continue;
-				for (let ne = 0; ne < 6; ne++) {
-					if (neighborNeighbors[ne] === h3) {
-						if (ne < 3) {
-							this.terrainData0[ni * 4 + 1 + ne] = terrainIndex;
-						} else {
-							this.terrainData1[ni * 4 + (ne - 3)] = terrainIndex;
-						}
-						break;
-					}
-				}
-
-				const neighborType = this.terrainData0[ni * 4 + 0];
-				if (e < 3) {
-					this.terrainData0[idx * 4 + 1 + e] = neighborType;
-				} else {
-					this.terrainData1[idx * 4 + (e - 3)] = neighborType;
-				}
-			}
-		}
-
-		this.mesh.thinInstanceBufferUpdated('terrainData0');
-		this.mesh.thinInstanceBufferUpdated('terrainData1');
+		this.mesh.thinInstanceBufferUpdated('color');
 	}
 
 	setHexColor(h3: string, r: number, g: number, b: number, a: number): void {
@@ -143,13 +86,21 @@ export class HexRenderer {
 	}
 
 	clearHexColor(h3: string): void {
-		this.setHexColor(h3, 0, 0, 0, 0);
+		const idx = this.hexIndex.get(h3);
+		if (idx === undefined) return;
+		const terrainIdx = this.hexTerrainIndex[idx];
+		const profile = TERRAIN_PROFILES[terrainIdx];
+		this.colors[idx * 4 + 0] = profile.color[0];
+		this.colors[idx * 4 + 1] = profile.color[1];
+		this.colors[idx * 4 + 2] = profile.color[2];
+		this.colors[idx * 4 + 3] = 1.0;
+		this.mesh.thinInstanceBufferUpdated('color');
 	}
 
 	getHexTerrain(h3: string): TerrainTypeId | null {
 		const idx = this.hexIndex.get(h3);
 		if (idx === undefined) return null;
-		const typeIndex = this.terrainData0[idx * 4 + 0];
+		const typeIndex = this.hexTerrainIndex[idx];
 		const entries = Object.entries(TERRAIN_TYPES);
 		const entry = entries.find(([, v]) => v === typeIndex);
 		return entry ? entry[0] as TerrainTypeId : null;
@@ -164,8 +115,7 @@ export class HexRenderer {
 		_pos.normalizeToRef(_up);
 
 		const worldUp = Math.abs(_up.y) < 0.999
-			? Vector3.UpReadOnly
-			: Vector3.RightReadOnly;
+			? Vector3.UpReadOnly : Vector3.RightReadOnly;
 
 		Vector3.CrossToRef(worldUp, _up, _right);
 		_right.normalize();
@@ -180,7 +130,6 @@ export class HexRenderer {
 			_pos.x,   _pos.y,   _pos.z,   1,
 			mat
 		);
-
 		mat.copyToArray(this.matrices, index * 16);
 	}
 }
