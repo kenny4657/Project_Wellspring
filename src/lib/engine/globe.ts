@@ -137,10 +137,8 @@ export async function createGlobeEngine(
 			const dx = e.clientX - pointerDownPos.x;
 			const dy = e.clientY - pointerDownPos.y;
 			if (Math.sqrt(dx * dx + dy * dy) < 5) {
-				const rect = canvas.getBoundingClientRect();
-				const x = e.clientX - rect.left;
-				const y = e.clientY - rect.top;
-				const idx = pickHexAtScreen(scene, globeMesh, x, y, cells);
+				// Use Babylon's tracked pointer position for accurate picking
+				const idx = pickHexAtScreen(scene, globeMesh, scene.pointerX, scene.pointerY, cells);
 				if (idx >= 0) onHexClickCallback?.(idx);
 			}
 			pointerDownPos = null;

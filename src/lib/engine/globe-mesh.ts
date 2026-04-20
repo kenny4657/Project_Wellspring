@@ -142,13 +142,7 @@ export function updateCellTerrain(
 		positionsBuffer[(start + 1 + i) * 3 + 2] = c.z * r;
 	}
 
-	// Push to GPU via the internal vertex buffer's update method
-	const colorVB = mesh.getVertexBuffer(VertexBuffer.ColorKind);
-	if (colorVB) {
-		colorVB.getBuffer().update(colorsBuffer);
-	}
-	const posVB = mesh.getVertexBuffer(VertexBuffer.PositionKind);
-	if (posVB) {
-		posVB.getBuffer().update(positionsBuffer);
-	}
+	// Push to GPU
+	mesh.updateVerticesData(VertexBuffer.ColorKind, colorsBuffer);
+	mesh.updateVerticesData(VertexBuffer.PositionKind, positionsBuffer);
 }
