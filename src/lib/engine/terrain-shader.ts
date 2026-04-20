@@ -248,9 +248,9 @@ void main() {
         }
     }
 
-    // Lighting — bright, minimal shadow
+    // Lighting — near-full brightness, slight shading for depth
     float NdotL = max(dot(vWorldNormal, sunDirection), 0.0);
-    vec3 litColor = baseColor * (0.85 + 0.15 * NdotL);
+    vec3 litColor = baseColor * (0.92 + 0.08 * NdotL);
 
     // Subtle hex edge line
     float edgeDarken = smoothstep(0.88, 0.96, distFromCenter) * 0.08;
