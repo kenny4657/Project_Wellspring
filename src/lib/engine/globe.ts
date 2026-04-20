@@ -14,6 +14,27 @@ import { DirectionalLight } from '@babylonjs/core/Lights/directionalLight';
 import { HemisphericLight } from '@babylonjs/core/Lights/hemisphericLight';
 import { GeospatialCamera } from '@babylonjs/core/Cameras/geospatialCamera';
 import { Atmosphere } from '@babylonjs/addons/atmosphere/atmosphere';
+
+// Side-effect imports: register atmosphere shaders in ShaderStore
+// (Babylon uses dynamic import() for these, which Vite can't resolve from node_modules)
+import '@babylonjs/addons/atmosphere/Shaders/fullscreenTriangle.vertex';
+import '@babylonjs/addons/atmosphere/Shaders/transmittance.fragment';
+import '@babylonjs/addons/atmosphere/Shaders/multiScattering.fragment';
+import '@babylonjs/addons/atmosphere/Shaders/skyView.fragment';
+import '@babylonjs/addons/atmosphere/Shaders/aerialPerspective.fragment';
+import '@babylonjs/addons/atmosphere/Shaders/compositeSky.fragment';
+import '@babylonjs/addons/atmosphere/Shaders/compositeGlobeAtmosphere.fragment';
+import '@babylonjs/addons/atmosphere/Shaders/compositeAerialPerspective.fragment';
+import '@babylonjs/addons/atmosphere/Shaders/diffuseSkyIrradiance.fragment';
+import '@babylonjs/addons/atmosphere/Shaders/ShadersInclude/atmosphereFragmentDeclaration';
+import '@babylonjs/addons/atmosphere/Shaders/ShadersInclude/atmosphereUboDeclaration';
+import '@babylonjs/addons/atmosphere/Shaders/ShadersInclude/atmosphereFunctions';
+import '@babylonjs/addons/atmosphere/Shaders/ShadersInclude/depthFunctions';
+
+// Side-effect: register Babylon's default material shaders
+import '@babylonjs/core/Shaders/default.vertex';
+import '@babylonjs/core/Shaders/default.fragment';
+
 import { EARTH_RADIUS_KM, latLngToWorld } from '$lib/geo/coords';
 import { createHexMesh } from '$lib/engine/hex-mesh';
 import { HexRenderer } from '$lib/engine/hex-renderer';
