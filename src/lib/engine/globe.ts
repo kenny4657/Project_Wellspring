@@ -83,7 +83,7 @@ export async function createGlobeEngine(
 	});
 
 	const scene = new Scene(engine);
-	scene.clearColor = new Color4(0, 0, 0, 1);
+	scene.clearColor = new Color4(0.05, 0.08, 0.15, 1); // dark space background
 
 	// ── Lighting ────────────────────────────────────────────
 	// Main hemisphere light — bright ambient from all directions
@@ -102,23 +102,14 @@ export async function createGlobeEngine(
 	fillLight.intensity = 1.0;
 	fillLight.diffuse = new Color3(0.7, 0.75, 0.9);
 
-	// ── Globe Sphere ────────────────────────────────────────
-	// Matches deep_ocean hex color so gaps between hex tiles are invisible
-	const globe = MeshBuilder.CreateSphere('globe', {
-		diameter: EARTH_RADIUS_KM * 2 * 0.998,
-		segments: 64
-	}, scene);
-
-	const globeMat = new StandardMaterial('globeMat', scene);
-	globeMat.diffuseColor = new Color3(0.12, 0.25, 0.55); // matches deep_ocean terrain color
-	globeMat.emissiveColor = new Color3(0.06, 0.13, 0.28); // self-lit to match hex brightness
-	globeMat.specularColor = new Color3(0.05, 0.05, 0.05);
-	globe.material = globeMat;
+	// No globe sphere — hex tiles ARE the surface.
+	// A sphere underneath causes z-fighting artifacts with overlapping hex tiles.
+	// The camera pickPredicate uses a virtual sphere for interaction only.
+	const globe: any = null;
 
 	// ── Geospatial Camera ───────────────────────────────────
 	const camera = new GeospatialCamera('geoCam', scene, {
-		planetRadius: EARTH_RADIUS_KM,
-		pickPredicate: (mesh) => mesh === globe
+		planetRadius: EARTH_RADIUS_KM
 	});
 
 	const startCenter = latLngToWorld(35, -20, EARTH_RADIUS_KM);
@@ -174,11 +165,9 @@ export async function createGlobeEngine(
 	report('Building hex mesh and shader...');
 	await tick();
 
-	// Hex radius in km: computed from H3 cell area
-	// Area of regular hexagon = (3√3/2) × r² → r = √(2×area / (3√3))
-	// Res 3: ~12,393 km² → r ≈ 69 km. Add ~5% overlap to eliminate gaps from sphere curvature.
-	// Res 4: ~1,770 km² → r ≈ 26 km
-	const hexRadiusKm = H3_RES === 3 ? 73 : H3_RES === 4 ? 27 : 12;
+	// Hex circumradius from H3 cell area. Slight oversize (~8%) to eliminate gaps
+	// from sphere curvature without excessive overlap that causes z-fighting.
+	const hexRadiusKm = H3_RES === 3 ? 75 : H3_RES === 4 ? 28 : 12;
 
 	const hexMesh = createHexMesh(hexRadiusKm, 3, scene); // 3 subdivisions
 
