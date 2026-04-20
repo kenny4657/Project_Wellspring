@@ -175,35 +175,32 @@ function distToSegment(
 }
 
 interface CoastlineInfo {
-	hasCoastline: boolean;           // does this water hex have any land-facing edges?
-	coastlineEdges: boolean[];       // per-edge: true if faces land
+	hasCoastline: boolean;           // does this water hex have any transition edges?
+	coastlineEdges: boolean[];       // per-edge: true if neighbor has different height
+	neighborHeights: number[];       // per-edge: height of the neighbor (for ramp target)
 }
 
 /** For a water hex, determine which edges face land neighbors (coastline edges).
  *  Replicates Sota's get_exclude_border_set() logic. */
 function getCoastlineInfo(cell: HexCell, cellById: Map<number, HexCell>): CoastlineInfo {
 	const n = cell.corners.length;
-	const coastlineEdges: boolean[] = new Array(n).fill(true); // default: all edges are transitions
+	const coastlineEdges: boolean[] = new Array(n).fill(true);
+	const neighborHeights: number[] = new Array(n).fill(cell.heightLevel);
 	let sameHeightCount = 0;
 
-	// For each edge, find which neighbor is across it
 	for (let i = 0; i < n; i++) {
 		const midX = (cell.corners[i].x + cell.corners[(i + 1) % n].x) / 2;
 		const midY = (cell.corners[i].y + cell.corners[(i + 1) % n].y) / 2;
 		const midZ = (cell.corners[i].z + cell.corners[(i + 1) % n].z) / 2;
-
-		// Find the neighbor whose center is closest to the edge midpoint direction
-		let closestNId = -1;
-		let closestDot = -Infinity;
-		// Direction from hex center toward edge midpoint
 		const dirX = midX - cell.center.x;
 		const dirY = midY - cell.center.y;
 		const dirZ = midZ - cell.center.z;
 
+		let closestNId = -1;
+		let closestDot = -Infinity;
 		for (const nId of cell.neighbors) {
 			const neighbor = cellById.get(nId);
 			if (!neighbor) continue;
-			// Direction from hex center to neighbor center
 			const ndx = neighbor.center.x - cell.center.x;
 			const ndy = neighbor.center.y - cell.center.y;
 			const ndz = neighbor.center.z - cell.center.z;
@@ -213,8 +210,8 @@ function getCoastlineInfo(cell: HexCell, cellById: Map<number, HexCell>): Coastl
 
 		if (closestNId >= 0) {
 			const neighbor = cellById.get(closestNId)!;
+			neighborHeights[i] = neighbor.heightLevel;
 			if (neighbor.heightLevel === cell.heightLevel) {
-				// Same height level → exclude (no transition needed)
 				coastlineEdges[i] = false;
 				sameHeightCount++;
 			}
@@ -222,26 +219,31 @@ function getCoastlineInfo(cell: HexCell, cellById: Map<number, HexCell>): Coastl
 	}
 
 	return {
-		hasCoastline: sameHeightCount < n, // has transition edges if not all neighbors are same height
-		coastlineEdges
+		hasCoastline: sameHeightCount < n,
+		coastlineEdges,
+		neighborHeights
 	};
 }
 
-/** Compute distance from a vertex to the nearest coastline edge of a hex */
-function distToNearestCoastEdge(
+/** Compute distance to nearest transition edge AND the neighbor's height at that edge */
+function distToNearestTransitionEdge(
 	vx: number, vy: number, vz: number,
-	cell: HexCell, coastlineEdges: boolean[]
-): number {
+	cell: HexCell, info: CoastlineInfo
+): { dist: number; neighborHeight: number } {
 	const n = cell.corners.length;
 	let minDist = Infinity;
+	let bestNeighborHeight = cell.heightLevel;
 	for (let i = 0; i < n; i++) {
-		if (!coastlineEdges[i]) continue; // skip water-water edges
+		if (!info.coastlineEdges[i]) continue;
 		const a = cell.corners[i];
 		const b = cell.corners[(i + 1) % n];
 		const d = distToSegment(vx, vy, vz, a.x, a.y, a.z, b.x, b.y, b.z);
-		if (d < minDist) minDist = d;
+		if (d < minDist) {
+			minDist = d;
+			bestNeighborHeight = info.neighborHeights[i];
+		}
 	}
-	return minDist;
+	return { dist: minDist, neighborHeight: bestNeighborHeight };
 }
 
 // ── Build Globe Mesh ────────────────────────────────────────
@@ -346,12 +348,15 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 
 					let h: number;
 					if (isWaterHex && coastInfo!.hasCoastline) {
-						const distToCoast = distToNearestCoastEdge(
-							ux, uy, uz, cell, coastInfo!.coastlineEdges
+						const { dist, neighborHeight } = distToNearestTransitionEdge(
+							ux, uy, uz, cell, coastInfo!
 						);
-						const t = Math.min(distToCoast / hexRadius, 1.0);
+						// t: 0 at transition edge, 1 deep inside this hex
+						const t = Math.min(dist / hexRadius, 1.0);
+						// cosrp: smooth ramp from neighbor's height (at edge) to our height (inside)
 						const mu = (1 - Math.cos(t * Math.PI)) / 2;
-						h = tierH * mu + noiseH * NOISE_AMP * 0.3;
+						const neighborH = getLevelHeight(neighborHeight);
+						h = neighborH + (tierH - neighborH) * mu + noiseH * NOISE_AMP * 0.3;
 					} else {
 						h = tierH + noiseH * NOISE_AMP;
 					}
