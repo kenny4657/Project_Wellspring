@@ -102,12 +102,19 @@ export async function createGlobeEngine(
 	fillLight.intensity = 1.0;
 	fillLight.diffuse = new Color3(0.7, 0.75, 0.9);
 
-	// No globe sphere — hex tiles ARE the surface.
-	const globe: any = null;
+	// Invisible pick sphere — GeospatialCamera needs a mesh to drag against.
+	// Not rendered (visibility=0), just used for camera movement raycasting.
+	const pickSphere = MeshBuilder.CreateSphere('pickSphere', {
+		diameter: EARTH_RADIUS_KM * 2,
+		segments: 32
+	}, scene);
+	pickSphere.visibility = 0; // invisible but still pickable
+	pickSphere.isPickable = true;
 
 	// ── Geospatial Camera ───────────────────────────────────
 	const camera = new GeospatialCamera('geoCam', scene, {
-		planetRadius: EARTH_RADIUS_KM
+		planetRadius: EARTH_RADIUS_KM,
+		pickPredicate: (mesh) => mesh === pickSphere
 	});
 
 	// Camera headlight — always illuminates what the camera sees
