@@ -156,6 +156,94 @@ function smoothNormalsPass(
 	}
 }
 
+// ── Coastline Edge Detection (Sota's exclude_border_set) ────
+
+/** Distance from point P to line segment AB (Euclidean approximation on unit sphere) */
+function distToSegment(
+	px: number, py: number, pz: number,
+	ax: number, ay: number, az: number,
+	bx: number, by: number, bz: number
+): number {
+	const abx = bx - ax, aby = by - ay, abz = bz - az;
+	const apx = px - ax, apy = py - ay, apz = pz - az;
+	const ab2 = abx * abx + aby * aby + abz * abz;
+	const t = ab2 > 0 ? Math.max(0, Math.min(1, (apx * abx + apy * aby + apz * abz) / ab2)) : 0;
+	const dx = ax + t * abx - px;
+	const dy = ay + t * aby - py;
+	const dz = az + t * abz - pz;
+	return Math.sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+interface CoastlineInfo {
+	hasCoastline: boolean;           // does this water hex have any land-facing edges?
+	coastlineEdges: boolean[];       // per-edge: true if faces land
+}
+
+/** For a water hex, determine which edges face land neighbors (coastline edges).
+ *  Replicates Sota's get_exclude_border_set() logic. */
+function getCoastlineInfo(cell: HexCell, cellById: Map<number, HexCell>): CoastlineInfo {
+	const n = cell.corners.length;
+	const coastlineEdges: boolean[] = new Array(n).fill(true); // default: all edges are coastline
+	let waterNeighborCount = 0;
+
+	// For each edge, find which neighbor is across it
+	for (let i = 0; i < n; i++) {
+		const midX = (cell.corners[i].x + cell.corners[(i + 1) % n].x) / 2;
+		const midY = (cell.corners[i].y + cell.corners[(i + 1) % n].y) / 2;
+		const midZ = (cell.corners[i].z + cell.corners[(i + 1) % n].z) / 2;
+
+		// Find the neighbor whose center is closest to the edge midpoint direction
+		let closestNId = -1;
+		let closestDot = -Infinity;
+		// Direction from hex center toward edge midpoint
+		const dirX = midX - cell.center.x;
+		const dirY = midY - cell.center.y;
+		const dirZ = midZ - cell.center.z;
+
+		for (const nId of cell.neighbors) {
+			const neighbor = cellById.get(nId);
+			if (!neighbor) continue;
+			// Direction from hex center to neighbor center
+			const ndx = neighbor.center.x - cell.center.x;
+			const ndy = neighbor.center.y - cell.center.y;
+			const ndz = neighbor.center.z - cell.center.z;
+			const dot = dirX * ndx + dirY * ndy + dirZ * ndz;
+			if (dot > closestDot) { closestDot = dot; closestNId = nId; }
+		}
+
+		if (closestNId >= 0) {
+			const neighbor = cellById.get(closestNId)!;
+			if (neighbor.heightLevel <= 1) {
+				// Neighbor is also water → exclude this edge (not a coastline)
+				coastlineEdges[i] = false;
+				waterNeighborCount++;
+			}
+		}
+	}
+
+	return {
+		hasCoastline: waterNeighborCount < n, // if all neighbors are water, no coastline
+		coastlineEdges
+	};
+}
+
+/** Compute distance from a vertex to the nearest coastline edge of a hex */
+function distToNearestCoastEdge(
+	vx: number, vy: number, vz: number,
+	cell: HexCell, coastlineEdges: boolean[]
+): number {
+	const n = cell.corners.length;
+	let minDist = Infinity;
+	for (let i = 0; i < n; i++) {
+		if (!coastlineEdges[i]) continue; // skip water-water edges
+		const a = cell.corners[i];
+		const b = cell.corners[(i + 1) % n];
+		const d = distToSegment(vx, vy, vz, a.x, a.y, a.z, b.x, b.y, b.z);
+		if (d < minDist) minDist = d;
+	}
+	return minDist;
+}
+
 // ── Build Globe Mesh ────────────────────────────────────────
 
 export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): {
@@ -175,6 +263,10 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 	let vOff = 0;
 	const botR = radius * (1 + BASE_HEIGHT);
 
+	// Build cell-by-ID lookup for neighbor queries
+	const cellById = new Map<number, HexCell>();
+	for (const c of cells) cellById.set(c.id, c);
+
 	for (let ci = 0; ci < cells.length; ci++) {
 		const cell = cells[ci];
 		const n = cell.corners.length;
@@ -187,9 +279,12 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 		const tierH = getLevelHeight(cell.heightLevel);
 		const isWaterHex = cell.heightLevel <= 1;
 
-		// Compute hex radius for water bowl shape
+		// Sota-style coastline: only bowl-dip water hexes at edges facing land.
+		// Water-water boundaries stay flat → continuous ocean surface.
+		let coastInfo: CoastlineInfo | null = null;
 		let hexRadius = 0;
 		if (isWaterHex) {
+			coastInfo = getCoastlineInfo(cell, cellById);
 			for (let i = 0; i < n; i++) {
 				const dx = cell.corners[i].x - cell.center.x;
 				const dy = cell.corners[i].y - cell.center.y;
@@ -222,18 +317,21 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 					const noiseH = fbmNoise(ux * NOISE_SCALE, uy * NOISE_SCALE, uz * NOISE_SCALE);
 
 					let h: number;
-					if (isWaterHex) {
-						// Sota-style: water hexes use cosine interpolation to create
-						// concave bowl shapes. Edge stays near sea level (0), center
-						// dips to full water depth. This creates natural shorelines.
-						const dx = ux - cell.center.x;
-						const dy = uy - cell.center.y;
-						const dz = uz - cell.center.z;
-						const distToCenter = Math.sqrt(dx * dx + dy * dy + dz * dz);
-						const t = Math.min(distToCenter / hexRadius, 1.0);
-						// cosrp: cosine interpolation from full depth (center) to 0 (edge)
-						const mu = (1 - Math.cos(t * Math.PI)) / 2; // 0 at center, 1 at edge
-						h = tierH * (1 - mu) + noiseH * NOISE_AMP;
+					if (isWaterHex && coastInfo!.hasCoastline) {
+						// Sota-style: cosine ramp ONLY toward coastline edges.
+						// Water-water boundaries stay flat (excluded from border calc).
+						// This creates continuous ocean surfaces with natural shorelines.
+						const distToCoast = distToNearestCoastEdge(
+							ux, uy, uz, cell, coastInfo!.coastlineEdges
+						);
+						// t: 0 at coastline edge, 1 deep in water (far from coast)
+						const t = Math.min(distToCoast / hexRadius, 1.0);
+						// cosrp: cosine interpolation — smooth ramp from 0 (at coast) to full depth
+						const mu = (1 - Math.cos(t * Math.PI)) / 2;
+						h = tierH * mu + noiseH * NOISE_AMP * 0.3;
+					} else if (isWaterHex) {
+						// Fully surrounded by water — flat at full depth, no bowl
+						h = tierH + noiseH * NOISE_AMP * 0.3;
 					} else {
 						// Land hexes: flat tier height + global noise
 						h = tierH + noiseH * NOISE_AMP;
