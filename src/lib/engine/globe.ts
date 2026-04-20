@@ -18,8 +18,10 @@ import { EARTH_RADIUS_KM, latLngToWorld } from '$lib/geo/coords';
 import { createHexMesh } from '$lib/engine/hex-mesh';
 import { HexRenderer } from '$lib/engine/hex-renderer';
 import { createTerrainMaterial } from '$lib/engine/terrain-shader';
+import { pickHexAtScreen } from '$lib/engine/picking';
 import { type TerrainTypeId, TERRAIN_PROFILES } from '$lib/world/terrain-types';
 import { getRes0Cells, cellToChildren } from 'h3-js';
+import { PointerEventTypes } from '@babylonjs/core/Events/pointerEvents';
 
 // Side-effect import: enables thin instance API on Mesh
 import '@babylonjs/core/Meshes/thinInstanceMesh';
@@ -34,6 +36,8 @@ export interface GlobeEngine {
 	hasHex(h3: string): boolean;
 	readonly hexCount: number;
 	readonly hexRenderer: HexRenderer;
+	/** Set callback for hex clicks. Return the H3 index of the clicked hex. */
+	onHexClick: ((h3: string) => void) | null;
 }
 
 /** H3 resolution for the hex grid */
@@ -61,12 +65,12 @@ export async function createGlobeEngine(
 
 	// ── Lighting ────────────────────────────────────────────
 	const hemiLight = new HemisphericLight('hemi', new Vector3(0, 1, 0), scene);
-	hemiLight.intensity = 0.4;
-	hemiLight.groundColor = new Color3(0.1, 0.1, 0.15);
+	hemiLight.intensity = 0.6;
+	hemiLight.groundColor = new Color3(0.15, 0.15, 0.2);
 
 	const sunDirection = new Vector3(-1, 0.5, 0.3).normalize();
 	const sunLight = new DirectionalLight('sun', sunDirection.negate(), scene);
-	sunLight.intensity = 2.0;
+	sunLight.intensity = 2.5;
 	sunLight.diffuse = new Color3(1, 0.98, 0.92);
 
 	// ── Globe Sphere (ocean base) ───────────────────────────
@@ -76,8 +80,9 @@ export async function createGlobeEngine(
 	}, scene);
 
 	const globeMat = new StandardMaterial('globeMat', scene);
-	globeMat.diffuseColor = new Color3(0.10, 0.15, 0.35); // deep ocean color
-	globeMat.specularColor = new Color3(0.15, 0.15, 0.15);
+	globeMat.diffuseColor = new Color3(0.12, 0.18, 0.40);
+	globeMat.emissiveColor = new Color3(0.05, 0.08, 0.18); // self-lit so globe is visible without atmosphere
+	globeMat.specularColor = new Color3(0.2, 0.2, 0.2);
 	globe.material = globeMat;
 
 	// ── Geospatial Camera ───────────────────────────────────
@@ -104,18 +109,31 @@ export async function createGlobeEngine(
 
 	// ── Atmosphere ──────────────────────────────────────────
 	let atmosphere: Atmosphere | null = null;
-	if (Atmosphere.IsSupported(engine)) {
-		atmosphere = new Atmosphere('atmosphere', scene, [sunLight], {
-			exposure: 1.0,
-			isLinearSpaceLight: false,
-			isLinearSpaceComposition: false,
-			isSkyViewLutEnabled: true,
-			isAerialPerspectiveLutEnabled: true,
-			originHeight: 0
-		});
+	const atmosphereSupported = Atmosphere.IsSupported(engine);
+	console.log('[Globe] Atmosphere supported:', atmosphereSupported);
+	if (atmosphereSupported) {
+		try {
+			atmosphere = new Atmosphere('atmosphere', scene, [sunLight], {
+				exposure: 1.5,
+				isLinearSpaceLight: false,
+				isLinearSpaceComposition: false,
+				isSkyViewLutEnabled: true,
+				isAerialPerspectiveLutEnabled: true,
+				originHeight: 0
+			});
+			console.log('[Globe] Atmosphere created successfully');
+		} catch (e) {
+			console.error('[Globe] Atmosphere creation failed:', e);
+		}
 	} else {
 		console.warn('[Globe] Atmosphere not supported on this device');
 	}
+
+	// Log scene state after first render
+	scene.onAfterRenderObservable.addOnce(() => {
+		console.log('[Globe] First render - active meshes:', scene.getActiveMeshes().length);
+		console.log('[Globe] Lights:', scene.lights.map(l => `${l.name} intensity=${l.intensity}`));
+	});
 
 	// ── Hex Grid ────────────────────────────────────────────
 	report('Generating hex grid...');
@@ -155,6 +173,31 @@ export async function createGlobeEngine(
 	hexRenderer.initFromCells(allCells, 'deep_ocean');
 
 	report(`Initialized ${allCells.length.toLocaleString()} hex instances`);
+
+	// ── Picking / Painting ──────────────────────────────────
+	let onHexClickCallback: ((h3: string) => void) | null = null;
+	let isPainting = false;
+
+	scene.onPointerObservable.add((pointerInfo) => {
+		if (pointerInfo.type === PointerEventTypes.POINTERDOWN && pointerInfo.event.button === 0) {
+			const h3 = pickHexAtScreen(scene, camera, scene.pointerX, scene.pointerY, H3_RES);
+			if (h3 && hexRenderer.hasHex(h3)) {
+				onHexClickCallback?.(h3);
+				isPainting = true;
+				camera.detachControl();
+			}
+		} else if (pointerInfo.type === PointerEventTypes.POINTERMOVE && isPainting) {
+			const h3 = pickHexAtScreen(scene, camera, scene.pointerX, scene.pointerY, H3_RES);
+			if (h3 && hexRenderer.hasHex(h3)) {
+				onHexClickCallback?.(h3);
+			}
+		} else if (pointerInfo.type === PointerEventTypes.POINTERUP) {
+			if (isPainting) {
+				isPainting = false;
+				camera.attachControl(canvas, true);
+			}
+		}
+	});
 
 	// ── Render Loop ─────────────────────────────────────────
 	engine.runRenderLoop(() => {
@@ -205,6 +248,13 @@ export async function createGlobeEngine(
 
 		get hexRenderer() {
 			return hexRenderer;
+		},
+
+		set onHexClick(cb: ((h3: string) => void) | null) {
+			onHexClickCallback = cb;
+		},
+		get onHexClick() {
+			return onHexClickCallback;
 		}
 	};
 }

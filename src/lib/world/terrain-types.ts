@@ -48,13 +48,13 @@ const H = 15; // km per tier unit — exaggerated for visual clarity at globe sc
 
 export const TERRAIN_PROFILES: TerrainProfile[] = [
 	// Tier 0: Below surface
-	{ id: 'deep_ocean',    name: 'Deep Ocean',    tier: 0, height: -2.0 * H, amplitude: 1.0,  frequency: 0.5,  ridged: false, color: [0.10, 0.15, 0.35] },
+	{ id: 'deep_ocean',    name: 'Deep Ocean',    tier: 0, height: -2.0 * H, amplitude: 1.0,  frequency: 0.5,  ridged: false, color: [0.15, 0.22, 0.45] },
 
 	// Tier 1: Surface level
-	{ id: 'shallow_ocean', name: 'Shallow Ocean', tier: 1, height: -0.5 * H, amplitude: 0.5,  frequency: 1.0,  ridged: false, color: [0.18, 0.30, 0.50] },
-	{ id: 'reef',          name: 'Reef',          tier: 1, height: -0.3 * H, amplitude: 1.5,  frequency: 3.0,  ridged: false, color: [0.20, 0.45, 0.45] },
-	{ id: 'coast',         name: 'Coast',         tier: 1, height:  0.0 * H, amplitude: 0.5,  frequency: 1.5,  ridged: false, color: [0.76, 0.70, 0.50] },
-	{ id: 'lake',          name: 'Lake',          tier: 1, height: -0.3 * H, amplitude: 0.2,  frequency: 0.5,  ridged: false, color: [0.20, 0.35, 0.55] },
+	{ id: 'shallow_ocean', name: 'Shallow Ocean', tier: 1, height: -0.5 * H, amplitude: 0.5,  frequency: 1.0,  ridged: false, color: [0.22, 0.38, 0.58] },
+	{ id: 'reef',          name: 'Reef',          tier: 1, height: -0.3 * H, amplitude: 1.5,  frequency: 3.0,  ridged: false, color: [0.25, 0.52, 0.52] },
+	{ id: 'coast',         name: 'Coast',         tier: 1, height:  0.0 * H, amplitude: 0.5,  frequency: 1.5,  ridged: false, color: [0.82, 0.76, 0.55] },
+	{ id: 'lake',          name: 'Lake',          tier: 1, height: -0.3 * H, amplitude: 0.2,  frequency: 0.5,  ridged: false, color: [0.25, 0.42, 0.62] },
 
 	// Tier 2: Low land
 	{ id: 'plains',        name: 'Plains',        tier: 2, height:  0.2 * H, amplitude: 1.0,  frequency: 1.0,  ridged: false, color: [0.55, 0.65, 0.30] },

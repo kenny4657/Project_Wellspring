@@ -18,6 +18,12 @@
 				loadingMessage = msg;
 			});
 			hexCount = engine.hexCount;
+
+			// Wire up click-to-paint
+			engine.onHexClick = (h3: string) => {
+				engine!.setHexTerrain(h3, selectedTerrain);
+			};
+
 			loading = false;
 		} catch (e) {
 			error = String(e);

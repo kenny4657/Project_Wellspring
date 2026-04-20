@@ -256,7 +256,7 @@ void main() {
 
     // Lighting
     float NdotL = max(dot(vWorldNormal, sunDirection), 0.0);
-    vec3 litColor = baseColor * (0.3 + 0.7 * NdotL);
+    vec3 litColor = baseColor * (0.4 + 0.6 * NdotL);
 
     // Hex edge darkening
     float edgeDarken = smoothstep(0.85, 0.95, distFromCenter) * 0.15;
