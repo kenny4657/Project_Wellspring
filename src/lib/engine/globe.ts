@@ -86,25 +86,33 @@ export async function createGlobeEngine(
 	scene.clearColor = new Color4(0, 0, 0, 1);
 
 	// ── Lighting ────────────────────────────────────────────
+	// Main hemisphere light — bright ambient from all directions
 	const hemiLight = new HemisphericLight('hemi', new Vector3(0, 1, 0), scene);
-	hemiLight.intensity = 1.0;
-	hemiLight.groundColor = new Color3(0.3, 0.3, 0.35);
+	hemiLight.intensity = 1.5;
+	hemiLight.groundColor = new Color3(0.5, 0.5, 0.6);
 
+	// Sun — primary directional light
 	const sunDirection = new Vector3(-1, 0.5, 0.3).normalize();
 	const sunLight = new DirectionalLight('sun', sunDirection.negate(), scene);
-	sunLight.intensity = 1.5;
+	sunLight.intensity = 2.0;
 	sunLight.diffuse = new Color3(1, 0.98, 0.92);
 
+	// Fill light from opposite side to reduce dark hemisphere
+	const fillLight = new DirectionalLight('fill', new Vector3(1, -0.3, -0.5).normalize(), scene);
+	fillLight.intensity = 1.0;
+	fillLight.diffuse = new Color3(0.7, 0.75, 0.9);
+
 	// ── Globe Sphere ────────────────────────────────────────
-	// Slightly smaller than hex surface — only visible through gaps between hexes
+	// Matches deep_ocean hex color so gaps between hex tiles are invisible
 	const globe = MeshBuilder.CreateSphere('globe', {
 		diameter: EARTH_RADIUS_KM * 2 * 0.998,
 		segments: 64
 	}, scene);
 
 	const globeMat = new StandardMaterial('globeMat', scene);
-	globeMat.diffuseColor = new Color3(0.08, 0.12, 0.30);
-	globeMat.specularColor = new Color3(0.1, 0.1, 0.1);
+	globeMat.diffuseColor = new Color3(0.12, 0.25, 0.55); // matches deep_ocean terrain color
+	globeMat.emissiveColor = new Color3(0.06, 0.13, 0.28); // self-lit to match hex brightness
+	globeMat.specularColor = new Color3(0.05, 0.05, 0.05);
 	globe.material = globeMat;
 
 	// ── Geospatial Camera ───────────────────────────────────
@@ -131,31 +139,20 @@ export async function createGlobeEngine(
 
 	// ── Atmosphere ──────────────────────────────────────────
 	let atmosphere: Atmosphere | null = null;
-	const atmosphereSupported = Atmosphere.IsSupported(engine);
-	console.log('[Globe] Atmosphere supported:', atmosphereSupported);
-	if (atmosphereSupported) {
+	if (Atmosphere.IsSupported(engine)) {
 		try {
 			atmosphere = new Atmosphere('atmosphere', scene, [sunLight], {
-				exposure: 1.5,
+				exposure: 2.0,
 				isLinearSpaceLight: false,
 				isLinearSpaceComposition: false,
 				isSkyViewLutEnabled: true,
-				isAerialPerspectiveLutEnabled: true,
+				isAerialPerspectiveLutEnabled: false, // disable aerial perspective darkening
 				originHeight: 0
 			});
-			console.log('[Globe] Atmosphere created successfully');
 		} catch (e) {
-			console.error('[Globe] Atmosphere creation failed:', e);
+			console.error('[Globe] Atmosphere failed:', e);
 		}
-	} else {
-		console.warn('[Globe] Atmosphere not supported on this device');
 	}
-
-	// Log scene state after first render
-	scene.onAfterRenderObservable.addOnce(() => {
-		console.log('[Globe] First render - active meshes:', scene.getActiveMeshes().length);
-		console.log('[Globe] Lights:', scene.lights.map(l => `${l.name} intensity=${l.intensity}`));
-	});
 
 	// ── Hex Grid ────────────────────────────────────────────
 	report('Generating hex grid...');
