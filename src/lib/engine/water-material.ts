@@ -167,27 +167,27 @@ void main() {
     waterCol += vec3(0.02, 0.03, 0.04) * (wave1 * 0.6 + wave2 * 0.4 - 0.5);
     waterCol += vec3(0.04, 0.07, 0.10) * fresnel;
 
-    // ── Wave normal perturbation ──
-    // Two low-frequency octaves for broad rolling waves
-    vec3 waveCoord = nDir * 6.0 + vec3(time * 0.2, time * 0.15, -time * 0.1);
-    float eps = 0.01;
-    float wBase = snoise(waveCoord);
-    float wDx = snoise(waveCoord + vec3(eps, 0.0, 0.0));
-    float wDz = snoise(waveCoord + vec3(0.0, 0.0, eps));
-    float dWdx = (wDx - wBase) / eps;
-    float dWdz = (wDz - wBase) / eps;
-    float strength = 0.006;
+    // ── Wave normal perturbation (two octaves) ──
     vec3 tangent = normalize(cross(N, vec3(0.0, 1.0, 0.0)));
     vec3 bitangent = cross(N, tangent);
-    vec3 waveN = normalize(N + tangent * dWdx * strength + bitangent * dWdz * strength);
+    float eps = 0.008;
 
-    // ── Shore foam (only very close to terrain) ──
-    float foamT = 1.0 - smoothstep(0.0, 0.004, depthDiff);
-    if (foamT > 0.01) {
-        float foamNoise = snoise(nDir * 40.0 + vec3(time * 0.5, -time * 0.3, time * 0.2));
-        float foamMask = foamT * smoothstep(0.1, 0.6, foamNoise * 0.5 + 0.5);
-        waterCol = mix(waterCol, vec3(0.82, 0.88, 0.90), foamMask * 0.6);
-    }
+    // Broad rolling waves
+    vec3 wc_lo = nDir * 5.0 + vec3(time * 0.18, time * 0.12, -time * 0.08);
+    float lo = snoise(wc_lo);
+    float loDx = (snoise(wc_lo + vec3(eps, 0.0, 0.0)) - lo) / eps;
+    float loDz = (snoise(wc_lo + vec3(0.0, 0.0, eps)) - lo) / eps;
+
+    // Smaller chop
+    vec3 wc_hi = nDir * 12.0 + vec3(-time * 0.25, time * 0.2, time * 0.15);
+    float hi = snoise(wc_hi);
+    float hiDx = (snoise(wc_hi + vec3(eps, 0.0, 0.0)) - hi) / eps;
+    float hiDz = (snoise(wc_hi + vec3(0.0, 0.0, eps)) - hi) / eps;
+
+    float dx = loDx * 0.010 + hiDx * 0.004;
+    float dz = loDz * 0.010 + hiDz * 0.004;
+    vec3 waveN = normalize(N + tangent * dx + bitangent * dz);
+
 
     // ── Lighting (using perturbed wave normal) ──
     float ambient = 0.50;
