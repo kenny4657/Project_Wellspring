@@ -240,16 +240,11 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 
 		if (isWater) {
 			// ── Water hex edge logic ──
-			// Set targets for ALL water edges (cornerTargets reads them all
-			// regardless of exclusion). But EXCLUDE same-depth edges from
-			// the distance competition so the coastal ramp extends across
-			// the full hex width instead of being confined to a thin strip.
+			// Every water edge is an explicit continuity constraint so adjacent
+			// water hexes agree on their shared boundary, even when one cell has
+			// other nearby coast/depth transitions.
 			if (nbIsWater) {
 				edgeTargets[i] = getLevelHeight(Math.min(cell.heightLevel, nb.heightLevel));
-				if (cell.heightLevel === nb.heightLevel) {
-					excludedEdges[i] = true;
-					excludedCount++;
-				}
 			} else {
 				// Water → land: ramp up to sea level
 				edgeTargets[i] = 0;
@@ -424,7 +419,7 @@ function computeSurfaceHeight(
 		// - Water↔land: border noise = NOISE_AMP * 0.3 (both sides use 0.3 at coast)
 		const isWaterNeighborBorder = borderTarget < -0.001;
 		const borderNoise = isWaterNeighborBorder ? NOISE_AMP : NOISE_AMP * 0.3;
-		const interiorNoise = NOISE_AMP;
+		const interiorNoise = isWaterHex ? NOISE_AMP * 0.3 : NOISE_AMP;
 		const noiseCoeff = interiorNoise * mu + borderNoise * (1 - mu);
 		let h = tierH * mu + borderTarget * (1 - mu) + noiseH * noiseCoeff;
 
