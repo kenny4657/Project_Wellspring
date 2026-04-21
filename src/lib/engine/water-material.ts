@@ -156,15 +156,15 @@ void main() {
     float depthDiff = max(sceneDepth - vLinearDepth, 0.0);
 
     // ── Animated wave color ──
-    vec3 wc1 = nDir * 18.0 + vec3(time * 0.3, time * 0.2, -time * 0.1);
-    vec3 wc2 = nDir * 35.0 + vec3(-time * 0.2, time * 0.15, time * 0.25);
+    vec3 wc1 = nDir * 4.0 + vec3(time * 0.2, time * 0.15, -time * 0.1);
+    vec3 wc2 = nDir * 8.0 + vec3(-time * 0.15, time * 0.1, time * 0.2);
     float wave1 = snoise(wc1) * 0.5 + 0.5;
     float wave2 = snoise(wc2) * 0.5 + 0.5;
 
-    // Color: fresnel-based blend (not depth texture — that shows bumpy terrain)
+    // Color: fresnel-based blend
     float fresnel = pow(1.0 - max(dot(N, V), 0.0), 3.0);
     vec3 waterCol = mix(deepColor, shallowColor, fresnel * 0.5 + 0.15);
-    waterCol += vec3(0.03, 0.05, 0.06) * (wave1 * 0.6 + wave2 * 0.4 - 0.5);
+    waterCol += vec3(0.02, 0.03, 0.04) * (wave1 * 0.6 + wave2 * 0.4 - 0.5);
     waterCol += vec3(0.04, 0.07, 0.10) * fresnel;
 
     // ── Wave normal perturbation ──
