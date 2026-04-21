@@ -26,8 +26,8 @@ import '@babylonjs/core/Meshes/Builders/linesBuilder';
 /** Height offsets per discrete height level (fraction of globe radius).
  *  Height level is independent of terrain type. */
 const LEVEL_HEIGHTS = [
-	-0.020,  // level 0: deep water
-	-0.008,  // level 1: shallow water
+	-0.016,  // level 0: deep water
+	-0.010,  // level 1: shallow water
 	 0.000,  // level 2: lowland
 	 0.020,  // level 3: midland
 	 0.045,  // level 4: highland
