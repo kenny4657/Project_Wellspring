@@ -122,24 +122,19 @@ function subdivTriangle(
 // ── Smooth Normals (Sota-style SmoothShadesProcessor) ───────
 
 /** Average normals at coincident vertex positions for seamless terrain.
- *  Only processes land top-face vertices (color alpha > 0.5, above sea level).
- *  Wall vertices and water vertices keep their face normals. */
+ *  Only processes top-face vertices (color alpha > 0.5). Wall vertices keep flat normals. */
 function smoothNormalsPass(
-	positions: Float32Array, normals: Float32Array, colors: Float32Array, vertexCount: number,
-	seaLevelRadius: number
+	positions: Float32Array, normals: Float32Array, colors: Float32Array, vertexCount: number
 ): void {
 	const step = 1.0; // quantization step in km — groups vertices within 1km
 	const map = new Map<string, number[]>();
 
-	// Build spatial hash of land top-face vertices only
+	// Build spatial hash of top-face vertices only
 	for (let i = 0; i < vertexCount; i++) {
 		if (colors[i * 4 + 3] < 0.5) continue; // skip wall vertices
 		const px = positions[i * 3];
 		const py = positions[i * 3 + 1];
 		const pz = positions[i * 3 + 2];
-		// Skip water vertices — their normals shouldn't be smoothed
-		const dist = Math.sqrt(px * px + py * py + pz * pz);
-		if (dist < seaLevelRadius) continue;
 		const key = `${Math.round(px / step)},${Math.round(py / step)},${Math.round(pz / step)}`;
 		let list = map.get(key);
 		if (!list) { list = []; map.set(key, list); }
@@ -665,11 +660,10 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 	const normalsF32 = new Float32Array(normals);
 
 	// ── Smooth normals pass (Sota-style) ────────────────────
-	// Average normals at coincident vertex positions for land top-face vertices.
+	// Average normals at coincident vertex positions for top-face vertices.
 	// This makes terrain look continuous across triangle/hex boundaries.
-	// Wall vertices (alpha=0) and water vertices (below sea level) are excluded.
-	const seaLevelR = radius * (1 + LEVEL_HEIGHTS[2]); // level 2 = lowland (0.000)
-	smoothNormalsPass(positionsF32, normalsF32, colorsF32, vOff, seaLevelR);
+	// Wall vertices (alpha=0) are excluded to keep cliff faces sharp.
+	smoothNormalsPass(positionsF32, normalsF32, colorsF32, vOff);
 
 	const mesh = new Mesh('globeHex', scene);
 	const vertexData = new VertexData();
