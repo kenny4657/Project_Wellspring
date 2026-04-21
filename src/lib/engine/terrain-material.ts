@@ -170,89 +170,97 @@ vec3 terrainLake(float s, float s2, float h, vec3 wp, vec3 N) {
 
 vec3 terrainPlains(float s, float s2, float h, vec3 wp, vec3 N) {
     vec3 base = vec3(0.40, 0.48, 0.24);
-    // Broad color shift: some areas more golden, others greener
-    base += vec3(0.06, -0.02, -0.04) * s;
+    // Broad: golden vs green patches
+    base *= (1.0 + s * 0.20);
+    base += vec3(0.08, -0.04, -0.06) * s;
     // Fine grass texture
-    base += vec3(0.02, 0.04, 0.01) * s2;
-    // Height tint: warmer/drier at ridges
-    base += vec3(0.04, -0.02, -0.03) * h;
+    base += vec3(0.03, 0.06, 0.01) * s2;
+    // Height: warmer/drier at ridges
+    base += vec3(0.06, -0.04, -0.05) * h;
     return base;
 }
 
 vec3 terrainGrassland(float s, float s2, float h, vec3 wp, vec3 N) {
     vec3 base = vec3(0.32, 0.48, 0.18);
-    // Lush/dry patches at broad scale
-    base += vec3(0.05, 0.06, 0.01) * s;
+    // Broad: lush/dry variation
+    base *= (1.0 + s * 0.22);
+    base += vec3(0.06, 0.08, 0.01) * s;
     // Fine variation
-    base += vec3(-0.02, 0.03, -0.01) * s2;
-    // Slightly dried at height
-    base += vec3(0.03, -0.03, -0.02) * h;
+    base += vec3(-0.03, 0.05, -0.02) * s2;
+    // Dried at height
+    base += vec3(0.05, -0.04, -0.03) * h;
     return base;
 }
 
 vec3 terrainDesert(float s, float s2, float h, vec3 wp, vec3 N) {
     vec3 base = vec3(0.60, 0.50, 0.32);
-    // Broad dune light/shadow
-    base += vec3(0.08, 0.06, 0.02) * s;
+    // Broad: dune light/shadow, strong contrast
+    base *= (1.0 + s * 0.18);
+    base += vec3(0.10, 0.08, 0.02) * s;
     // Rocky patches peeking through
-    base += vec3(-0.06, -0.04, -0.01) * s2;
+    base += vec3(-0.08, -0.06, -0.02) * s2;
     // Height: lighter crests
-    base += vec3(0.04, 0.03, 0.01) * h;
+    base += vec3(0.06, 0.04, 0.02) * h;
     return base;
 }
 
 vec3 terrainSwamp(float s, float s2, float h, vec3 wp, vec3 N) {
     vec3 base = vec3(0.22, 0.28, 0.16);
-    // Dark waterlogged patches
-    base += vec3(-0.06, -0.04, -0.02) * s;
-    // Mossy variation
-    base += vec3(-0.02, 0.04, -0.01) * s2;
+    // Broad: dark waterlogged vs muddy
+    base *= (1.0 + s * 0.25);
+    base += vec3(-0.08, -0.05, -0.03) * s;
+    // Mossy patches
+    base += vec3(-0.03, 0.06, -0.02) * s2;
     // Muddier at height
-    base += vec3(0.03, 0.01, -0.02) * h;
+    base += vec3(0.05, 0.02, -0.03) * h;
     return base;
 }
 
 vec3 terrainTundra(float s, float s2, float h, vec3 wp, vec3 N) {
     vec3 base = vec3(0.52, 0.52, 0.46);
-    // Lichen patches vs bare rock
-    base += vec3(-0.04, -0.02, 0.02) * s;
+    // Broad: lichen vs bare rock
+    base *= (1.0 + s * 0.16);
+    base += vec3(-0.06, -0.04, 0.03) * s;
     // Frost/thaw mottling
-    base += vec3(0.04, 0.04, 0.05) * s2;
+    base += vec3(0.06, 0.06, 0.08) * s2;
     // Frostier at height
-    base += vec3(0.03, 0.03, 0.04) * h;
+    base += vec3(0.05, 0.05, 0.06) * h;
     return base;
 }
 
 vec3 terrainHills(float s, float s2, float h, vec3 wp, vec3 N) {
     vec3 base = vec3(0.40, 0.44, 0.26);
-    // Grass vs exposed earth patches
-    base += vec3(0.06, 0.02, -0.04) * s;
+    // Broad: grass vs exposed earth
+    base *= (1.0 + s * 0.22);
+    base += vec3(0.08, 0.03, -0.06) * s;
     // Fine soil texture
-    base += vec3(0.02, 0.03, 0.02) * s2;
+    base += vec3(0.03, 0.04, 0.03) * s2;
     // Earthier at ridges
-    base += vec3(0.04, -0.02, -0.03) * h;
+    base += vec3(0.06, -0.03, -0.05) * h;
     return base;
 }
 
 vec3 terrainHighland(float s, float s2, float h, vec3 wp, vec3 N) {
     vec3 base = vec3(0.48, 0.44, 0.34);
-    // Rocky grey vs earthy brown patches
-    base += vec3(0.05, 0.05, 0.06) * s;
+    // Broad: rocky grey vs earthy brown
+    base *= (1.0 + s * 0.20);
+    base += vec3(0.06, 0.06, 0.08) * s;
     // Crevice darkening
-    base += vec3(-0.04, -0.03, -0.02) * s2;
-    // Greyer at height
-    base += vec3(0.04, 0.04, 0.05) * h;
+    base += vec3(-0.06, -0.05, -0.03) * s2;
+    // Greyer/lighter at height
+    base += vec3(0.06, 0.06, 0.08) * h;
     return base;
 }
 
 vec3 terrainMountain(float s, float s2, float h, vec3 wp, vec3 N) {
     vec3 base = vec3(0.50, 0.48, 0.42);
-    // Rock color variation: warm vs cool grey
-    base += vec3(0.05, 0.03, -0.02) * s;
+    // Broad: warm vs cool rock
+    base *= (1.0 + s * 0.18);
+    base += vec3(0.06, 0.04, -0.03) * s;
     // Fine crag detail
-    base += vec3(-0.03, -0.02, 0.01) * s2;
-    // Snow at height
-    base += vec3(0.12, 0.14, 0.18) * h;
+    base += vec3(-0.04, -0.03, 0.02) * s2;
+    // Snow at height — strong effect
+    base += vec3(0.16, 0.18, 0.24) * h;
     return base;
 }
 
