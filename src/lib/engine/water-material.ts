@@ -149,7 +149,7 @@ void main() {
     float spec2 = pow(max(dot(N, halfVec), 0.0), 16.0);
     waterCol += vec3(0.7, 0.85, 1.0) * spec2 * 0.08;
 
-    float alpha = 1.0;
+    float alpha = 0.85 + fresnel * 0.15;
 
     gl_FragColor = vec4(waterCol, alpha);
 }

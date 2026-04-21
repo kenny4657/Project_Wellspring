@@ -435,12 +435,12 @@ function computeSurfaceHeight(
 		const t = Math.min(dist / hexRadius, 1.0);
 		const mu = (1 - Math.cos(t * Math.PI)) / 2;
 
-		// Noise coefficient must MATCH at shared borders:
-		// - Water↔water: border noise = NOISE_AMP (flat neighbor uses full noise)
-		// - Water↔land: border noise = NOISE_AMP * 0.3 (both sides use 0.3 at coast)
+		// Noise coefficient must MATCH at shared borders.
+		// Water hexes: zero noise everywhere (water sphere handles surface).
+		// Land hexes bordering water: zero noise at edge, ramps to full in interior.
 		const isWaterNeighborBorder = borderTarget < -0.001;
-		const borderNoise = isWaterNeighborBorder ? NOISE_AMP : NOISE_AMP * 0.3;
-		const interiorNoise = NOISE_AMP;
+		const borderNoise = (isWaterHex || isWaterNeighborBorder) ? 0 : NOISE_AMP * 0.3;
+		const interiorNoise = isWaterHex ? 0 : NOISE_AMP;
 		const noiseCoeff = interiorNoise * mu + borderNoise * (1 - mu);
 		let h = tierH * mu + borderTarget * (1 - mu) + noiseH * noiseCoeff;
 
@@ -456,7 +456,7 @@ function computeSurfaceHeight(
 		return h;
 	}
 
-	return tierH + noiseH * NOISE_AMP;
+	return tierH + (isWaterHex ? 0 : noiseH * NOISE_AMP);
 }
 
 /** Recursively build the same normalized edge polyline used by the subdivided top face. */
