@@ -166,9 +166,11 @@ export async function createGlobeEngine(
 	});
 
 	// ── Render Loop ─────────────────────────────────────────
+	let waterTime = 0;
 	engine.runRenderLoop(() => {
-		// Update camera position uniform for shader lighting
 		terrainMat.setVector3('cameraPos', camera.position);
+		waterTime += engine.getDeltaTime() * 0.001;
+		terrainMat.setFloat('time', waterTime);
 		scene.render();
 	});
 
