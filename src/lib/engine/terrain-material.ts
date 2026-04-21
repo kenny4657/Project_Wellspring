@@ -211,7 +211,10 @@ void main() {
             // ── Ocean surface effect ──
             // Animated water color computed per-pixel on the terrain mesh.
             // No separate sphere needed → zero z-fighting.
-            vec3 nDir = normalize(vWorldPos);
+            // Use sphere normal so water shades as a flat surface, hiding
+            // the sloped coastline-ramp geometry underneath.
+            N = normalize(vWorldPos);
+            vec3 nDir = N;
             float depth = (seaLevel - heightAboveR) / abs(seaLevel);
 
             // Two scrolling noise octaves for color variation
