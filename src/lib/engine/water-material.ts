@@ -99,7 +99,7 @@ varying vec3 vLocalPos;
 varying vec4 vScreenPos;
 varying float vLinearDepth;
 
-// Hash-based smooth noise (no simplex artifacts)
+// Smooth gradient noise for wave normals
 vec3 hash33(vec3 p) {
     p = vec3(dot(p, vec3(127.1, 311.7, 74.7)),
              dot(p, vec3(269.5, 183.3, 246.1)),
@@ -107,11 +107,10 @@ vec3 hash33(vec3 p) {
     return fract(sin(p) * 43758.5453123) * 2.0 - 1.0;
 }
 
-float gradientNoise(vec3 p) {
+float gnoise(vec3 p) {
     vec3 i = floor(p);
     vec3 f = fract(p);
     vec3 u = f * f * (3.0 - 2.0 * f);
-
     return mix(mix(mix(dot(hash33(i + vec3(0,0,0)), f - vec3(0,0,0)),
                        dot(hash33(i + vec3(1,0,0)), f - vec3(1,0,0)), u.x),
                    mix(dot(hash33(i + vec3(0,1,0)), f - vec3(0,1,0)),
@@ -122,13 +121,8 @@ float gradientNoise(vec3 p) {
                        dot(hash33(i + vec3(1,1,1)), f - vec3(1,1,1)), u.x), u.y), u.z);
 }
 
-// FBM with 3 octaves for rich wave detail
 float waveNoise(vec3 p) {
-    float v = 0.0;
-    v += gradientNoise(p)      * 0.5;
-    v += gradientNoise(p * 2.0) * 0.25;
-    v += gradientNoise(p * 4.0) * 0.125;
-    return v;
+    return gnoise(p) * 0.5 + gnoise(p * 2.0) * 0.25 + gnoise(p * 4.0) * 0.125;
 }
 
 void main() {
@@ -141,55 +135,58 @@ void main() {
 
     vec3 N = normalize(vWorldNormal);
     vec3 V = normalize(cameraPos - vWorldPos);
-    vec3 nDir = normalize(vLocalPos);
 
-    // ── Fresnel ──
-    float fresnel = pow(1.0 - max(dot(N, V), 0.0), 3.0);
+    float depthDiff = max(sceneDepth - vLinearDepth, 0.0);
 
-    // ── Base color (fresnel blend, no depth texture) ──
+    // Fresnel
+    float fresnel = 1.0 - max(dot(N, V), 0.0);
+    fresnel = pow(fresnel, 2.5);
+
+    // Color — identical to 0f9a3c0
     vec3 waterCol = mix(deepColor, shallowColor, fresnel * 0.6 + 0.2);
-    waterCol += vec3(0.04, 0.07, 0.10) * fresnel;
 
-    // ── Wave normal perturbation ──
-    // Two scrolling wave layers at earth scale
-    // freq ~8 on unit sphere = ~5000km wavelength — visible from orbit
+    vec3 nDir = normalize(vLocalPos);
+    float shimmer = sin(nDir.x * 30.0 + time * 1.2) * sin(nDir.z * 30.0 + time * 0.8) * 0.03;
+    waterCol += shimmer;
+
+    // Shore foam — identical to 0f9a3c0
+    float foamEdge = smoothstep(0.0, 0.003, depthDiff);
+    waterCol = mix(vec3(0.75, 0.82, 0.85), waterCol, foamEdge);
+
+    // ── Wave normal perturbation (ONLY addition to 0f9a3c0) ──
     vec3 tangent = normalize(cross(N, vec3(0.0, 1.0, 0.0)));
     vec3 bitangent = cross(N, tangent);
-
     float eps = 0.015;
 
-    // Layer 1: broad swells
     vec3 wp1 = nDir * 8.0 + vec3(time * 0.12, -time * 0.08, time * 0.06);
-    float n1   = waveNoise(wp1);
-    float n1dx = waveNoise(wp1 + vec3(eps, 0.0, 0.0));
-    float n1dz = waveNoise(wp1 + vec3(0.0, 0.0, eps));
+    float n1 = waveNoise(wp1);
+    float dx = (waveNoise(wp1 + vec3(eps,0,0)) - n1) / eps * 0.012;
+    float dz = (waveNoise(wp1 + vec3(0,0,eps)) - n1) / eps * 0.012;
 
-    // Layer 2: smaller chop, different direction
     vec3 wp2 = nDir * 20.0 + vec3(-time * 0.18, time * 0.14, -time * 0.1);
-    float n2   = waveNoise(wp2);
-    float n2dx = waveNoise(wp2 + vec3(eps, 0.0, 0.0));
-    float n2dz = waveNoise(wp2 + vec3(0.0, 0.0, eps));
+    float n2 = waveNoise(wp2);
+    dx += (waveNoise(wp2 + vec3(eps,0,0)) - n2) / eps * 0.005;
+    dz += (waveNoise(wp2 + vec3(0,0,eps)) - n2) / eps * 0.005;
 
-    float dx = (n1dx - n1) / eps * 0.014 + (n2dx - n2) / eps * 0.006;
-    float dz = (n1dz - n1) / eps * 0.014 + (n2dz - n2) / eps * 0.006;
     vec3 waveN = normalize(N + tangent * dx + bitangent * dz);
 
-    // ── Lighting with perturbed normal ──
-    float ambient = 0.45;
-    float sun = max(dot(waveN, sunDir), 0.0) * 0.40;
-    float cam = max(dot(waveN, V), 0.0) * 0.12;
-    waterCol *= (ambient + sun + cam);
+    // Lighting — identical to 0f9a3c0 but using waveN
+    float ambient = 0.55;
+    float diffuse = max(dot(waveN, sunDir), 0.0) * 0.4;
+    vec3 toCamera = normalize(cameraPos - vWorldPos);
+    float cam = max(0.0, dot(waveN, toCamera)) * 0.15;
+    float light = ambient + diffuse + cam;
+    waterCol *= light;
 
-    // ── Specular (broken up by wave normals) ──
+    // Specular — identical to 0f9a3c0 but using waveN
     vec3 halfVec = normalize(sunDir + V);
-    float spec = pow(max(dot(waveN, halfVec), 0.0), 200.0);
-    waterCol += vec3(1.0, 0.98, 0.92) * spec * 0.3;
+    float spec = pow(max(dot(waveN, halfVec), 0.0), 96.0);
+    waterCol += vec3(1.0, 0.98, 0.92) * spec * 0.5;
 
-    // Broader glint
-    float spec2 = pow(max(dot(waveN, halfVec), 0.0), 24.0);
-    waterCol += vec3(0.6, 0.75, 0.9) * spec2 * 0.04;
+    float spec2 = pow(max(dot(waveN, halfVec), 0.0), 16.0);
+    waterCol += vec3(0.7, 0.85, 1.0) * spec2 * 0.08;
 
-    float alpha = 0.70 + fresnel * 0.20;
+    float alpha = 0.85 + fresnel * 0.15;
 
     gl_FragColor = vec4(waterCol, alpha);
 }
