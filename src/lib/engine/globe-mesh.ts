@@ -223,6 +223,15 @@ function findNeighborAcrossEdge(cell: HexCell, edgeIdx: number, cellById: Map<nu
 	return closestNb;
 }
 
+function countLandNeighbors(cell: HexCell, cellById: Map<number, HexCell>): number {
+	let count = 0;
+	for (const nId of cell.neighbors) {
+		const nb = cellById.get(nId);
+		if (nb && nb.heightLevel > 1) count++;
+	}
+	return count;
+}
+
 function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBorderInfo {
 	const n = cell.corners.length;
 	const excludedEdges: boolean[] = new Array(n).fill(false);
@@ -241,14 +250,21 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 		if (isWater) {
 			// ── Water hex edge logic ──
 			// Set targets for ALL water edges (cornerTargets reads them all
-			// regardless of exclusion). But EXCLUDE same-depth edges from
-			// the distance competition so the coastal ramp extends across
-			// the full hex width instead of being confined to a thin strip.
+			// regardless of exclusion). Exclude same-depth edges from the
+			// distance competition so the coastal ramp extends broadly,
+			// but ONLY when BOTH hexes sharing the edge qualify (≤2 land
+			// neighbors each). This ensures both sides always agree on
+			// exclusion → no gap. Small lakes (≥3 land neighbors on
+			// either side) keep edges active for angular hex shape.
 			if (nbIsWater) {
 				edgeTargets[i] = getLevelHeight(Math.min(cell.heightLevel, nb.heightLevel));
 				if (cell.heightLevel === nb.heightLevel) {
-					excludedEdges[i] = true;
-					excludedCount++;
+					const cellLand = countLandNeighbors(cell, cellById);
+					const nbLand = countLandNeighbors(nb, cellById);
+					if (cellLand <= 2 && nbLand <= 2) {
+						excludedEdges[i] = true;
+						excludedCount++;
+					}
 				}
 			} else {
 				// Water → land: ramp up to sea level
