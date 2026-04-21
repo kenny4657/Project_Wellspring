@@ -416,7 +416,7 @@ function computeSurfaceHeight(
 	const noiseH = Math.abs(fbmNoise(ux * NOISE_SCALE, uy * NOISE_SCALE, uz * NOISE_SCALE));
 
 	if (isWaterHex && borderInfo.allSameHeight) {
-		return tierH;
+		return tierH + noiseH * NOISE_AMP;
 	}
 
 	if (borderInfo.hasBorder) {

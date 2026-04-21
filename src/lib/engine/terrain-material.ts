@@ -207,53 +207,34 @@ void main() {
         float shoreWidth = 0.06; // width of shore zone in normalized height
         float shoreCenter = 0.0; // at bottom_offset (sea level)
 
-        if (heightAboveR < seaLevel) {
-            // ── Ocean ──
-            // Self-contained water rendering: own normal, own lighting.
-            // Uses sphere normal so vertex geometry has zero visual impact.
-            vec3 waterN = normalize(vWorldPos);
-            vec3 nDir = waterN;
+        float belowWidth = 0.04;
+        if (heightAboveR < seaLevel - belowWidth * amplitude) {
+            // Deep ocean
+            vec3 nDir = normalize(vWorldPos);
             float depth = (seaLevel - heightAboveR) / abs(seaLevel);
 
-            // Animated color variation
+            vec3 shallow = vec3(0.12, 0.32, 0.48);
+            vec3 deep    = vec3(0.05, 0.12, 0.28);
+            procColor = mix(shallow, deep, clamp(depth * 0.3, 0.0, 1.0));
+
+            // Animated shimmer
             vec3 wc1 = nDir * 18.0 + vec3(time * 0.3, time * 0.2, -time * 0.1);
             vec3 wc2 = nDir * 35.0 + vec3(-time * 0.2, time * 0.15, time * 0.25);
             float w1 = snoise(wc1) * 0.5 + 0.5;
             float w2 = snoise(wc2) * 0.5 + 0.5;
+            procColor += vec3(0.03, 0.05, 0.06) * (w1 * 0.6 + w2 * 0.4 - 0.5);
 
-            // Depth color
-            vec3 shallow = vec3(0.12, 0.32, 0.48);
-            vec3 deep    = vec3(0.05, 0.12, 0.28);
-            vec3 wCol = mix(shallow, deep, clamp(depth * 0.3, 0.0, 1.0));
-            wCol += vec3(0.03, 0.05, 0.06) * (w1 * 0.6 + w2 * 0.4 - 0.5);
-
-            // Fresnel
-            vec3 V = normalize(cameraPos - vWorldPos);
-            float fres = pow(1.0 - max(dot(waterN, V), 0.0), 3.0);
-            wCol += vec3(0.06, 0.10, 0.14) * fres;
-
-            // Shore foam
+            // Shore foam near coastline
             float foamT = 1.0 - clamp((seaLevel - heightAboveR) / (abs(seaLevel) * 1.5), 0.0, 1.0);
             float foamN = snoise(nDir * 60.0 + vec3(time * 0.5, -time * 0.3, time * 0.2));
             float foam = foamT * foamT * smoothstep(0.0, 0.5, foamN * 0.5 + 0.5);
-            wCol = mix(wCol, vec3(0.75, 0.80, 0.82), foam * 0.7);
-
-            // Water uses its own lighting with sphere normal
-            float wAmb = 0.55;
-            float wSun = max(0.0, dot(waterN, sunDir)) * 0.45;
-            vec3 wToC = normalize(cameraPos - vWorldPos);
-            float wCam = max(0.0, dot(waterN, wToC)) * 0.20;
-            wCol *= (wAmb + wSun + wCam);
-
-            // Specular
-            vec3 wHalf = normalize(sunDir + wToC);
-            float wSpec = pow(max(0.0, dot(waterN, wHalf)), 96.0);
-            wCol += vec3(1.0, 0.98, 0.92) * wSpec * 0.35;
-            float wSpec2 = pow(max(0.0, dot(waterN, wHalf)), 16.0);
-            wCol += vec3(0.5, 0.7, 0.9) * wSpec2 * 0.06;
-
-            gl_FragColor = vec4(wCol, 1.0);
-            return;
+            procColor = mix(procColor, vec3(0.75, 0.80, 0.82), foam * 0.7);
+        } else if (heightAboveR < seaLevel) {
+            // Shallow transition to shore
+            vec3 shore = vec3(0.18, 0.38, 0.45);
+            vec3 deep  = vec3(0.12, 0.32, 0.48);
+            float belowT = (heightAboveR - (seaLevel - belowWidth * amplitude)) / (belowWidth * amplitude);
+            procColor = mix(deep, shore, clamp(belowT, 0.0, 1.0));
         } else if (heightAboveR < seaLevel + shoreWidth * amplitude) {
             // Shore/beach transition zone — sand blending into grass
             vec3 shore = vec3(0.65, 0.58, 0.40) * (1.0 + scratchy * 0.10);
