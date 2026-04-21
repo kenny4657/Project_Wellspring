@@ -49,7 +49,6 @@ uniform float seaLevel;      // height threshold: below = water, above = land
 uniform float bottomOffset;  // lowest height (water floor)
 uniform float hillRatio;     // 0-1 ratio where grass→hill transition occurs
 uniform float topOffset;     // highest height (mountain peak)
-uniform float time;          // elapsed seconds for water animation
 
 varying vec3 vWorldPos;
 varying vec3 vWorldNormal;
@@ -185,15 +184,19 @@ void main() {
     vec3 N = normalize(vWorldNormal);
     bool isWall = vColor.a < 0.05;
 
-    float distFromCenter = length(vWorldPos);
-    float heightAboveR = distFromCenter - planetRadius;
-
     vec3 procColor;
 
     if (isWall) {
         procColor = textureWall(vColor.rgb, vWorldPos);
     } else {
         // ── Sota-style height-based texture blending ────
+        // Replicates polyhedron_biome.gdshader:
+        //   h = (dist_from_center - bottom_offset) / amplitude
+        //   below bottom_offset → water
+        //   h ≤ hillRatio → mix(plain, hill)
+        //   h > hillRatio → mix(hill, mountain)
+        float distFromCenter = length(vWorldPos);
+        float heightAboveR = distFromCenter - planetRadius;
 
         float amplitude = abs(topOffset) + abs(bottomOffset);
         float firstCoef = 1.0 / hillRatio;
@@ -207,76 +210,15 @@ void main() {
         float shoreWidth = 0.06; // width of shore zone in normalized height
         float shoreCenter = 0.0; // at bottom_offset (sea level)
 
-        if (heightAboveR < seaLevel) {
-            // ── Ocean surface effect ──
-            // Animated water color computed per-pixel on the terrain mesh.
-            // No separate sphere needed → zero z-fighting.
-            vec3 nDir = normalize(vWorldPos);
-            float depth = (seaLevel - heightAboveR) / abs(seaLevel);
-
-            // Two scrolling noise octaves for color variation
-            vec3 waveCoord1 = nDir * 18.0 + vec3(time * 0.3, time * 0.2, time * -0.1);
-            vec3 waveCoord2 = nDir * 35.0 + vec3(-time * 0.2, time * 0.15, time * 0.25);
-            float wave1 = snoise(waveCoord1) * 0.5 + 0.5;
-            float wave2 = snoise(waveCoord2) * 0.5 + 0.5;
-            float waveMix = wave1 * 0.6 + wave2 * 0.4;
-
-            // Depth-based color: shallow turquoise → deep blue
-            vec3 shallowCol = vec3(0.12, 0.32, 0.48);
-            vec3 deepCol    = vec3(0.05, 0.12, 0.28);
-            float depthT = clamp(depth * 0.3, 0.0, 1.0);
-            vec3 baseWater = mix(shallowCol, deepCol, depthT);
-
-            // Animated shimmer
-            baseWater += vec3(0.03, 0.05, 0.06) * (waveMix - 0.5);
-
-            // Fresnel: lighter at grazing angles
-            vec3 V = normalize(cameraPos - vWorldPos);
-            float fresnel = 1.0 - max(dot(N, V), 0.0);
-            fresnel = pow(fresnel, 3.0);
-            baseWater += vec3(0.06, 0.10, 0.14) * fresnel;
-
-            // ── Animated normal perturbation (fake wave bumps) ──
-            // Offset sample positions to compute gradient, then perturb
-            // the normal so specular highlights ripple across the surface.
-            float eps = 0.002;
-            vec3 tx = nDir + vec3(eps, 0.0, 0.0);
-            vec3 tz = nDir + vec3(0.0, 0.0, eps);
-            float wx = snoise(tx * 18.0 + vec3(time * 0.3, time * 0.2, time * -0.1));
-            float wz = snoise(tz * 18.0 + vec3(time * 0.3, time * 0.2, time * -0.1));
-            float dWdx = (wx - (wave1 * 2.0 - 1.0)) / eps;
-            float dWdz = (wz - (wave1 * 2.0 - 1.0)) / eps;
-            // Build tangent-space perturbation and rotate into world space
-            vec3 waveNormal = normalize(N + (dWdx * 0.012 + dWdz * 0.012) * cross(N, vec3(0.0, 1.0, 0.0))
-                                           + (dWdz * 0.012 - dWdx * 0.012) * cross(N, cross(N, vec3(0.0, 1.0, 0.0))));
-            N = waveNormal; // replace normal for lighting pass
-
-            // ── Toon shore foam (IronWarrior-style) ──
-            // Narrow band: foam only within ~0.3 * seaLevel of shore.
-            float foamMaxDist = abs(seaLevel) * 0.35;
-            float depthDiff = seaLevel - heightAboveR; // 0 at shore, grows deeper
-            float foamDepth01 = clamp(depthDiff / foamMaxDist, 0.0, 1.0);
-
-            // Distortion: second noise offsets the foam noise for organic movement
-            vec3 distortCoord = nDir * 80.0 + vec3(time * 0.06, -time * 0.04, time * 0.05);
-            vec2 distort = vec2(snoise(distortCoord), snoise(distortCoord + 100.0)) * 0.15;
-
-            // High-freq scrolling noise for foam pattern
-            vec3 foamCoord = nDir * 180.0 + vec3(
-                time * 0.1 + distort.x,
-                distort.y,
-                time * 0.08
-            );
-            float foamSample = snoise(foamCoord) * 0.5 + 0.5;
-
-            // Cutoff: 0 at shore (all noise passes) → 0.777 deep (nothing passes)
-            float foamCutoff = foamDepth01 * 0.777;
-            float foam = smoothstep(foamCutoff - 0.01, foamCutoff + 0.01, foamSample);
-
-            vec3 foamColor = vec3(0.92, 0.96, 0.98);
-            baseWater = mix(baseWater, foamColor, foam * 0.9);
-
-            procColor = baseWater;
+        float belowWidth = 0.04; // underwater transition width
+        if (heightAboveR < seaLevel - belowWidth * amplitude) {
+            // Deep below sea level → sandy ocean floor
+            procColor = waterColor(scratchy);
+        } else if (heightAboveR < seaLevel) {
+            // Underwater transition: sandy floor blending up to shore
+            vec3 shore = vec3(0.65, 0.58, 0.40) * (1.0 + scratchy * 0.10);
+            float belowT = (heightAboveR - (seaLevel - belowWidth * amplitude)) / (belowWidth * amplitude);
+            procColor = mix(waterColor(scratchy), shore, clamp(belowT, 0.0, 1.0));
         } else if (heightAboveR < seaLevel + shoreWidth * amplitude) {
             // Shore/beach transition zone — sand blending into grass
             vec3 shore = vec3(0.65, 0.58, 0.40) * (1.0 + scratchy * 0.10);
@@ -304,14 +246,10 @@ void main() {
     vec3 litColor = procColor * light;
 
     // Specular on water
-    if (!isWall && heightAboveR < seaLevel) {
-        vec3 toCamera2 = normalize(cameraPos - vWorldPos);
-        vec3 halfVec = normalize(sunDir + toCamera2);
-        float spec = pow(max(0.0, dot(N, halfVec)), 96.0);
-        litColor += vec3(1.0, 0.98, 0.92) * spec * 0.35;
-        // Broader secondary highlight
-        float spec2 = pow(max(0.0, dot(N, halfVec)), 16.0);
-        litColor += vec3(0.5, 0.7, 0.9) * spec2 * 0.06;
+    if (!isWall && length(vWorldPos) - planetRadius < seaLevel) {
+        vec3 halfVec = normalize(sunDir + toCamera);
+        float spec = pow(max(0.0, dot(N, halfVec)), 64.0);
+        litColor += vec3(1.0, 0.98, 0.92) * spec * 0.10;
     }
 
     gl_FragColor = vec4(litColor, 1.0);
@@ -330,7 +268,7 @@ export function createTerrainMaterial(scene: Scene): ShaderMaterial {
 		uniforms: [
 			'world', 'viewProjection',
 			'sunDir', 'fillDir', 'cameraPos',
-			'planetRadius', 'seaLevel', 'bottomOffset', 'topOffset', 'hillRatio', 'time'
+			'planetRadius', 'seaLevel', 'bottomOffset', 'topOffset', 'hillRatio'
 		],
 		needAlphaBlending: false,
 	});
@@ -346,7 +284,6 @@ export function createTerrainMaterial(scene: Scene): ShaderMaterial {
 	mat.setFloat('bottomOffset', -0.020 * R);    // deep water floor
 	mat.setFloat('topOffset', 0.080 * R);         // mountain peak
 	mat.setFloat('hillRatio', 0.40);               // grass→hill transition
-	mat.setFloat('time', 0);
 
 	mat.backFaceCulling = true;
 
