@@ -104,8 +104,9 @@ void main() {
     vec2 screenUV = (vScreenPos.xy / vScreenPos.w) * 0.5 + 0.5;
     float sceneDepth = texture2D(depthSampler, screenUV).r;
 
-    // If terrain is closer (smaller linear depth) than water, discard
-    if (sceneDepth < vLinearDepth) {
+    // If terrain is at or near water depth, terrain wins.
+    // Bias ensures water only shows where terrain is meaningfully behind it.
+    if (sceneDepth < vLinearDepth + 0.001) {
         discard;
     }
 
