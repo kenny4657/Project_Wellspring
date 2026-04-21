@@ -137,134 +137,164 @@ float triplanarScratchy2(vec3 worldPos, vec3 normal, float scale, float seed) {
 }
 
 // ── Per-terrain procedural textures ─────────────────────────
+// h = normalized height within hex: 0 at low points, 1 at ridges.
+// Used for height-based variation within each terrain type.
 
-vec3 terrainDeepOcean(float s, vec3 wp, vec3 N) {
-    vec3 base = vec3(0.12, 0.18, 0.32);
+vec3 terrainDeepOcean(float s, float h, vec3 wp, vec3 N) {
+    vec3 base = vec3(0.10, 0.15, 0.28);
+    base = mix(base * 0.85, base, h);
     return base * (1.0 + s * 0.05);
 }
 
-vec3 terrainShallowOcean(float s, vec3 wp, vec3 N) {
-    vec3 base = vec3(0.45, 0.40, 0.30);
+vec3 terrainShallowOcean(float s, float h, vec3 wp, vec3 N) {
+    vec3 dark = vec3(0.32, 0.30, 0.24);
+    vec3 light = vec3(0.42, 0.38, 0.30);
+    vec3 base = mix(dark, light, h);
     float ripple = triplanarScratchy2(wp, N, 0.015, 50.0);
     return base * (1.0 + s * 0.08 + ripple * 0.06);
 }
 
-vec3 terrainReef(float s, vec3 wp, vec3 N) {
-    vec3 turquoise = vec3(0.15, 0.50, 0.48);
-    vec3 coral = vec3(0.60, 0.35, 0.25);
+vec3 terrainReef(float s, float h, vec3 wp, vec3 N) {
+    vec3 turquoise = vec3(0.12, 0.38, 0.36);
+    vec3 coral = vec3(0.48, 0.28, 0.20);
     float mask = snoise(normalize(wp) * 12.0) * 0.5 + 0.5;
-    return mix(turquoise, coral, mask) * (1.0 + s * 0.10);
+    vec3 col = mix(turquoise, coral, mask);
+    col = mix(col * 0.8, col, h);
+    return col * (1.0 + s * 0.10);
 }
 
-vec3 terrainCoast(float s, vec3 wp, vec3 N) {
-    vec3 sand = vec3(0.72, 0.65, 0.45);
-    vec3 wetSand = vec3(0.55, 0.48, 0.32);
+vec3 terrainCoast(float s, float h, vec3 wp, vec3 N) {
+    vec3 wetSand = vec3(0.45, 0.38, 0.26);
+    vec3 drySand = vec3(0.62, 0.55, 0.38);
     float wet = snoise(normalize(wp) * 6.0) * 0.5 + 0.5;
     wet = smoothstep(0.3, 0.7, wet);
-    return mix(sand, wetSand, wet * 0.5) * (1.0 + s * 0.08);
-}
-
-vec3 terrainLake(float s, vec3 wp, vec3 N) {
-    vec3 base = vec3(0.15, 0.30, 0.42);
-    return base * (1.0 + s * 0.04);
-}
-
-vec3 terrainPlains(float s, vec3 wp, vec3 N) {
-    vec3 base = vec3(0.50, 0.62, 0.28);
-    float broad = snoise(normalize(wp) * 3.0) * 0.5 + 0.5;
-    base += vec3(0.04, -0.02, 0.0) * broad;
-    return base * (1.0 + s * 0.10);
-}
-
-vec3 terrainGrassland(float s, vec3 wp, vec3 N) {
-    vec3 base = vec3(0.30, 0.55, 0.15);
-    float streak = snoise(normalize(wp) * vec3(1.0, 3.0, 1.0) * 8.0);
-    base += vec3(-0.02, 0.04, -0.01) * streak;
-    return base * (1.0 + s * 0.14);
-}
-
-vec3 terrainDesert(float s, vec3 wp, vec3 N) {
-    vec3 sand = vec3(0.82, 0.72, 0.42);
-    vec3 shadow = vec3(0.62, 0.48, 0.28);
-    float dune = ridgedNoise(normalize(wp) * 5.0);
-    return mix(shadow, sand, dune) * (1.0 + s * 0.08);
-}
-
-vec3 terrainSwamp(float s, vec3 wp, vec3 N) {
-    vec3 base = vec3(0.22, 0.32, 0.14);
-    vec3 pool = vec3(0.10, 0.17, 0.11);
-    float mask = ridgedNoise(normalize(wp) * 8.0);
-    float poolMask = smoothstep(0.3, 0.5, mask);
-    return mix(pool, base, poolMask) * (1.0 + s * 0.12);
-}
-
-vec3 terrainTundra(float s, vec3 wp, vec3 N) {
-    vec3 grey = vec3(0.72, 0.72, 0.68);
-    vec3 olive = vec3(0.55, 0.58, 0.42);
-    vec3 brown = vec3(0.58, 0.50, 0.40);
-    float n1 = snoise(normalize(wp) * 7.0) * 0.5 + 0.5;
-    float n2 = snoise(normalize(wp) * 11.0 + 30.0) * 0.5 + 0.5;
-    vec3 col = mix(grey, olive, n1);
-    col = mix(col, brown, n2 * 0.4);
+    vec3 col = mix(wetSand, drySand, mix(wet, 1.0, h * 0.5));
     return col * (1.0 + s * 0.08);
 }
 
-vec3 terrainForest(float s, vec3 wp, vec3 N) {
-    vec3 canopy = vec3(0.18, 0.45, 0.15);
-    vec3 shadow = vec3(0.06, 0.20, 0.05);
+vec3 terrainLake(float s, float h, vec3 wp, vec3 N) {
+    vec3 base = vec3(0.12, 0.24, 0.35);
+    base = mix(base * 0.85, base, h);
+    return base * (1.0 + s * 0.04);
+}
+
+vec3 terrainPlains(float s, float h, vec3 wp, vec3 N) {
+    vec3 valley = vec3(0.32, 0.42, 0.18);
+    vec3 ridge  = vec3(0.42, 0.52, 0.24);
+    vec3 base = mix(valley, ridge, h);
+    float broad = snoise(normalize(wp) * 3.0) * 0.5 + 0.5;
+    base += vec3(0.03, -0.02, 0.0) * broad;
+    return base * (1.0 + s * 0.12);
+}
+
+vec3 terrainGrassland(float s, float h, vec3 wp, vec3 N) {
+    vec3 dark = vec3(0.22, 0.38, 0.10);
+    vec3 light = vec3(0.32, 0.50, 0.16);
+    vec3 base = mix(dark, light, h);
+    float streak = snoise(normalize(wp) * vec3(1.0, 3.0, 1.0) * 8.0);
+    base += vec3(-0.02, 0.03, -0.01) * streak;
+    return base * (1.0 + s * 0.14);
+}
+
+vec3 terrainDesert(float s, float h, vec3 wp, vec3 N) {
+    vec3 shadow = vec3(0.52, 0.40, 0.24);
+    vec3 crest  = vec3(0.68, 0.58, 0.36);
+    float dune = ridgedNoise(normalize(wp) * 5.0);
+    vec3 col = mix(shadow, crest, dune);
+    col = mix(col * 0.88, col, h);
+    return col * (1.0 + s * 0.08);
+}
+
+vec3 terrainSwamp(float s, float h, vec3 wp, vec3 N) {
+    vec3 pool = vec3(0.08, 0.12, 0.07);
+    vec3 mud  = vec3(0.20, 0.26, 0.12);
+    float mask = ridgedNoise(normalize(wp) * 8.0);
+    float poolMask = smoothstep(0.25, 0.5, mask);
+    vec3 col = mix(pool, mud, poolMask);
+    col = mix(col, col * 1.15, h);
+    return col * (1.0 + s * 0.12);
+}
+
+vec3 terrainTundra(float s, float h, vec3 wp, vec3 N) {
+    vec3 frozen = vec3(0.58, 0.58, 0.54);
+    vec3 lichen = vec3(0.42, 0.44, 0.32);
+    vec3 brown  = vec3(0.46, 0.40, 0.32);
+    float n1 = snoise(normalize(wp) * 7.0) * 0.5 + 0.5;
+    float n2 = snoise(normalize(wp) * 11.0 + 30.0) * 0.5 + 0.5;
+    vec3 col = mix(lichen, frozen, n1);
+    col = mix(col, brown, n2 * 0.35);
+    col = mix(col * 0.88, col, h);
+    return col * (1.0 + s * 0.08);
+}
+
+vec3 terrainForest(float s, float h, vec3 wp, vec3 N) {
+    vec3 shadow = vec3(0.05, 0.16, 0.04);
+    vec3 canopy = vec3(0.14, 0.34, 0.10);
     float mask = snoise(normalize(wp) * 10.0) * 0.5 + 0.5;
     vec3 col = mix(shadow, canopy, mask);
+    col = mix(col * 0.85, col * 1.1, h);
     float specks = snoise(normalize(wp) * 50.0);
-    col += vec3(0.02, 0.04, 0.01) * max(specks, 0.0);
+    col += vec3(0.01, 0.03, 0.01) * max(specks, 0.0);
     return col * (1.0 + s * 0.10);
 }
 
-vec3 terrainJungle(float s, vec3 wp, vec3 N) {
-    vec3 base = vec3(0.08, 0.28, 0.06);
+vec3 terrainJungle(float s, float h, vec3 wp, vec3 N) {
+    vec3 deep = vec3(0.05, 0.18, 0.04);
+    vec3 top  = vec3(0.10, 0.28, 0.06);
+    vec3 base = mix(deep, top, h);
     float s2 = triplanarScratchy2(wp, N, 0.008, 80.0);
-    base *= (1.0 + s2 * 0.20);
+    base *= (1.0 + s2 * 0.18);
     float bright = snoise(normalize(wp) * 20.0);
-    if (bright > 0.6) base += vec3(0.08, 0.12, 0.02);
+    if (bright > 0.6) base += vec3(0.05, 0.08, 0.01);
     return base * (1.0 + s * 0.10);
 }
 
-vec3 terrainHills(float s, vec3 wp, vec3 N) {
-    vec3 grass = vec3(0.35, 0.52, 0.20);
-    vec3 earth = vec3(0.55, 0.45, 0.30);
+vec3 terrainHills(float s, float h, vec3 wp, vec3 N) {
+    vec3 grass = vec3(0.28, 0.42, 0.16);
+    vec3 earth = vec3(0.44, 0.38, 0.26);
     float mask = snoise(normalize(wp) * 7.0) * 0.5 + 0.5;
-    return mix(grass, earth, mask) * (1.0 + s * 0.12);
+    vec3 col = mix(grass, earth, mask);
+    col = mix(col * 0.88, col * 1.08, h);
+    return col * (1.0 + s * 0.12);
 }
 
-vec3 terrainHighland(float s, vec3 wp, vec3 N) {
-    vec3 rock = vec3(0.50, 0.44, 0.32);
-    vec3 veg = vec3(0.35, 0.45, 0.22);
+vec3 terrainHighland(float s, float h, vec3 wp, vec3 N) {
+    vec3 rock = vec3(0.40, 0.36, 0.28);
+    vec3 veg  = vec3(0.28, 0.36, 0.18);
     float mask = snoise(normalize(wp) * 14.0);
-    vec3 col = mix(rock, veg, smoothstep(0.2, 0.5, mask * 0.5 + 0.5));
+    vec3 col = mix(rock, veg, smoothstep(0.2, 0.5, mask * 0.5 + 0.5) * 0.5);
     float cracks = ridgedNoise(normalize(wp) * 10.0);
-    col = mix(col, vec3(0.30, 0.26, 0.20), (1.0 - cracks) * 0.25);
+    col = mix(col * 0.75, col, cracks);
+    col = mix(col * 0.9, col * 1.05, h);
     return col * (1.0 + s * 0.10);
 }
 
-vec3 terrainPlateau(float s, vec3 wp, vec3 N) {
-    vec3 sandstone = vec3(0.68, 0.55, 0.38);
-    vec3 darkStrata = vec3(0.52, 0.42, 0.28);
+vec3 terrainPlateau(float s, float h, vec3 wp, vec3 N) {
+    vec3 darkStrata = vec3(0.42, 0.35, 0.24);
+    vec3 sandstone  = vec3(0.55, 0.46, 0.32);
     float strata = sin(length(wp) * 0.5) * 0.5 + 0.5;
     strata *= strata;
-    return mix(darkStrata, sandstone, strata) * (1.0 + s * 0.06);
+    vec3 col = mix(darkStrata, sandstone, strata);
+    col = mix(col * 0.9, col * 1.05, h);
+    return col * (1.0 + s * 0.06);
 }
 
-vec3 terrainMountain(float s, vec3 wp, vec3 N) {
-    vec3 rock = vec3(0.52, 0.48, 0.42);
-    vec3 snow = vec3(0.88, 0.90, 0.92);
+vec3 terrainMountain(float s, float h, vec3 wp, vec3 N) {
+    vec3 darkRock = vec3(0.38, 0.35, 0.30);
+    vec3 lightRock = vec3(0.52, 0.48, 0.42);
+    vec3 snow = vec3(0.78, 0.80, 0.82);
     float ridge = ridgedNoise(normalize(wp) * 8.0);
-    vec3 col = mix(snow, rock * (1.0 + s * 0.14), ridge);
-    return col;
+    vec3 rock = mix(darkRock, lightRock, h) * (1.0 + s * 0.12);
+    float snowMask = smoothstep(0.4, 0.7, h) * (1.0 - ridge * 0.6);
+    return mix(rock, snow, snowMask);
 }
 
-vec3 terrainIsland(float s, vec3 wp, vec3 N) {
-    vec3 base = vec3(0.42, 0.60, 0.25);
+vec3 terrainIsland(float s, float h, vec3 wp, vec3 N) {
+    vec3 low  = vec3(0.30, 0.42, 0.18);
+    vec3 high = vec3(0.38, 0.52, 0.22);
+    vec3 base = mix(low, high, h);
     float warm = snoise(normalize(wp) * 4.0) * 0.5 + 0.5;
-    base += vec3(0.05, 0.02, 0.0) * warm;
+    base += vec3(0.03, 0.01, 0.0) * warm;
     return base * (1.0 + s * 0.12);
 }
 
@@ -316,23 +346,27 @@ void main() {
     } else {
         float scratchy = triplanarScratchy(vWorldPos, N, 0.004);
 
-        if      (terrainId == 0)  procColor = terrainDeepOcean(scratchy, vWorldPos, N);
-        else if (terrainId == 1)  procColor = terrainShallowOcean(scratchy, vWorldPos, N);
-        else if (terrainId == 2)  procColor = terrainReef(scratchy, vWorldPos, N);
-        else if (terrainId == 3)  procColor = terrainCoast(scratchy, vWorldPos, N);
-        else if (terrainId == 4)  procColor = terrainLake(scratchy, vWorldPos, N);
-        else if (terrainId == 5)  procColor = terrainPlains(scratchy, vWorldPos, N);
-        else if (terrainId == 6)  procColor = terrainGrassland(scratchy, vWorldPos, N);
-        else if (terrainId == 7)  procColor = terrainDesert(scratchy, vWorldPos, N);
-        else if (terrainId == 8)  procColor = terrainSwamp(scratchy, vWorldPos, N);
-        else if (terrainId == 9)  procColor = terrainTundra(scratchy, vWorldPos, N);
-        else if (terrainId == 10) procColor = terrainForest(scratchy, vWorldPos, N);
-        else if (terrainId == 11) procColor = terrainJungle(scratchy, vWorldPos, N);
-        else if (terrainId == 12) procColor = terrainHills(scratchy, vWorldPos, N);
-        else if (terrainId == 13) procColor = terrainHighland(scratchy, vWorldPos, N);
-        else if (terrainId == 14) procColor = terrainPlateau(scratchy, vWorldPos, N);
-        else if (terrainId == 15) procColor = terrainMountain(scratchy, vWorldPos, N);
-        else if (terrainId == 16) procColor = terrainIsland(scratchy, vWorldPos, N);
+        // Normalized height: 0 at deep water floor, 1 at mountain peaks.
+        // Used within each terrain function for height-based variation.
+        float hNorm = clamp((heightAboveR + 0.020 * planetRadius) / (0.10 * planetRadius), 0.0, 1.0);
+
+        if      (terrainId == 0)  procColor = terrainDeepOcean(scratchy, hNorm, vWorldPos, N);
+        else if (terrainId == 1)  procColor = terrainShallowOcean(scratchy, hNorm, vWorldPos, N);
+        else if (terrainId == 2)  procColor = terrainReef(scratchy, hNorm, vWorldPos, N);
+        else if (terrainId == 3)  procColor = terrainCoast(scratchy, hNorm, vWorldPos, N);
+        else if (terrainId == 4)  procColor = terrainLake(scratchy, hNorm, vWorldPos, N);
+        else if (terrainId == 5)  procColor = terrainPlains(scratchy, hNorm, vWorldPos, N);
+        else if (terrainId == 6)  procColor = terrainGrassland(scratchy, hNorm, vWorldPos, N);
+        else if (terrainId == 7)  procColor = terrainDesert(scratchy, hNorm, vWorldPos, N);
+        else if (terrainId == 8)  procColor = terrainSwamp(scratchy, hNorm, vWorldPos, N);
+        else if (terrainId == 9)  procColor = terrainTundra(scratchy, hNorm, vWorldPos, N);
+        else if (terrainId == 10) procColor = terrainForest(scratchy, hNorm, vWorldPos, N);
+        else if (terrainId == 11) procColor = terrainJungle(scratchy, hNorm, vWorldPos, N);
+        else if (terrainId == 12) procColor = terrainHills(scratchy, hNorm, vWorldPos, N);
+        else if (terrainId == 13) procColor = terrainHighland(scratchy, hNorm, vWorldPos, N);
+        else if (terrainId == 14) procColor = terrainPlateau(scratchy, hNorm, vWorldPos, N);
+        else if (terrainId == 15) procColor = terrainMountain(scratchy, hNorm, vWorldPos, N);
+        else if (terrainId == 16) procColor = terrainIsland(scratchy, hNorm, vWorldPos, N);
         else                      procColor = vec3(1.0, 0.0, 1.0); // magenta = unknown
     }
 
