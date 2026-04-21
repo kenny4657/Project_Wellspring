@@ -179,122 +179,122 @@ vec3 terrainLake(float s, float h, vec3 wp, vec3 N) {
 }
 
 vec3 terrainPlains(float s, float h, vec3 wp, vec3 N) {
-    vec3 valley = vec3(0.32, 0.42, 0.18);
-    vec3 ridge  = vec3(0.42, 0.52, 0.24);
+    vec3 valley = vec3(0.36, 0.38, 0.22);
+    vec3 ridge  = vec3(0.42, 0.44, 0.28);
     vec3 base = mix(valley, ridge, h);
     float broad = snoise(normalize(wp) * 3.0) * 0.5 + 0.5;
-    base += vec3(0.03, -0.02, 0.0) * broad;
-    return base * (1.0 + s * 0.12);
+    base += vec3(0.02, -0.01, 0.0) * broad;
+    return base * (1.0 + s * 0.14);
 }
 
 vec3 terrainGrassland(float s, float h, vec3 wp, vec3 N) {
-    vec3 dark = vec3(0.22, 0.38, 0.10);
-    vec3 light = vec3(0.32, 0.50, 0.16);
+    vec3 dark = vec3(0.30, 0.36, 0.18);
+    vec3 light = vec3(0.38, 0.44, 0.22);
     vec3 base = mix(dark, light, h);
     float streak = snoise(normalize(wp) * vec3(1.0, 3.0, 1.0) * 8.0);
-    base += vec3(-0.02, 0.03, -0.01) * streak;
+    base += vec3(-0.01, 0.02, -0.01) * streak;
     return base * (1.0 + s * 0.14);
 }
 
 vec3 terrainDesert(float s, float h, vec3 wp, vec3 N) {
-    vec3 shadow = vec3(0.52, 0.40, 0.24);
-    vec3 crest  = vec3(0.68, 0.58, 0.36);
+    vec3 shadow = vec3(0.48, 0.40, 0.28);
+    vec3 crest  = vec3(0.58, 0.50, 0.34);
     float dune = ridgedNoise(normalize(wp) * 5.0);
     vec3 col = mix(shadow, crest, dune);
-    col = mix(col * 0.88, col, h);
-    return col * (1.0 + s * 0.08);
+    col = mix(col * 0.90, col, h);
+    return col * (1.0 + s * 0.10);
 }
 
 vec3 terrainSwamp(float s, float h, vec3 wp, vec3 N) {
-    vec3 pool = vec3(0.08, 0.12, 0.07);
-    vec3 mud  = vec3(0.20, 0.26, 0.12);
+    vec3 pool = vec3(0.14, 0.18, 0.12);
+    vec3 mud  = vec3(0.24, 0.28, 0.18);
     float mask = ridgedNoise(normalize(wp) * 8.0);
     float poolMask = smoothstep(0.25, 0.5, mask);
     vec3 col = mix(pool, mud, poolMask);
-    col = mix(col, col * 1.15, h);
+    col = mix(col, col * 1.1, h);
     return col * (1.0 + s * 0.12);
 }
 
 vec3 terrainTundra(float s, float h, vec3 wp, vec3 N) {
-    vec3 frozen = vec3(0.58, 0.58, 0.54);
-    vec3 lichen = vec3(0.42, 0.44, 0.32);
-    vec3 brown  = vec3(0.46, 0.40, 0.32);
+    vec3 frozen = vec3(0.52, 0.52, 0.50);
+    vec3 lichen = vec3(0.42, 0.42, 0.36);
+    vec3 brown  = vec3(0.44, 0.40, 0.34);
     float n1 = snoise(normalize(wp) * 7.0) * 0.5 + 0.5;
     float n2 = snoise(normalize(wp) * 11.0 + 30.0) * 0.5 + 0.5;
     vec3 col = mix(lichen, frozen, n1);
     col = mix(col, brown, n2 * 0.35);
-    col = mix(col * 0.88, col, h);
+    col = mix(col * 0.90, col, h);
     return col * (1.0 + s * 0.08);
 }
 
 vec3 terrainForest(float s, float h, vec3 wp, vec3 N) {
-    vec3 shadow = vec3(0.05, 0.16, 0.04);
-    vec3 canopy = vec3(0.14, 0.34, 0.10);
+    vec3 shadow = vec3(0.10, 0.18, 0.08);
+    vec3 canopy = vec3(0.18, 0.28, 0.12);
     float mask = snoise(normalize(wp) * 10.0) * 0.5 + 0.5;
     vec3 col = mix(shadow, canopy, mask);
-    col = mix(col * 0.85, col * 1.1, h);
+    col = mix(col * 0.88, col * 1.06, h);
     float specks = snoise(normalize(wp) * 50.0);
-    col += vec3(0.01, 0.03, 0.01) * max(specks, 0.0);
+    col += vec3(0.01, 0.02, 0.005) * max(specks, 0.0);
     return col * (1.0 + s * 0.10);
 }
 
 vec3 terrainJungle(float s, float h, vec3 wp, vec3 N) {
-    vec3 deep = vec3(0.05, 0.18, 0.04);
-    vec3 top  = vec3(0.10, 0.28, 0.06);
+    vec3 deep = vec3(0.08, 0.16, 0.06);
+    vec3 top  = vec3(0.14, 0.24, 0.08);
     vec3 base = mix(deep, top, h);
     float s2 = triplanarScratchy2(wp, N, 0.008, 80.0);
-    base *= (1.0 + s2 * 0.18);
+    base *= (1.0 + s2 * 0.16);
     float bright = snoise(normalize(wp) * 20.0);
-    if (bright > 0.6) base += vec3(0.05, 0.08, 0.01);
+    if (bright > 0.6) base += vec3(0.03, 0.05, 0.01);
     return base * (1.0 + s * 0.10);
 }
 
 vec3 terrainHills(float s, float h, vec3 wp, vec3 N) {
-    vec3 grass = vec3(0.28, 0.42, 0.16);
-    vec3 earth = vec3(0.44, 0.38, 0.26);
+    vec3 grass = vec3(0.32, 0.38, 0.20);
+    vec3 earth = vec3(0.44, 0.40, 0.30);
     float mask = snoise(normalize(wp) * 7.0) * 0.5 + 0.5;
     vec3 col = mix(grass, earth, mask);
-    col = mix(col * 0.88, col * 1.08, h);
+    col = mix(col * 0.90, col * 1.05, h);
     return col * (1.0 + s * 0.12);
 }
 
 vec3 terrainHighland(float s, float h, vec3 wp, vec3 N) {
-    vec3 rock = vec3(0.40, 0.36, 0.28);
-    vec3 veg  = vec3(0.28, 0.36, 0.18);
+    vec3 rock = vec3(0.42, 0.38, 0.30);
+    vec3 veg  = vec3(0.34, 0.36, 0.24);
     float mask = snoise(normalize(wp) * 14.0);
-    vec3 col = mix(rock, veg, smoothstep(0.2, 0.5, mask * 0.5 + 0.5) * 0.5);
+    vec3 col = mix(rock, veg, smoothstep(0.2, 0.5, mask * 0.5 + 0.5) * 0.4);
     float cracks = ridgedNoise(normalize(wp) * 10.0);
-    col = mix(col * 0.75, col, cracks);
-    col = mix(col * 0.9, col * 1.05, h);
+    col = mix(col * 0.78, col, cracks);
+    col = mix(col * 0.92, col * 1.04, h);
     return col * (1.0 + s * 0.10);
 }
 
 vec3 terrainPlateau(float s, float h, vec3 wp, vec3 N) {
-    vec3 darkStrata = vec3(0.42, 0.35, 0.24);
-    vec3 sandstone  = vec3(0.55, 0.46, 0.32);
+    vec3 darkStrata = vec3(0.40, 0.36, 0.26);
+    vec3 sandstone  = vec3(0.50, 0.44, 0.32);
     float strata = sin(length(wp) * 0.5) * 0.5 + 0.5;
     strata *= strata;
     vec3 col = mix(darkStrata, sandstone, strata);
-    col = mix(col * 0.9, col * 1.05, h);
-    return col * (1.0 + s * 0.06);
+    col = mix(col * 0.92, col * 1.04, h);
+    return col * (1.0 + s * 0.08);
 }
 
 vec3 terrainMountain(float s, float h, vec3 wp, vec3 N) {
-    vec3 darkRock = vec3(0.38, 0.35, 0.30);
-    vec3 lightRock = vec3(0.52, 0.48, 0.42);
-    vec3 snow = vec3(0.78, 0.80, 0.82);
+    vec3 darkRock = vec3(0.34, 0.32, 0.28);
+    vec3 lightRock = vec3(0.46, 0.44, 0.38);
+    vec3 snow = vec3(0.72, 0.74, 0.76);
     float ridge = ridgedNoise(normalize(wp) * 8.0);
     vec3 rock = mix(darkRock, lightRock, h) * (1.0 + s * 0.12);
-    float snowMask = smoothstep(0.4, 0.7, h) * (1.0 - ridge * 0.6);
+    float snowMask = smoothstep(0.5, 0.8, h) * (1.0 - ridge * 0.5);
     return mix(rock, snow, snowMask);
 }
 
 vec3 terrainIsland(float s, float h, vec3 wp, vec3 N) {
-    vec3 low  = vec3(0.30, 0.42, 0.18);
-    vec3 high = vec3(0.38, 0.52, 0.22);
+    vec3 low  = vec3(0.32, 0.38, 0.20);
+    vec3 high = vec3(0.38, 0.44, 0.24);
     vec3 base = mix(low, high, h);
     float warm = snoise(normalize(wp) * 4.0) * 0.5 + 0.5;
-    base += vec3(0.03, 0.01, 0.0) * warm;
+    base += vec3(0.02, 0.01, 0.0) * warm;
     return base * (1.0 + s * 0.12);
 }
 
