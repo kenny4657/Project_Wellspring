@@ -59,6 +59,9 @@ export async function createGlobeEngine(
 
 	const scene = new Scene(engine);
 	scene.clearColor = new Color4(0.02, 0.03, 0.08, 1);
+	// Keep depth buffer across rendering groups so water (group 1)
+	// can depth-test against terrain (group 0)
+	scene.setRenderingAutoClearDepthStencil(1, false);
 
 	// ── Lighting (scene lights for any non-shader meshes) ───
 	const hemiLight = new HemisphericLight('hemi', new Vector3(0, 1, 0), scene);
