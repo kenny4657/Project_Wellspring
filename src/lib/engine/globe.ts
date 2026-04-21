@@ -168,7 +168,11 @@ export async function createGlobeEngine(
 	// ── Render Loop ─────────────────────────────────────────
 	let waterTime = 0;
 	engine.runRenderLoop(() => {
-		terrainMat.setVector3('cameraPos', camera.position);
+		const camPos = camera.position;
+		terrainMat.setVector3('cameraPos', camPos);
+		// Sun follows camera: offset slightly up-right from view direction
+		const sunDir = camPos.normalize().add(new Vector3(0.3, 0.5, 0.0)).normalize();
+		terrainMat.setVector3('sunDir', sunDir);
 		waterTime += engine.getDeltaTime() * 0.001;
 		terrainMat.setFloat('time', waterTime);
 		scene.render();
