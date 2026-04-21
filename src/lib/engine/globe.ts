@@ -135,7 +135,7 @@ export async function createGlobeEngine(
 	depthTexture.renderList.push(globeMesh);
 
 	const waterSphere = MeshBuilder.CreateSphere('waterSurface', {
-		diameter: EARTH_RADIUS_KM * 2,
+		diameter: EARTH_RADIUS_KM * 2 * 0.9995,
 		segments: 64
 	}, scene);
 	const waterMat = createWaterMaterial(scene, depthTexture);

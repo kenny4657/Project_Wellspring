@@ -105,8 +105,8 @@ void main() {
     float sceneDepth = texture2D(depthSampler, screenUV).r;
 
     // If terrain is at or near water depth, terrain wins.
-    // Bias ensures water only shows where terrain is meaningfully behind it.
-    if (sceneDepth < vLinearDepth + 0.001) {
+    // Small bias handles floating point precision at boundaries.
+    if (sceneDepth < vLinearDepth + 0.00015) {
         discard;
     }
 
