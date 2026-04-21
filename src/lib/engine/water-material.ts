@@ -168,16 +168,18 @@ void main() {
     waterCol += vec3(0.04, 0.07, 0.10) * fresnel;
 
     // ── Wave normal perturbation ──
-    float eps = 0.002;
-    vec3 tx = nDir + vec3(eps, 0.0, 0.0);
-    vec3 tz = nDir + vec3(0.0, 0.0, eps);
-    float wx = snoise(tx * 18.0 + vec3(time * 0.3, time * 0.2, -time * 0.1));
-    float wz = snoise(tz * 18.0 + vec3(time * 0.3, time * 0.2, -time * 0.1));
-    float dWdx = (wx - (wave1 * 2.0 - 1.0)) / eps;
-    float dWdz = (wz - (wave1 * 2.0 - 1.0)) / eps;
-    vec3 waveN = normalize(N
-        + (dWdx * 0.012 + dWdz * 0.012) * cross(N, vec3(0.0, 1.0, 0.0))
-        + (dWdz * 0.012 - dWdx * 0.012) * cross(N, cross(N, vec3(0.0, 1.0, 0.0))));
+    // Two low-frequency octaves for broad rolling waves
+    vec3 waveCoord = nDir * 6.0 + vec3(time * 0.2, time * 0.15, -time * 0.1);
+    float eps = 0.01;
+    float wBase = snoise(waveCoord);
+    float wDx = snoise(waveCoord + vec3(eps, 0.0, 0.0));
+    float wDz = snoise(waveCoord + vec3(0.0, 0.0, eps));
+    float dWdx = (wDx - wBase) / eps;
+    float dWdz = (wDz - wBase) / eps;
+    float strength = 0.006;
+    vec3 tangent = normalize(cross(N, vec3(0.0, 1.0, 0.0)));
+    vec3 bitangent = cross(N, tangent);
+    vec3 waveN = normalize(N + tangent * dWdx * strength + bitangent * dWdz * strength);
 
     // ── Shore foam ──
     float foamT = 1.0 - clamp(depthDiff * 120.0, 0.0, 1.0);
