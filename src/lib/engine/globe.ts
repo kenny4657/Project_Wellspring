@@ -131,8 +131,9 @@ export async function createGlobeEngine(
 	// ── Water Surface ──────────────────────────────────────
 	// Sphere at sea level. Terrain renders first and writes depth,
 	// so land naturally occludes water. Waves only push downward.
+	const seaLevelR = EARTH_RADIUS_KM * (1 - 0.003);
 	const waterSphere = MeshBuilder.CreateSphere('waterSurface', {
-		diameter: EARTH_RADIUS_KM * 2,
+		diameter: seaLevelR * 2,
 		segments: 64
 	}, scene);
 	const waterMat = createWaterMaterial(scene);
