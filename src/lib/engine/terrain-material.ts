@@ -134,18 +134,18 @@ vec3 waterColor(float scratchy) {
 }
 
 vec3 grassColor(float scratchy) {
-    vec3 base = vec3(0.38, 0.60, 0.22);
+    vec3 base = vec3(0.48, 0.72, 0.28);
     vec3 variation = vec3(0.02, 0.05, 0.01) * scratchy;
     return (base + variation) * (1.0 + scratchy * 0.14);
 }
 
 vec3 hillColor(float scratchy) {
-    vec3 base = vec3(0.48, 0.44, 0.32);
+    vec3 base = vec3(0.60, 0.54, 0.40);
     return base * (1.0 + scratchy * 0.14);
 }
 
 vec3 snowColor(float scratchy) {
-    vec3 base = vec3(0.82, 0.84, 0.88);
+    vec3 base = vec3(0.90, 0.92, 0.95);
     return base * (1.0 + scratchy * 0.08);
 }
 
@@ -222,8 +222,8 @@ void main() {
             float waveMix = wave1 * 0.6 + wave2 * 0.4;
 
             // Depth-based color: shallow turquoise → deep blue
-            vec3 shallowCol = vec3(0.12, 0.32, 0.48);
-            vec3 deepCol    = vec3(0.05, 0.12, 0.28);
+            vec3 shallowCol = vec3(0.18, 0.45, 0.62);
+            vec3 deepCol    = vec3(0.08, 0.20, 0.42);
             float depthT = clamp(depth * 0.3, 0.0, 1.0);
             vec3 baseWater = mix(shallowCol, deepCol, depthT);
 
@@ -278,11 +278,11 @@ void main() {
     }
 
     // ── Lighting ──
-    float ambient = 0.45;
-    float sun  = max(0.0, dot(N, sunDir))  * 0.30;
-    float fill = max(0.0, dot(N, fillDir)) * 0.10;
+    float ambient = 0.55;
+    float sun  = max(0.0, dot(N, sunDir))  * 0.45;
+    float fill = max(0.0, dot(N, fillDir)) * 0.15;
     vec3 toCamera = normalize(cameraPos - vWorldPos);
-    float cam  = max(0.0, dot(N, toCamera)) * 0.35;
+    float cam  = max(0.0, dot(N, toCamera)) * 0.25;
 
     float light = ambient + sun + fill + cam;
     vec3 litColor = procColor * light;
