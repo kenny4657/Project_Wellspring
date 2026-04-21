@@ -331,8 +331,20 @@ function distToBorderWithTarget(
 	vx: number, vy: number, vz: number,
 	cell: HexCell, borderInfo: HexBorderInfo, cornerTargets: Map<string, number>
 ): { dist: number; target: number; edgeIdx: number; edgeT: number } {
-	// Corner snap removed — it caused spikes by jumping to the highest
-	// target at dist=0. Let normal edge distance handle corners smoothly.
+	// At hex corners, all hexes sharing the corner must agree on the target
+	// to avoid gaps. Use a small minimum distance (not 0) so the ramp blends
+	// smoothly instead of snapping to the target height (which caused spikes).
+	for (let i = 0; i < cell.corners.length; i++) {
+		const c = cell.corners[i];
+		const dx = vx - c.x;
+		const dy = vy - c.y;
+		const dz = vz - c.z;
+		if (dx * dx + dy * dy + dz * dz <= CORNER_EPS2) {
+			const target = cornerTargets.get(cornerKey(c.x, c.y, c.z));
+			if (target !== undefined) return { dist: 0.012, target, edgeIdx: -1, edgeT: 0.5 };
+			break;
+		}
+	}
 
 	const n = cell.corners.length;
 	let minDist = Infinity;
