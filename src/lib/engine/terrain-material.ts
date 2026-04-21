@@ -271,11 +271,11 @@ void main() {
         float scratchy = triplanarScratchy(vWorldPos, N, 0.004);
         float s2 = triplanarScratchy2(vWorldPos, N, 0.010, 42.0);
 
-        // Height ratio exactly like original Sota shader:
-        // h goes 0→1 across the full terrain amplitude within the hex.
-        // bottomOffset = deep water floor, topOffset = mountain peak.
-        float amplitude = abs(topOffset) + abs(bottomOffset);
-        float h = clamp((heightAboveR - bottomOffset) / amplitude, 0.0, 1.0);
+        // Local height ratio: normalize heightAboveR so that the noise
+        // displacement range (±NOISE_AMP * R ≈ ±51km) maps to 0→1.
+        // This makes h vary fully within each hex's surface undulation.
+        float noiseRange = 0.016 * planetRadius; // 2 * NOISE_AMP * R
+        float h = clamp((heightAboveR / noiseRange) * 0.5 + 0.5, 0.0, 1.0);
 
         if      (terrainId == 0)  procColor = terrainDeepOcean(scratchy, s2, h, vWorldPos, N);
         else if (terrainId == 1)  procColor = terrainShallowOcean(scratchy, s2, h, vWorldPos, N);
