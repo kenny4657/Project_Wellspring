@@ -25,7 +25,6 @@ import { EARTH_RADIUS_KM, latLngToWorld } from '$lib/geo/coords';
 import { generateIcoHexGrid, type HexCell } from '$lib/engine/icosphere';
 import { buildGlobeMesh, buildHexEdgeLines, updateCellTerrain } from '$lib/engine/globe-mesh';
 import { createTerrainMaterial } from '$lib/engine/terrain-material';
-import { createWaterMaterial } from '$lib/engine/water-material';
 // picking is inlined below using the lightweight pickSphere
 import { assignTerrain } from '$lib/engine/terrain-gen';
 import { TERRAIN_TYPES, type TerrainTypeId } from '$lib/world/terrain-types';
@@ -59,10 +58,6 @@ export async function createGlobeEngine(
 
 	const scene = new Scene(engine);
 	scene.clearColor = new Color4(0.02, 0.03, 0.08, 1);
-	// Clear depth before terrain group so terrain depth-tests only against itself,
-	// not against the water sphere. Water is already painted on the color buffer;
-	// terrain simply overpaints on top wherever it has geometry.
-	scene.setRenderingAutoClearDepthStencil(1, true, false, false);
 
 	// ── Lighting (scene lights for any non-shader meshes) ───
 	const hemiLight = new HemisphericLight('hemi', new Vector3(0, 1, 0), scene);
@@ -127,19 +122,6 @@ export async function createGlobeEngine(
 	globeMesh.material = terrainMat;
 	globeMesh.hasVertexAlpha = false;
 	globeMesh.isPickable = false; // picking uses the lightweight pickSphere instead
-	globeMesh.renderingGroupId = 1;
-
-	// ── Water Surface ──────────────────────────────────────
-	// Water renders FIRST (group 0), terrain renders SECOND (group 1).
-	// Terrain overwrites water wherever it has geometry.
-	const waterSphere = MeshBuilder.CreateSphere('waterSurface', {
-		diameter: EARTH_RADIUS_KM * 2,
-		segments: 64
-	}, scene);
-	const waterMat = createWaterMaterial(scene);
-	waterSphere.material = waterMat;
-	waterSphere.isPickable = false;
-	waterSphere.renderingGroupId = 0;
 
 	// ── Hex Edge Wireframe ──────────────────────────────────
 	report('Building hex grid overlay...');
@@ -197,9 +179,6 @@ export async function createGlobeEngine(
 		terrainMat.setVector3('sunDir', sunDirVec);
 		waterTime += engine.getDeltaTime() * 0.001;
 		terrainMat.setFloat('time', waterTime);
-		waterMat.setFloat('time', waterTime);
-		waterMat.setVector3('cameraPos', camPos);
-		waterMat.setVector3('sunDir', sunDirVec);
 		scene.render();
 	});
 
