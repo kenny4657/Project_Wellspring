@@ -1,17 +1,15 @@
 /**
- * Ocean surface ShaderMaterial — semi-transparent animated water sphere.
+ * Ocean surface ShaderMaterial — depth-tested water sphere.
  *
- * Lightweight stylized water inspired by the Babylon.js Ocean Node Material.
- * Applied to an icosphere at sea level radius. Features:
- *   - Animated wave vertex displacement (two scrolling noise octaves)
- *   - Fresnel transparency (see-through from above, opaque at edges)
- *   - Depth-like color (darker toward center, lighter at rim)
- *   - Specular sun highlight
+ * Renders a water sphere at sea level. Samples the scene depth texture
+ * to discard fragments where terrain is closer to the camera, so land
+ * naturally occludes water with zero z-fighting.
  */
 import { ShaderMaterial } from '@babylonjs/core/Materials/shaderMaterial';
 import { ShaderStore } from '@babylonjs/core/Engines/shaderStore';
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import type { Scene } from '@babylonjs/core/scene';
+import type { BaseTexture } from '@babylonjs/core/Materials/Textures/baseTexture';
 
 const VERTEX = /* glsl */ `
 precision highp float;
@@ -21,6 +19,8 @@ uniform mat4 viewProjection;
 uniform float time;
 uniform float waveAmp;
 uniform float waveFreq;
+uniform float cameraNear;
+uniform float cameraFar;
 
 attribute vec3 position;
 attribute vec3 normal;
@@ -28,6 +28,8 @@ attribute vec3 normal;
 varying vec3 vWorldPos;
 varying vec3 vWorldNormal;
 varying vec3 vLocalPos;
+varying vec4 vScreenPos;
+varying float vLinearDepth;
 
 // Simple noise for wave displacement
 vec3 mod289(vec3 x) { return x - floor(x * (1.0/289.0)) * 289.0; }
@@ -69,7 +71,13 @@ void main() {
     vWorldNormal = normalize((world * vec4(normal, 0.0)).xyz);
     vLocalPos = pos;
 
-    gl_Position = viewProjection * wp;
+    vec4 clip = viewProjection * wp;
+    vScreenPos = clip;
+    // Match Babylon depth renderer linear formula:
+    // depthValues = (minZ, minZ + maxZ)
+    // vDepthMetric = (gl_Position.z + depthValues.x) / depthValues.y
+    vLinearDepth = (clip.z + cameraNear) / (cameraNear + cameraFar);
+    gl_Position = clip;
 }
 `;
 
@@ -81,15 +89,32 @@ uniform vec3 cameraPos;
 uniform float time;
 uniform vec3 deepColor;
 uniform vec3 shallowColor;
-uniform float opacity;
+uniform float cameraNear;
+uniform float cameraFar;
+uniform sampler2D depthSampler;
 
 varying vec3 vWorldPos;
 varying vec3 vWorldNormal;
 varying vec3 vLocalPos;
+varying vec4 vScreenPos;
+varying float vLinearDepth;
 
 void main() {
+    // Sample scene depth texture at this fragment's screen position
+    vec2 screenUV = (vScreenPos.xy / vScreenPos.w) * 0.5 + 0.5;
+    float sceneDepth = texture2D(depthSampler, screenUV).r;
+
+    // If terrain is at or near water depth, terrain wins.
+    // Small bias handles floating point precision at boundaries.
+    if (sceneDepth < vLinearDepth + 0.00015) {
+        discard;
+    }
+
     vec3 N = normalize(vWorldNormal);
     vec3 V = normalize(cameraPos - vWorldPos);
+
+    // Depth difference for shore foam
+    float depthDiff = max(sceneDepth - vLinearDepth, 0.0);
 
     // Fresnel — more transparent looking straight down, opaque at grazing angles
     float fresnel = 1.0 - max(dot(N, V), 0.0);
@@ -103,10 +128,16 @@ void main() {
     float shimmer = sin(nDir.x * 30.0 + time * 1.2) * sin(nDir.z * 30.0 + time * 0.8) * 0.03;
     waterCol += shimmer;
 
+    // Shore foam where water meets terrain
+    float foamEdge = smoothstep(0.0, 0.003, depthDiff);
+    waterCol = mix(vec3(0.75, 0.82, 0.85), waterCol, foamEdge);
+
     // Lighting
-    float ambient = 0.5;
-    float diffuse = max(dot(N, sunDir), 0.0) * 0.3;
-    float light = ambient + diffuse;
+    float ambient = 0.55;
+    float diffuse = max(dot(N, sunDir), 0.0) * 0.4;
+    vec3 toCamera = normalize(cameraPos - vWorldPos);
+    float cam = max(0.0, dot(N, toCamera)) * 0.15;
+    float light = ambient + diffuse + cam;
     waterCol *= light;
 
     // Specular sun reflection
@@ -118,14 +149,13 @@ void main() {
     float spec2 = pow(max(dot(N, halfVec), 0.0), 16.0);
     waterCol += vec3(0.7, 0.85, 1.0) * spec2 * 0.08;
 
-    // Alpha: base opacity boosted by fresnel at edges
-    float alpha = opacity + fresnel * (1.0 - opacity) * 0.7;
+    float alpha = 0.85 + fresnel * 0.15;
 
     gl_FragColor = vec4(waterCol, alpha);
 }
 `;
 
-export function createWaterMaterial(scene: Scene): ShaderMaterial {
+export function createWaterMaterial(scene: Scene, depthTexture: BaseTexture): ShaderMaterial {
 	ShaderStore.ShadersStore['waterSurfaceVertexShader'] = VERTEX;
 	ShaderStore.ShadersStore['waterSurfaceFragmentShader'] = FRAGMENT;
 
@@ -137,9 +167,11 @@ export function createWaterMaterial(scene: Scene): ShaderMaterial {
 		uniforms: [
 			'world', 'viewProjection',
 			'sunDir', 'cameraPos', 'time',
-			'deepColor', 'shallowColor', 'opacity',
+			'deepColor', 'shallowColor',
+			'cameraNear', 'cameraFar',
 			'waveAmp', 'waveFreq'
 		],
+		samplers: ['depthSampler'],
 		needAlphaBlending: true,
 	});
 
@@ -151,15 +183,18 @@ export function createWaterMaterial(scene: Scene): ShaderMaterial {
 	mat.setVector3('deepColor', new Vector3(0.08, 0.18, 0.35));
 	mat.setVector3('shallowColor', new Vector3(0.15, 0.35, 0.55));
 
-	// Transparency and waves
-	mat.setFloat('opacity', 0.55);
-	mat.setFloat('waveAmp', 1.5);    // km displacement
-	mat.setFloat('waveFreq', 12.0);  // noise frequency on unit sphere
+	// Waves
+	mat.setFloat('waveAmp', 1.5);
+	mat.setFloat('waveFreq', 12.0);
+
+	// Camera
+	mat.setFloat('cameraNear', 1);
+	mat.setFloat('cameraFar', 1);
+
+	// Depth texture from scene depth renderer
+	mat.setTexture('depthSampler', depthTexture);
 
 	mat.backFaceCulling = true;
-	// Push water behind terrain in depth test to prevent z-fighting
-	mat.zOffset = 5;
-	mat.zOffsetUnits = 5;
 
 	return mat;
 }

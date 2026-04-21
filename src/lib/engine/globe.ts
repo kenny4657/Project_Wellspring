@@ -20,11 +20,13 @@ import '@babylonjs/core/Animations/animatable';
 // Side-effect imports needed for camera pointer input system
 import '@babylonjs/core/Events/pointerEvents';
 import '@babylonjs/core/Culling/ray';
+import '@babylonjs/core/Rendering/depthRendererSceneComponent';
 
 import { EARTH_RADIUS_KM, latLngToWorld } from '$lib/geo/coords';
 import { generateIcoHexGrid, type HexCell } from '$lib/engine/icosphere';
 import { buildGlobeMesh, buildHexEdgeLines, updateCellTerrain } from '$lib/engine/globe-mesh';
 import { createTerrainMaterial } from '$lib/engine/terrain-material';
+import { createWaterMaterial } from '$lib/engine/water-material';
 // picking is inlined below using the lightweight pickSphere
 import { assignTerrain } from '$lib/engine/terrain-gen';
 import { TERRAIN_TYPES, type TerrainTypeId } from '$lib/world/terrain-types';
@@ -123,6 +125,23 @@ export async function createGlobeEngine(
 	globeMesh.hasVertexAlpha = false;
 	globeMesh.isPickable = false; // picking uses the lightweight pickSphere instead
 
+	// ── Depth Renderer + Water Surface ─────────────────────
+	// Depth renderer captures terrain depth. Water shader samples it
+	// to discard fragments where terrain is closer → land occludes water.
+	const depthRenderer = scene.enableDepthRenderer(camera, false);
+	const depthTexture = depthRenderer.getDepthMap();
+	// Force renderList to terrain only — depth renderer defaults to null (all meshes)
+	depthTexture.renderList = [];
+	depthTexture.renderList.push(globeMesh);
+
+	const waterSphere = MeshBuilder.CreateSphere('waterSurface', {
+		diameter: EARTH_RADIUS_KM * 2 * 0.9995,
+		segments: 64
+	}, scene);
+	const waterMat = createWaterMaterial(scene, depthTexture);
+	waterSphere.material = waterMat;
+	waterSphere.isPickable = false;
+
 	// ── Hex Edge Wireframe ──────────────────────────────────
 	report('Building hex grid overlay...');
 	await tick();
@@ -175,9 +194,15 @@ export async function createGlobeEngine(
 		const cl = Math.sqrt(cx * cx + cy * cy + cz * cz) || 1;
 		const sx = cx / cl + 0.3, sy = cy / cl + 0.5, sz = cz / cl;
 		const sl = Math.sqrt(sx * sx + sy * sy + sz * sz) || 1;
-		terrainMat.setVector3('sunDir', new Vector3(sx / sl, sy / sl, sz / sl));
+		const sunDirVec = new Vector3(sx / sl, sy / sl, sz / sl);
+		terrainMat.setVector3('sunDir', sunDirVec);
 		waterTime += engine.getDeltaTime() * 0.001;
 		terrainMat.setFloat('time', waterTime);
+		waterMat.setFloat('time', waterTime);
+		waterMat.setVector3('cameraPos', camPos);
+		waterMat.setVector3('sunDir', sunDirVec);
+		waterMat.setFloat('cameraNear', camera.minZ);
+		waterMat.setFloat('cameraFar', camera.maxZ);
 		scene.render();
 	});
 
