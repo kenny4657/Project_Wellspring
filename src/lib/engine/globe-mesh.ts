@@ -568,10 +568,9 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 				const e2x = displaced[6] - displaced[0];
 				const e2y = displaced[7] - displaced[1];
 				const e2z = displaced[8] - displaced[2];
-				const sign = isWaterHex ? 1 : -1;
-				let nx = sign * (e1y * e2z - e1z * e2y);
-				let ny = sign * (e1z * e2x - e1x * e2z);
-				let nz = sign * (e1x * e2y - e1y * e2x);
+				let nx = -(e1y * e2z - e1z * e2y);
+				let ny = -(e1z * e2x - e1x * e2z);
+				let nz = -(e1x * e2y - e1y * e2x);
 				const nl = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
 				nx /= nl; ny /= nl; nz /= nl;
 
