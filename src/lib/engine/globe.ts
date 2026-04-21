@@ -128,7 +128,7 @@ export async function createGlobeEngine(
 	// ── Depth Renderer + Water Surface ─────────────────────
 	// Depth renderer captures terrain depth. Water shader samples it
 	// to discard fragments where terrain is closer → land occludes water.
-	const depthRenderer = scene.enableDepthRenderer(camera, true);
+	const depthRenderer = scene.enableDepthRenderer(camera, false);
 	const depthTexture = depthRenderer.getDepthMap();
 	// Force renderList to terrain only — depth renderer defaults to null (all meshes)
 	depthTexture.renderList = [];

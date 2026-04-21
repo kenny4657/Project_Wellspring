@@ -19,6 +19,8 @@ uniform mat4 viewProjection;
 uniform float time;
 uniform float waveAmp;
 uniform float waveFreq;
+uniform float cameraNear;
+uniform float cameraFar;
 
 attribute vec3 position;
 attribute vec3 normal;
@@ -27,6 +29,7 @@ varying vec3 vWorldPos;
 varying vec3 vWorldNormal;
 varying vec3 vLocalPos;
 varying vec4 vScreenPos;
+varying float vLinearDepth;
 
 // Simple noise for wave displacement
 vec3 mod289(vec3 x) { return x - floor(x * (1.0/289.0)) * 289.0; }
@@ -70,6 +73,10 @@ void main() {
 
     vec4 clip = viewProjection * wp;
     vScreenPos = clip;
+    // Match Babylon depth renderer linear formula:
+    // depthValues = (minZ, minZ + maxZ)
+    // vDepthMetric = (gl_Position.z + depthValues.x) / depthValues.y
+    vLinearDepth = (clip.z + cameraNear) / (cameraNear + cameraFar);
     gl_Position = clip;
 }
 `;
@@ -90,19 +97,15 @@ varying vec3 vWorldPos;
 varying vec3 vWorldNormal;
 varying vec3 vLocalPos;
 varying vec4 vScreenPos;
+varying float vLinearDepth;
 
 void main() {
     // Sample scene depth texture at this fragment's screen position
     vec2 screenUV = (vScreenPos.xy / vScreenPos.w) * 0.5 + 0.5;
     float sceneDepth = texture2D(depthSampler, screenUV).r;
-    float waterDepth = gl_FragCoord.z;
 
-    // Debug: render depth values as color
-    gl_FragColor = vec4(sceneDepth, waterDepth, 0.0, 1.0); return;
-
-    // Both in non-linear NDC space (0=near, 1=far).
-    // If terrain is closer than water, discard this fragment.
-    if (sceneDepth < waterDepth) {
+    // If terrain is closer (smaller linear depth) than water, discard
+    if (sceneDepth < vLinearDepth) {
         discard;
     }
 
@@ -110,7 +113,7 @@ void main() {
     vec3 V = normalize(cameraPos - vWorldPos);
 
     // Depth difference for shore foam
-    float depthDiff = max(sceneDepth - waterDepth, 0.0);
+    float depthDiff = max(sceneDepth - vLinearDepth, 0.0);
 
     // Fresnel — more transparent looking straight down, opaque at grazing angles
     float fresnel = 1.0 - max(dot(N, V), 0.0);
