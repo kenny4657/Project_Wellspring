@@ -97,6 +97,9 @@ void main() {
     float sceneDepth = texture2D(depthSampler, screenUV).r;
     float waterDepth = gl_FragCoord.z;
 
+    // Debug: render depth values as color
+    gl_FragColor = vec4(sceneDepth, waterDepth, 0.0, 1.0); return;
+
     // Both in non-linear NDC space (0=near, 1=far).
     // If terrain is closer than water, discard this fragment.
     if (sceneDepth < waterDepth) {

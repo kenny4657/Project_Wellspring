@@ -130,8 +130,9 @@ export async function createGlobeEngine(
 	// to discard fragments where terrain is closer → land occludes water.
 	const depthRenderer = scene.enableDepthRenderer(camera, true);
 	const depthTexture = depthRenderer.getDepthMap();
-	// Exclude water sphere from the depth pass so it only captures terrain
-	depthRenderer.getDepthMap().renderList = [globeMesh];
+	// Force renderList to terrain only — depth renderer defaults to null (all meshes)
+	depthTexture.renderList = [];
+	depthTexture.renderList.push(globeMesh);
 
 	const waterSphere = MeshBuilder.CreateSphere('waterSurface', {
 		diameter: EARTH_RADIUS_KM * 2,
