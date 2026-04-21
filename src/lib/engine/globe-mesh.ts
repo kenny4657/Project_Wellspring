@@ -438,16 +438,19 @@ function computeSurfaceHeight(
 		// Noise coefficient must MATCH at shared borders.
 		// Water hexes: zero noise everywhere (water sphere handles surface).
 		// Land hexes bordering water: zero noise at edge, ramps to full in interior.
-		const isWaterNeighborBorder = borderTarget < -0.001;
+		// Clamp water hex ramp targets below the water sphere surface
+		// so terrain never pokes through the water sphere (at R * 0.9995 = -0.0005 offset).
+		const effectiveTarget = isWaterHex ? Math.min(borderTarget, -0.002) : borderTarget;
+		const isWaterNeighborBorder = effectiveTarget < -0.001;
 		const borderNoise = (isWaterHex || isWaterNeighborBorder) ? 0 : NOISE_AMP * 0.3;
 		const interiorNoise = isWaterHex ? 0 : NOISE_AMP;
 		const noiseCoeff = interiorNoise * mu + borderNoise * (1 - mu);
-		let h = tierH * mu + borderTarget * (1 - mu) + noiseH * noiseCoeff;
+		let h = tierH * mu + effectiveTarget * (1 - mu) + noiseH * noiseCoeff;
 
 		// Keep coastline continuity exact at the shared edge, but hold the terrain
 		// slightly lower around the middle of each coastal edge so the visible
 		// shoreline contour reads rounder and less like a straight hex cut.
-		if (borderTarget === 0 && edgeIdx >= 0) {
+		if (effectiveTarget === 0 && edgeIdx >= 0) {
 			const coastMid = 4 * edgeT * (1 - edgeT);      // 0 at corners, 1 at edge midpoint
 			const coastBlend = mu * (1 - mu);              // 0 on the edge and in the far interior
 			h -= COAST_ROUNDING * coastMid * coastBlend * 4;
