@@ -415,7 +415,8 @@ function computeSurfaceHeight(
 	// land from dipping below sea level and keeps all hex surfaces consistent.
 	const noiseH = Math.abs(fbmNoise(ux * NOISE_SCALE, uy * NOISE_SCALE, uz * NOISE_SCALE));
 
-	if (isWaterHex && borderInfo.allSameHeight) {
+	// Water sphere handles the ocean surface — flatten all water geometry
+	if (isWaterHex) {
 		return tierH;
 	}
 
