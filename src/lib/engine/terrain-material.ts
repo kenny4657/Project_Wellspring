@@ -193,11 +193,43 @@ void main() {
     if (isWall) {
         procColor = textureWall(vColor.rgb, vWorldPos);
     } else {
-        // ── Terrain-type coloring from vertex color ────
-        // Each terrain type has a unique color set via vertex color.
-        // Apply procedural scratchy variation for organic look.
+        // ── Sota-style height-based texture blending ────
+
+        float amplitude = abs(topOffset) + abs(bottomOffset);
+        float firstCoef = 1.0 / hillRatio;
+        float secondCoef = 1.0 / (1.0 - hillRatio);
+
+        float h = (heightAboveR - bottomOffset) / amplitude;
+
         float scratchy = triplanarScratchy(vWorldPos, N, 0.004);
-        procColor = vColor.rgb * (1.0 + scratchy * 0.14);
+
+        // Shore transition zone: narrow sand/beach blend at water/land boundary
+        float shoreWidth = 0.06; // width of shore zone in normalized height
+        float shoreCenter = 0.0; // at bottom_offset (sea level)
+
+        float belowWidth = 0.04; // underwater transition width
+        if (heightAboveR < seaLevel - belowWidth * amplitude) {
+            // Deep below sea level → sandy ocean floor
+            procColor = waterColor(scratchy);
+        } else if (heightAboveR < seaLevel) {
+            // Underwater transition: sandy floor blending up to shore
+            vec3 shore = vec3(0.65, 0.58, 0.40) * (1.0 + scratchy * 0.10);
+            float belowT = (heightAboveR - (seaLevel - belowWidth * amplitude)) / (belowWidth * amplitude);
+            procColor = mix(waterColor(scratchy), shore, clamp(belowT, 0.0, 1.0));
+        } else if (heightAboveR < seaLevel + shoreWidth * amplitude) {
+            // Shore/beach transition zone — sand blending into grass
+            vec3 shore = vec3(0.65, 0.58, 0.40) * (1.0 + scratchy * 0.10);
+            float shoreT = (heightAboveR - seaLevel) / (shoreWidth * amplitude);
+            procColor = mix(shore, grassColor(scratchy), clamp(shoreT, 0.0, 1.0));
+        } else if (h <= hillRatio) {
+            // Plain → Hill blend (Sota's first_coef)
+            float t = clamp(h * firstCoef, 0.0, 1.0);
+            procColor = mix(grassColor(scratchy), hillColor(scratchy), t);
+        } else {
+            // Hill → Snow blend (Sota's second_coef)
+            float t = clamp((h - hillRatio) * secondCoef, 0.0, 1.0);
+            procColor = mix(hillColor(scratchy), snowColor(scratchy), t);
+        }
     }
 
     // ── Lighting ──
