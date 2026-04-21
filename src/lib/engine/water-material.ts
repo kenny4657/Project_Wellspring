@@ -95,13 +95,11 @@ void main() {
     // Sample scene depth texture at this fragment's screen position
     vec2 screenUV = (vScreenPos.xy / vScreenPos.w) * 0.5 + 0.5;
     float sceneDepth = texture2D(depthSampler, screenUV).r;
+    float waterDepth = gl_FragCoord.z;
 
-    // Linearize depths for comparison
-    // Babylon depth renderer stores: (viewZ - near) / (far - near)
-    float waterLinear = gl_FragCoord.z;
-
-    // If terrain is closer than water, discard this fragment
-    if (sceneDepth < waterLinear - 0.0001) {
+    // Both in non-linear NDC space (0=near, 1=far).
+    // If terrain is closer than water, discard this fragment.
+    if (sceneDepth < waterDepth) {
         discard;
     }
 
@@ -109,7 +107,7 @@ void main() {
     vec3 V = normalize(cameraPos - vWorldPos);
 
     // Depth difference for shore foam
-    float depthDiff = max(waterLinear - sceneDepth, 0.0);
+    float depthDiff = max(sceneDepth - waterDepth, 0.0);
 
     // Fresnel — more transparent looking straight down, opaque at grazing angles
     float fresnel = 1.0 - max(dot(N, V), 0.0);
