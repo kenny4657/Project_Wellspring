@@ -59,8 +59,10 @@ export async function createGlobeEngine(
 
 	const scene = new Scene(engine);
 	scene.clearColor = new Color4(0.02, 0.03, 0.08, 1);
-	// Keep depth buffer so terrain (group 1) depth-tests correctly
-	scene.setRenderingAutoClearDepthStencil(1, false);
+	// Clear depth before terrain group so terrain depth-tests only against itself,
+	// not against the water sphere. Water is already painted on the color buffer;
+	// terrain simply overpaints on top wherever it has geometry.
+	scene.setRenderingAutoClearDepthStencil(1, true, false, false);
 
 	// ── Lighting (scene lights for any non-shader meshes) ───
 	const hemiLight = new HemisphericLight('hemi', new Vector3(0, 1, 0), scene);
