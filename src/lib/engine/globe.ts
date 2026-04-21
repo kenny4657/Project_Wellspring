@@ -25,6 +25,7 @@ import { EARTH_RADIUS_KM, latLngToWorld } from '$lib/geo/coords';
 import { generateIcoHexGrid, type HexCell } from '$lib/engine/icosphere';
 import { buildGlobeMesh, buildHexEdgeLines, updateCellTerrain } from '$lib/engine/globe-mesh';
 import { createTerrainMaterial } from '$lib/engine/terrain-material';
+import { createWaterMaterial } from '$lib/engine/water-material';
 // picking is inlined below using the lightweight pickSphere
 import { assignTerrain } from '$lib/engine/terrain-gen';
 import { TERRAIN_TYPES, type TerrainTypeId } from '$lib/world/terrain-types';
@@ -123,6 +124,16 @@ export async function createGlobeEngine(
 	globeMesh.hasVertexAlpha = false;
 	globeMesh.isPickable = false; // picking uses the lightweight pickSphere instead
 
+	// ── Water Surface ──────────────────────────────────────
+	const seaLevelR = EARTH_RADIUS_KM * (1 - 0.002); // match shader seaLevel
+	const waterSphere = MeshBuilder.CreateSphere('waterSurface', {
+		diameter: seaLevelR * 2,
+		segments: 64
+	}, scene);
+	const waterMat = createWaterMaterial(scene);
+	waterSphere.material = waterMat;
+	waterSphere.isPickable = false;
+
 	// ── Hex Edge Wireframe ──────────────────────────────────
 	report('Building hex grid overlay...');
 	await tick();
@@ -166,9 +177,13 @@ export async function createGlobeEngine(
 	});
 
 	// ── Render Loop ─────────────────────────────────────────
+	let waterTime = 0;
 	engine.runRenderLoop(() => {
 		// Update camera position uniform for shader lighting
 		terrainMat.setVector3('cameraPos', camera.position);
+		waterTime += engine.getDeltaTime() * 0.001;
+		waterMat.setFloat('time', waterTime);
+		waterMat.setVector3('cameraPos', camera.position);
 		scene.render();
 	});
 
