@@ -207,24 +207,15 @@ void main() {
         float shoreWidth = 0.06; // width of shore zone in normalized height
         float shoreCenter = 0.0; // at bottom_offset (sea level)
 
-        // Detect water by vertex color: all water terrain types have blue > red + 0.15
-        bool isWater = vColor.b > vColor.r + 0.15;
-
-        if (isWater) {
-            // Ocean — depth-based color with animated shimmer
-            vec3 nDir = normalize(vWorldPos);
-            float depth = (seaLevel - heightAboveR) / abs(seaLevel);
-
-            vec3 shallow = vec3(0.12, 0.32, 0.48);
-            vec3 deep    = vec3(0.05, 0.12, 0.28);
-            procColor = mix(shallow, deep, clamp(depth * 0.3, 0.0, 1.0));
-
-            // Animated shimmer
-            vec3 wc1 = nDir * 18.0 + vec3(time * 0.3, time * 0.2, -time * 0.1);
-            vec3 wc2 = nDir * 35.0 + vec3(-time * 0.2, time * 0.15, time * 0.25);
-            float w1 = snoise(wc1) * 0.5 + 0.5;
-            float w2 = snoise(wc2) * 0.5 + 0.5;
-            procColor += vec3(0.03, 0.05, 0.06) * (w1 * 0.6 + w2 * 0.4 - 0.5);
+        float belowWidth = 0.04; // underwater transition width
+        if (heightAboveR < seaLevel - belowWidth * amplitude) {
+            // Deep below sea level → sandy ocean floor
+            procColor = waterColor(scratchy);
+        } else if (heightAboveR < seaLevel) {
+            // Underwater transition: sandy floor blending up to shore
+            vec3 shore = vec3(0.65, 0.58, 0.40) * (1.0 + scratchy * 0.10);
+            float belowT = (heightAboveR - (seaLevel - belowWidth * amplitude)) / (belowWidth * amplitude);
+            procColor = mix(waterColor(scratchy), shore, clamp(belowT, 0.0, 1.0));
         } else if (heightAboveR < seaLevel + shoreWidth * amplitude) {
             // Shore/beach transition zone — sand blending into grass
             vec3 shore = vec3(0.65, 0.58, 0.40) * (1.0 + scratchy * 0.10);
@@ -252,10 +243,10 @@ void main() {
     vec3 litColor = procColor * light;
 
     // Specular on water
-    if (!isWall && vColor.b > vColor.r + 0.15) {
+    if (!isWall && length(vWorldPos) - planetRadius < seaLevel) {
         vec3 halfVec = normalize(sunDir + toCamera);
-        float spec = pow(max(0.0, dot(N, halfVec)), 96.0);
-        litColor += vec3(1.0, 0.98, 0.92) * spec * 0.25;
+        float spec = pow(max(0.0, dot(N, halfVec)), 64.0);
+        litColor += vec3(1.0, 0.98, 0.92) * spec * 0.10;
     }
 
     gl_FragColor = vec4(litColor, 1.0);
