@@ -160,52 +160,6 @@ function smoothNormalsPass(
 	}
 }
 
-// ── Smooth Water Positions ──────────────────────────────────
-/** Average positions of water top-face vertices at coincident locations.
- *  Adjacent water hexes at different depths create a geometric step at
- *  their shared edge. Averaging the positions of vertices at the same
- *  location smooths the step into a gradual slope. */
-function smoothWaterPositions(
-	positions: Float32Array, colors: Float32Array, vertexCount: number
-): void {
-	const step = 1.0;
-	const map = new Map<string, number[]>();
-
-	// Build spatial hash — only water top-face vertices.
-	// Water vertices have blue-dominant color (b > r + 0.05).
-	for (let i = 0; i < vertexCount; i++) {
-		if (colors[i * 4 + 3] < 0.5) continue; // skip walls
-		const r = colors[i * 4], b = colors[i * 4 + 2];
-		if (b <= r + 0.05) continue; // skip land
-		const px = positions[i * 3];
-		const py = positions[i * 3 + 1];
-		const pz = positions[i * 3 + 2];
-		const key = `${Math.round(px / step)},${Math.round(py / step)},${Math.round(pz / step)}`;
-		let list = map.get(key);
-		if (!list) { list = []; map.set(key, list); }
-		list.push(i);
-	}
-
-	// Average positions at coincident water vertices
-	for (const indices of map.values()) {
-		if (indices.length <= 1) continue;
-		let sx = 0, sy = 0, sz = 0;
-		for (const i of indices) {
-			sx += positions[i * 3];
-			sy += positions[i * 3 + 1];
-			sz += positions[i * 3 + 2];
-		}
-		sx /= indices.length;
-		sy /= indices.length;
-		sz /= indices.length;
-		for (const i of indices) {
-			positions[i * 3] = sx;
-			positions[i * 3 + 1] = sy;
-			positions[i * 3 + 2] = sz;
-		}
-	}
-}
-
 // ── Coastline Edge Detection (Sota's exclude_border_set) ────
 
 /** Distance from point P to line segment AB (Euclidean approximation on unit sphere) */
@@ -687,7 +641,6 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 	// This makes terrain look continuous across triangle/hex boundaries.
 	// Wall vertices (alpha=0) are excluded to keep cliff faces sharp.
 	smoothNormalsPass(positionsF32, normalsF32, colorsF32, vOff);
-	smoothWaterPositions(positionsF32, colorsF32, vOff);
 
 	const mesh = new Mesh('globeHex', scene);
 	const vertexData = new VertexData();
