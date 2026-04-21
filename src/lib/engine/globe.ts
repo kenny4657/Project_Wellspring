@@ -59,8 +59,7 @@ export async function createGlobeEngine(
 
 	const scene = new Scene(engine);
 	scene.clearColor = new Color4(0.02, 0.03, 0.08, 1);
-	// Keep depth buffer across rendering groups so water (group 1)
-	// can depth-test against terrain (group 0)
+	// Keep depth buffer so terrain (group 1) depth-tests correctly
 	scene.setRenderingAutoClearDepthStencil(1, false);
 
 	// ── Lighting (scene lights for any non-shader meshes) ───
@@ -126,20 +125,19 @@ export async function createGlobeEngine(
 	globeMesh.material = terrainMat;
 	globeMesh.hasVertexAlpha = false;
 	globeMesh.isPickable = false; // picking uses the lightweight pickSphere instead
-	globeMesh.renderingGroupId = 0;
+	globeMesh.renderingGroupId = 1;
 
 	// ── Water Surface ──────────────────────────────────────
-	// Sphere at sea level. Terrain renders first and writes depth,
-	// so land naturally occludes water. Waves only push downward.
-	const seaLevelR = EARTH_RADIUS_KM * (1 - 0.003);
+	// Water renders FIRST (group 0), terrain renders SECOND (group 1).
+	// Terrain overwrites water wherever it has geometry.
 	const waterSphere = MeshBuilder.CreateSphere('waterSurface', {
-		diameter: seaLevelR * 2,
+		diameter: EARTH_RADIUS_KM * 2,
 		segments: 64
 	}, scene);
 	const waterMat = createWaterMaterial(scene);
 	waterSphere.material = waterMat;
 	waterSphere.isPickable = false;
-	waterSphere.renderingGroupId = 1;
+	waterSphere.renderingGroupId = 0;
 
 	// ── Hex Edge Wireframe ──────────────────────────────────
 	report('Building hex grid overlay...');

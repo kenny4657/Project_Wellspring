@@ -118,10 +118,7 @@ void main() {
     float spec2 = pow(max(dot(N, halfVec), 0.0), 16.0);
     waterCol += vec3(0.7, 0.85, 1.0) * spec2 * 0.08;
 
-    // Alpha: base opacity boosted by fresnel at edges
-    float alpha = opacity + fresnel * (1.0 - opacity) * 0.7;
-
-    gl_FragColor = vec4(waterCol, alpha);
+    gl_FragColor = vec4(waterCol, 1.0);
 }
 `;
 
@@ -140,7 +137,7 @@ export function createWaterMaterial(scene: Scene): ShaderMaterial {
 			'deepColor', 'shallowColor', 'opacity',
 			'waveAmp', 'waveFreq'
 		],
-		needAlphaBlending: true,
+		needAlphaBlending: false,
 	});
 
 	mat.setVector3('sunDir', new Vector3(1, -0.5, -0.3).normalize());
@@ -157,10 +154,6 @@ export function createWaterMaterial(scene: Scene): ShaderMaterial {
 	mat.setFloat('waveFreq', 12.0);  // noise frequency on unit sphere
 
 	mat.backFaceCulling = true;
-	mat.disableDepthWrite = true;
-	// Small offset so terrain wins at coastline boundaries
-	mat.zOffset = 2;
-	mat.zOffsetUnits = 2;
 
 	return mat;
 }
