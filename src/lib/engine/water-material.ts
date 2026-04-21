@@ -170,11 +170,11 @@ void main() {
 
     vec3 waveN = normalize(N + tangent * dx + bitangent * dz);
 
-    // Lighting — identical to 0f9a3c0 but using waveN
-    float ambient = 0.55;
-    float diffuse = max(dot(waveN, sunDir), 0.0) * 0.4;
+    // Lighting — high ambient for even water coverage, minimal directional
+    float ambient = 0.75;
+    float diffuse = max(dot(waveN, sunDir), 0.0) * 0.15;
     vec3 toCamera = normalize(cameraPos - vWorldPos);
-    float cam = max(0.0, dot(waveN, toCamera)) * 0.15;
+    float cam = max(0.0, dot(waveN, toCamera)) * 0.05;
     float light = ambient + diffuse + cam;
     waterCol *= light;
 
