@@ -24,7 +24,7 @@ import '@babylonjs/core/Rendering/depthRendererSceneComponent';
 
 import { EARTH_RADIUS_KM, latLngToWorld } from '$lib/geo/coords';
 import { generateIcoHexGrid, type HexCell } from '$lib/engine/icosphere';
-import { buildGlobeMesh, buildHexEdgeLines, updateCellTerrain } from '$lib/engine/globe-mesh';
+import { buildCornerGapPatchMesh, buildGlobeMesh, buildHexEdgeLines, updateCellTerrain } from '$lib/engine/globe-mesh';
 import { createTerrainMaterial } from '$lib/engine/terrain-material';
 import { createWaterMaterial } from '$lib/engine/water-material';
 // picking is inlined below using the lightweight pickSphere
@@ -124,6 +124,11 @@ export async function createGlobeEngine(
 	globeMesh.material = terrainMat;
 	globeMesh.hasVertexAlpha = false;
 	globeMesh.isPickable = false; // picking uses the lightweight pickSphere instead
+
+	const cornerGapPatchMesh = buildCornerGapPatchMesh(cells, EARTH_RADIUS_KM, scene);
+	cornerGapPatchMesh.material = terrainMat;
+	cornerGapPatchMesh.hasVertexAlpha = false;
+	cornerGapPatchMesh.isPickable = false;
 
 	// ── Depth Renderer + Water Surface ─────────────────────
 	// Depth renderer captures terrain depth. Water shader samples it
