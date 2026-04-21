@@ -147,7 +147,7 @@ void main() {
     float fresnel = pow(1.0 - max(dot(N, V), 0.0), 3.0);
 
     // ── Base color (fresnel blend, no depth texture) ──
-    vec3 waterCol = mix(deepColor, shallowColor, fresnel * 0.4 + 0.15);
+    vec3 waterCol = mix(deepColor, shallowColor, fresnel * 0.6 + 0.2);
     waterCol += vec3(0.04, 0.07, 0.10) * fresnel;
 
     // ── Wave normal perturbation ──
