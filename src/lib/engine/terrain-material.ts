@@ -259,7 +259,7 @@ void main() {
 
             // Distortion: second noise offsets the foam noise for organic movement
             vec3 distortCoord = nDir * 80.0 + vec3(time * 0.06, -time * 0.04, time * 0.05);
-            float2 distort = vec2(snoise(distortCoord), snoise(distortCoord + 100.0)) * 0.15;
+            vec2 distort = vec2(snoise(distortCoord), snoise(distortCoord + 100.0)) * 0.15;
 
             // High-freq scrolling noise for foam pattern
             vec3 foamCoord = nDir * 180.0 + vec3(
