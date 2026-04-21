@@ -236,6 +236,30 @@ void main() {
             fresnel = pow(fresnel, 3.0);
             baseWater += vec3(0.06, 0.10, 0.14) * fresnel;
 
+            // ── Animated normal perturbation (fake wave bumps) ──
+            // Offset sample positions to compute gradient, then perturb
+            // the normal so specular highlights ripple across the surface.
+            float eps = 0.002;
+            vec3 tx = nDir + vec3(eps, 0.0, 0.0);
+            vec3 tz = nDir + vec3(0.0, 0.0, eps);
+            float wx = snoise(tx * 18.0 + vec3(time * 0.3, time * 0.2, time * -0.1));
+            float wz = snoise(tz * 18.0 + vec3(time * 0.3, time * 0.2, time * -0.1));
+            float dWdx = (wx - (wave1 * 2.0 - 1.0)) / eps;
+            float dWdz = (wz - (wave1 * 2.0 - 1.0)) / eps;
+            // Build tangent-space perturbation and rotate into world space
+            vec3 waveNormal = normalize(N + (dWdx * 0.012 + dWdz * 0.012) * cross(N, vec3(0.0, 1.0, 0.0))
+                                           + (dWdz * 0.012 - dWdx * 0.012) * cross(N, cross(N, vec3(0.0, 1.0, 0.0))));
+            N = waveNormal; // replace normal for lighting pass
+
+            // ── Shore foam ──
+            // White fringe where terrain is just below sea level
+            float foamWidth = abs(seaLevel) * 1.5;
+            float foamT = 1.0 - clamp((seaLevel - heightAboveR) / foamWidth, 0.0, 1.0);
+            // Animated foam pattern — breaks up the line with noise
+            float foamNoise = snoise(nDir * 60.0 + vec3(time * 0.5, -time * 0.3, time * 0.2));
+            float foamMask = foamT * foamT * smoothstep(0.0, 0.5, foamNoise * 0.5 + 0.5);
+            baseWater = mix(baseWater, vec3(0.75, 0.80, 0.82), foamMask * 0.7);
+
             procColor = baseWater;
         } else if (heightAboveR < seaLevel + shoreWidth * amplitude) {
             // Shore/beach transition zone — sand blending into grass
