@@ -60,6 +60,8 @@ void main() {
     float wave2 = noise3d(n * waveFreq * 2.1 + time * 0.7 + 50.0) - 0.5;
     float wave = (wave1 * 0.7 + wave2 * 0.3) * waveAmp;
 
+    // Only push waves downward — never above base sphere to avoid clipping land
+    wave = min(wave, 0.0);
     pos += n * wave;
 
     vec4 wp = world * vec4(pos, 1.0);

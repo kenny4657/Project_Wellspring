@@ -125,8 +125,8 @@ export async function createGlobeEngine(
 	globeMesh.isPickable = false; // picking uses the lightweight pickSphere instead
 
 	// ── Water Surface ──────────────────────────────────────
-	// Slightly below sea level so land terrain always pokes through
-	const seaLevelR = EARTH_RADIUS_KM * (1 - 0.003);
+	// Well below sea level so land terrain always pokes through
+	const seaLevelR = EARTH_RADIUS_KM * (1 - 0.005);
 	const waterSphere = MeshBuilder.CreateSphere('waterSurface', {
 		diameter: seaLevelR * 2,
 		segments: 64
