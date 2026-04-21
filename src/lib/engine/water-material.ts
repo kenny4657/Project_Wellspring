@@ -155,6 +155,7 @@ export function createWaterMaterial(scene: Scene): ShaderMaterial {
 	mat.setFloat('waveFreq', 12.0);  // noise frequency on unit sphere
 
 	mat.backFaceCulling = true;
+	mat.disableDepthWrite = true;
 
 	return mat;
 }
