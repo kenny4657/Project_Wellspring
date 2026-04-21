@@ -125,8 +125,9 @@ export async function createGlobeEngine(
 	globeMesh.isPickable = false; // picking uses the lightweight pickSphere instead
 
 	// ── Water Sphere ───────────────────────────────────────
-	const waterSphere = MeshBuilder.CreateSphere('waterSphere', {
-		diameter: EARTH_RADIUS_KM * 2,
+	const seaLevelR = EARTH_RADIUS_KM * (1 - 0.003);
+	const waterSphere = MeshBuilder.CreateSphere('waterSurface', {
+		diameter: seaLevelR * 2,
 		segments: 64
 	}, scene);
 	const waterMat = createWaterMaterial(scene);
