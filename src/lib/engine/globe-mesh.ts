@@ -560,17 +560,15 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 				}
 
 				// Face normal from displaced positions
-				// Babylon.js uses left-handed coords (CW front faces), so negate
-				// the right-hand cross product to get outward-pointing normals.
 				const e1x = displaced[3] - displaced[0];
 				const e1y = displaced[4] - displaced[1];
 				const e1z = displaced[5] - displaced[2];
 				const e2x = displaced[6] - displaced[0];
 				const e2y = displaced[7] - displaced[1];
 				const e2z = displaced[8] - displaced[2];
-				let nx = -(e1y * e2z - e1z * e2y);
-				let ny = -(e1z * e2x - e1x * e2z);
-				let nz = -(e1x * e2y - e1y * e2x);
+				let nx = e1y * e2z - e1z * e2y;
+				let ny = e1z * e2x - e1x * e2z;
+				let nz = e1x * e2y - e1y * e2x;
 				const nl = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
 				nx /= nl; ny /= nl; nz /= nl;
 
