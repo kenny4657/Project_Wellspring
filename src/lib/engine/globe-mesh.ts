@@ -48,7 +48,7 @@ const SUBDIVISIONS = 3;
 const CORNER_KEY_SCALE = 1e6;
 const COAST_ROUNDING = 0.0018;
 const COAST_SMOOTHING = 0.22;
-const CORNER_PATCH_EDGE_T = 0.35;
+const CORNER_PATCH_EDGE_T = 0.18;
 
 // ── Noise ───────────────────────────────────────────────────
 
@@ -156,6 +156,61 @@ function smoothNormalsPass(
 			normals[i * 3] = sx;
 			normals[i * 3 + 1] = sy;
 			normals[i * 3 + 2] = sz;
+		}
+	}
+}
+
+// ── Smooth Water Corner Positions ────────────────────────────
+/** Average positions of water vertices at shared hex corners.
+ *  Groups by ANGULAR position (unit sphere direction) so vertices at the
+ *  same corner but different radii get averaged — eliminating corner gaps
+ *  where adjacent water hexes compute different heights. */
+function smoothWaterCornerPositions(
+	positions: Float32Array, colors: Float32Array, vertexCount: number
+): void {
+	const step = 0.5; // angular quantization in km on unit sphere * radius
+	const map = new Map<string, number[]>();
+
+	for (let i = 0; i < vertexCount; i++) {
+		if (colors[i * 4 + 3] < 0.5) continue; // skip walls
+		// Detect water by blue-dominant vertex color
+		const r = colors[i * 4], b = colors[i * 4 + 2];
+		if (b <= r + 0.05) continue; // skip land
+
+		// Key by angular direction (normalize position to unit sphere)
+		const px = positions[i * 3];
+		const py = positions[i * 3 + 1];
+		const pz = positions[i * 3 + 2];
+		const len = Math.sqrt(px * px + py * py + pz * pz) || 1;
+		const key = `${Math.round(px / len / 0.0001)},${Math.round(py / len / 0.0001)},${Math.round(pz / len / 0.0001)}`;
+		let list = map.get(key);
+		if (!list) { list = []; map.set(key, list); }
+		list.push(i);
+	}
+
+	for (const indices of map.values()) {
+		if (indices.length <= 1) continue;
+		// Average the radii — keep direction the same
+		let avgR = 0;
+		const i0 = indices[0];
+		const dx = positions[i0 * 3];
+		const dy = positions[i0 * 3 + 1];
+		const dz = positions[i0 * 3 + 2];
+		const dirLen = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
+		const ux = dx / dirLen, uy = dy / dirLen, uz = dz / dirLen;
+
+		for (const i of indices) {
+			const px = positions[i * 3];
+			const py = positions[i * 3 + 1];
+			const pz = positions[i * 3 + 2];
+			avgR += Math.sqrt(px * px + py * py + pz * pz);
+		}
+		avgR /= indices.length;
+
+		for (const i of indices) {
+			positions[i * 3] = ux * avgR;
+			positions[i * 3 + 1] = uy * avgR;
+			positions[i * 3 + 2] = uz * avgR;
 		}
 	}
 }
@@ -685,6 +740,7 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 	// This makes terrain look continuous across triangle/hex boundaries.
 	// Wall vertices (alpha=0) are excluded to keep cliff faces sharp.
 	smoothNormalsPass(positionsF32, normalsF32, colorsF32, vOff);
+	smoothWaterCornerPositions(positionsF32, colorsF32, vOff);
 
 	const mesh = new Mesh('globeHex', scene);
 	const vertexData = new VertexData();
