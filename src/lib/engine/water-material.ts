@@ -181,11 +181,13 @@ void main() {
     vec3 bitangent = cross(N, tangent);
     vec3 waveN = normalize(N + tangent * dWdx * strength + bitangent * dWdz * strength);
 
-    // ── Shore foam ──
-    float foamT = 1.0 - clamp(depthDiff * 120.0, 0.0, 1.0);
-    float foamNoise = snoise(nDir * 60.0 + vec3(time * 0.5, -time * 0.3, time * 0.2));
-    float foamMask = foamT * foamT * smoothstep(0.0, 0.4, foamNoise * 0.5 + 0.5);
-    waterCol = mix(waterCol, vec3(0.82, 0.88, 0.90), foamMask * 0.8);
+    // ── Shore foam (only very close to terrain) ──
+    float foamT = 1.0 - smoothstep(0.0, 0.004, depthDiff);
+    if (foamT > 0.01) {
+        float foamNoise = snoise(nDir * 40.0 + vec3(time * 0.5, -time * 0.3, time * 0.2));
+        float foamMask = foamT * smoothstep(0.1, 0.6, foamNoise * 0.5 + 0.5);
+        waterCol = mix(waterCol, vec3(0.82, 0.88, 0.90), foamMask * 0.6);
+    }
 
     // ── Lighting (using perturbed wave normal) ──
     float ambient = 0.50;
