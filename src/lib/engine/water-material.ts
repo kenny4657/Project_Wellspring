@@ -55,17 +55,9 @@ float noise3d(vec3 p) {
 
 void main() {
     vec3 pos = position;
-    vec3 n = normalize(position);
 
-    // Two scrolling noise octaves for wave displacement
-    float wave1 = noise3d(n * waveFreq + time * 0.4) - 0.5;
-    float wave2 = noise3d(n * waveFreq * 2.1 + time * 0.7 + 50.0) - 0.5;
-    float wave = (wave1 * 0.7 + wave2 * 0.3) * waveAmp;
-
-    // Only push waves downward — never above base sphere to avoid clipping land
-    wave = min(wave, 0.0);
-    pos += n * wave;
-
+    // No vertex displacement — wave visuals handled by normal
+    // perturbation in fragment shader. Keeps sphere smooth.
     vec4 wp = world * vec4(pos, 1.0);
     vWorldPos = wp.xyz;
     vWorldNormal = normalize((world * vec4(normal, 0.0)).xyz);
@@ -191,10 +183,10 @@ void main() {
         + (dWdz * 0.012 - dWdx * 0.012) * cross(N, cross(N, vec3(0.0, 1.0, 0.0))));
 
     // ── Shore foam ──
-    float foamT = 1.0 - clamp(depthDiff * 300.0, 0.0, 1.0);
+    float foamT = 1.0 - clamp(depthDiff * 120.0, 0.0, 1.0);
     float foamNoise = snoise(nDir * 60.0 + vec3(time * 0.5, -time * 0.3, time * 0.2));
-    float foamMask = foamT * foamT * smoothstep(0.0, 0.5, foamNoise * 0.5 + 0.5);
-    waterCol = mix(waterCol, vec3(0.75, 0.80, 0.82), foamMask * 0.7);
+    float foamMask = foamT * foamT * smoothstep(0.0, 0.4, foamNoise * 0.5 + 0.5);
+    waterCol = mix(waterCol, vec3(0.82, 0.88, 0.90), foamMask * 0.8);
 
     // ── Lighting (using perturbed wave normal) ──
     float ambient = 0.50;
