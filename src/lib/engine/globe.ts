@@ -20,6 +20,7 @@ import '@babylonjs/core/Animations/animatable';
 // Side-effect imports needed for camera pointer input system
 import '@babylonjs/core/Events/pointerEvents';
 import '@babylonjs/core/Culling/ray';
+import '@babylonjs/core/Rendering/depthRendererSceneComponent';
 
 import { EARTH_RADIUS_KM, latLngToWorld } from '$lib/geo/coords';
 import { generateIcoHexGrid, type HexCell } from '$lib/engine/icosphere';
