@@ -319,8 +319,9 @@ export function createTerrainMaterial(scene: Scene): ShaderMaterial {
 		needAlphaBlending: false,
 	});
 
-	mat.setVector3('sunDir', new Vector3(1, -0.5, -0.3).normalize());
-	mat.setVector3('fillDir', new Vector3(-1, 0.3, 0.5).normalize());
+	// Direction TO the light (not from) — shader uses dot(N, sunDir)
+	mat.setVector3('sunDir', new Vector3(-1, 0.5, 0.3).normalize());
+	mat.setVector3('fillDir', new Vector3(1, -0.3, -0.5).normalize());
 	mat.setVector3('cameraPos', Vector3.Zero());
 
 	// Height parameters matching NOISE_AMP in globe-mesh.ts
