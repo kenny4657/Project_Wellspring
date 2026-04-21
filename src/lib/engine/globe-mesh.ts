@@ -331,9 +331,6 @@ function distToBorderWithTarget(
 	vx: number, vy: number, vz: number,
 	cell: HexCell, borderInfo: HexBorderInfo, cornerTargets: Map<string, number>
 ): { dist: number; target: number; edgeIdx: number; edgeT: number } {
-	// At hex corners, all hexes sharing the corner must agree on the target
-	// to avoid gaps. Use a small minimum distance (not 0) so the ramp blends
-	// smoothly instead of snapping to the target height (which caused spikes).
 	for (let i = 0; i < cell.corners.length; i++) {
 		const c = cell.corners[i];
 		const dx = vx - c.x;
@@ -341,7 +338,7 @@ function distToBorderWithTarget(
 		const dz = vz - c.z;
 		if (dx * dx + dy * dy + dz * dz <= CORNER_EPS2) {
 			const target = cornerTargets.get(cornerKey(c.x, c.y, c.z));
-			if (target !== undefined) return { dist: 0.012, target, edgeIdx: -1, edgeT: 0.5 };
+			if (target !== undefined) return { dist: 0, target, edgeIdx: -1, edgeT: 0.5 };
 			break;
 		}
 	}
@@ -455,6 +452,10 @@ function computeSurfaceHeight(
 			const coastBlend = mu * (1 - mu);              // 0 on the edge and in the far interior
 			h -= COAST_ROUNDING * coastMid * coastBlend * 4;
 		}
+
+		// Clamp water hex height below water sphere surface (-0.002)
+		// so corner snaps and ramps never poke through the water.
+		if (isWaterHex) h = Math.min(h, -0.002);
 
 		return h;
 	}
