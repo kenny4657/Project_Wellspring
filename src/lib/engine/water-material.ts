@@ -161,13 +161,10 @@ void main() {
     float wave1 = snoise(wc1) * 0.5 + 0.5;
     float wave2 = snoise(wc2) * 0.5 + 0.5;
 
-    // Depth-based color
-    float depthT = clamp(depthDiff * 80.0, 0.0, 1.0);
-    vec3 waterCol = mix(shallowColor, deepColor, depthT);
-    waterCol += vec3(0.03, 0.05, 0.06) * (wave1 * 0.6 + wave2 * 0.4 - 0.5);
-
-    // Fresnel
+    // Color: fresnel-based blend (not depth texture — that shows bumpy terrain)
     float fresnel = pow(1.0 - max(dot(N, V), 0.0), 3.0);
+    vec3 waterCol = mix(deepColor, shallowColor, fresnel * 0.5 + 0.15);
+    waterCol += vec3(0.03, 0.05, 0.06) * (wave1 * 0.6 + wave2 * 0.4 - 0.5);
     waterCol += vec3(0.04, 0.07, 0.10) * fresnel;
 
     // ── Wave normal perturbation ──
