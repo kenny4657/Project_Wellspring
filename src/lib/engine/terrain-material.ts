@@ -251,14 +251,26 @@ void main() {
                                            + (dWdz * 0.012 - dWdx * 0.012) * cross(N, cross(N, vec3(0.0, 1.0, 0.0))));
             N = waveNormal; // replace normal for lighting pass
 
-            // ── Shore foam ──
-            // White fringe where terrain is just below sea level
-            float foamWidth = abs(seaLevel) * 1.5;
-            float foamT = 1.0 - clamp((seaLevel - heightAboveR) / foamWidth, 0.0, 1.0);
-            // Animated foam pattern — breaks up the line with noise
-            float foamNoise = snoise(nDir * 60.0 + vec3(time * 0.5, -time * 0.3, time * 0.2));
-            float foamMask = foamT * foamT * smoothstep(0.0, 0.5, foamNoise * 0.5 + 0.5);
-            baseWater = mix(baseWater, vec3(0.75, 0.80, 0.82), foamMask * 0.7);
+            // ── Toon shore foam (IronWarrior-style) ──
+            // Depth controls noise cutoff: shallow = low cutoff = more foam.
+            // Binary threshold on scrolling noise creates crisp foam lines.
+            float foamMaxDist = abs(seaLevel) * 3.0;
+            float depthFrac = clamp((seaLevel - heightAboveR) / foamMaxDist, 0.0, 1.0);
+
+            // Scrolling noise for foam pattern
+            vec2 foamScroll = vec2(time * 0.08, time * 0.06);
+            float foamNoise1 = snoise(nDir * 40.0 + vec3(foamScroll.x, 0.0, foamScroll.y));
+            float foamNoise2 = snoise(nDir * 25.0 + vec3(-foamScroll.y, foamScroll.x, 0.0) + 80.0);
+            float foamSample = foamNoise1 * 0.6 + foamNoise2 * 0.4;
+            foamSample = foamSample * 0.5 + 0.5; // remap to 0-1
+
+            // Cutoff rises with depth — near shore gets foam, deep water doesn't
+            float foamCutoff = depthFrac;
+            float aa = 0.02;
+            float foam = 1.0 - smoothstep(foamCutoff - aa, foamCutoff + aa, foamSample);
+
+            vec3 foamColor = vec3(0.85, 0.90, 0.92);
+            baseWater = mix(baseWater, foamColor, foam * 0.8);
 
             procColor = baseWater;
         } else if (heightAboveR < seaLevel + shoreWidth * amplitude) {
