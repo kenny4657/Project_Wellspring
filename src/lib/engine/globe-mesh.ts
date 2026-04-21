@@ -409,13 +409,15 @@ function computeSurfaceHeight(
 			dist = Math.min(dist, smoothDistanceToTargetEdges(ux, uy, uz, cell, borderInfo, 0, hexRadius));
 		}
 
+		const isWaterNeighborBorder = borderTarget < -0.001;
+		// Water↔water depth transitions: use half-cosine (linear-ish) ramp
+		// across hexRadius so both hexes together form one smooth slope.
 		const t = Math.min(dist / hexRadius, 1.0);
-		const mu = (1 - Math.cos(t * Math.PI)) / 2;
+		const mu = (isWaterHex && isWaterNeighborBorder)
+			? t  // linear ramp — both hexes together make a smooth V-shape
+			: (1 - Math.cos(t * Math.PI)) / 2;  // cosine ramp for land
 
 		// Noise coefficient must MATCH at shared borders:
-		// - Water↔water: border noise = NOISE_AMP (flat neighbor uses full noise)
-		// - Water↔land: border noise = NOISE_AMP * 0.3 (both sides use 0.3 at coast)
-		const isWaterNeighborBorder = borderTarget < -0.001;
 		const borderNoise = isWaterNeighborBorder ? NOISE_AMP : NOISE_AMP * 0.3;
 		const interiorNoise = isWaterHex ? NOISE_AMP * 0.3 : NOISE_AMP;
 		const noiseCoeff = interiorNoise * mu + borderNoise * (1 - mu);
