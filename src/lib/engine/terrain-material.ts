@@ -137,115 +137,92 @@ float triplanarScratchy2(vec3 worldPos, vec3 normal, float scale, float seed) {
 }
 
 // ── Per-terrain procedural textures ─────────────────────────
-// h = normalized height within hex: 0 at low points, 1 at ridges.
-// Used for height-based variation within each terrain type.
+// Each terrain blends between two biome colors using continuous height h
+// (like the original Sota shader's mix(grass,hill,t)), with the scratchy
+// pattern providing within-hex organic variation at high amplitude.
 
 vec3 terrainDeepOcean(float s, float h, vec3 wp, vec3 N) {
     vec3 base = vec3(0.10, 0.15, 0.28);
-    base = mix(base * 0.85, base, h);
-    return base * (1.0 + s * 0.05);
+    return base * (1.0 + s * 0.06);
 }
 
 vec3 terrainShallowOcean(float s, float h, vec3 wp, vec3 N) {
-    vec3 dark = vec3(0.32, 0.30, 0.24);
-    vec3 light = vec3(0.42, 0.38, 0.30);
-    vec3 base = mix(dark, light, h);
-    float ripple = triplanarScratchy2(wp, N, 0.015, 50.0);
-    return base * (1.0 + s * 0.08 + ripple * 0.06);
+    vec3 base = vec3(0.32, 0.30, 0.24);
+    return base * (1.0 + s * 0.08);
 }
 
 vec3 terrainCoast(float s, float h, vec3 wp, vec3 N) {
-    vec3 wetSand = vec3(0.45, 0.38, 0.26);
-    vec3 drySand = vec3(0.62, 0.55, 0.38);
-    float wet = snoise(normalize(wp) * 6.0) * 0.5 + 0.5;
-    wet = smoothstep(0.3, 0.7, wet);
-    vec3 col = mix(wetSand, drySand, mix(wet, 1.0, h * 0.5));
-    return col * (1.0 + s * 0.08);
+    vec3 shore = vec3(0.55, 0.48, 0.34);
+    vec3 sand  = vec3(0.62, 0.56, 0.40);
+    vec3 col = mix(shore, sand, h);
+    return col * (1.0 + s * 0.10);
 }
 
 vec3 terrainLake(float s, float h, vec3 wp, vec3 N) {
     vec3 base = vec3(0.12, 0.24, 0.35);
-    base = mix(base * 0.85, base, h);
-    return base * (1.0 + s * 0.04);
+    return base * (1.0 + s * 0.05);
 }
 
 vec3 terrainPlains(float s, float h, vec3 wp, vec3 N) {
-    vec3 valley = vec3(0.36, 0.38, 0.22);
-    vec3 ridge  = vec3(0.42, 0.44, 0.28);
-    vec3 base = mix(valley, ridge, h);
-    float broad = snoise(normalize(wp) * 3.0) * 0.5 + 0.5;
-    base += vec3(0.02, -0.01, 0.0) * broad;
-    return base * (1.0 + s * 0.14);
+    // Like original: grass → hill blend by height
+    vec3 grass = vec3(0.38, 0.46, 0.22);
+    vec3 hill  = vec3(0.46, 0.42, 0.30);
+    vec3 col = mix(grass, hill, h);
+    vec3 variation = vec3(0.02, 0.04, 0.01) * s;
+    return (col + variation) * (1.0 + s * 0.14);
 }
 
 vec3 terrainGrassland(float s, float h, vec3 wp, vec3 N) {
-    vec3 dark = vec3(0.30, 0.36, 0.18);
-    vec3 light = vec3(0.38, 0.44, 0.22);
-    vec3 base = mix(dark, light, h);
-    float streak = snoise(normalize(wp) * vec3(1.0, 3.0, 1.0) * 8.0);
-    base += vec3(-0.01, 0.02, -0.01) * streak;
-    return base * (1.0 + s * 0.14);
+    vec3 lush = vec3(0.32, 0.48, 0.18);
+    vec3 dry  = vec3(0.42, 0.44, 0.26);
+    vec3 col = mix(lush, dry, h);
+    vec3 variation = vec3(0.02, 0.05, 0.01) * s;
+    return (col + variation) * (1.0 + s * 0.14);
 }
 
 vec3 terrainDesert(float s, float h, vec3 wp, vec3 N) {
-    vec3 shadow = vec3(0.48, 0.40, 0.28);
-    vec3 crest  = vec3(0.58, 0.50, 0.34);
-    float dune = ridgedNoise(normalize(wp) * 5.0);
-    vec3 col = mix(shadow, crest, dune);
-    col = mix(col * 0.90, col, h);
+    vec3 shadow = vec3(0.52, 0.42, 0.28);
+    vec3 crest  = vec3(0.62, 0.54, 0.36);
+    vec3 col = mix(shadow, crest, h);
     return col * (1.0 + s * 0.10);
 }
 
 vec3 terrainSwamp(float s, float h, vec3 wp, vec3 N) {
-    vec3 pool = vec3(0.14, 0.18, 0.12);
-    vec3 mud  = vec3(0.24, 0.28, 0.18);
-    float mask = ridgedNoise(normalize(wp) * 8.0);
-    float poolMask = smoothstep(0.25, 0.5, mask);
-    vec3 col = mix(pool, mud, poolMask);
-    col = mix(col, col * 1.1, h);
-    return col * (1.0 + s * 0.12);
+    vec3 pool = vec3(0.16, 0.22, 0.14);
+    vec3 mud  = vec3(0.28, 0.32, 0.20);
+    vec3 col = mix(pool, mud, h);
+    return col * (1.0 + s * 0.14);
 }
 
 vec3 terrainTundra(float s, float h, vec3 wp, vec3 N) {
-    vec3 frozen = vec3(0.52, 0.52, 0.50);
-    vec3 lichen = vec3(0.42, 0.42, 0.36);
-    vec3 brown  = vec3(0.44, 0.40, 0.34);
-    float n1 = snoise(normalize(wp) * 7.0) * 0.5 + 0.5;
-    float n2 = snoise(normalize(wp) * 11.0 + 30.0) * 0.5 + 0.5;
-    vec3 col = mix(lichen, frozen, n1);
-    col = mix(col, brown, n2 * 0.35);
-    col = mix(col * 0.90, col, h);
+    vec3 frozen = vec3(0.56, 0.56, 0.52);
+    vec3 bare   = vec3(0.48, 0.44, 0.36);
+    vec3 col = mix(bare, frozen, h);
     return col * (1.0 + s * 0.08);
 }
 
 vec3 terrainHills(float s, float h, vec3 wp, vec3 N) {
-    vec3 grass = vec3(0.32, 0.38, 0.20);
-    vec3 earth = vec3(0.44, 0.40, 0.30);
-    float mask = snoise(normalize(wp) * 7.0) * 0.5 + 0.5;
-    vec3 col = mix(grass, earth, mask);
-    col = mix(col * 0.90, col * 1.05, h);
-    return col * (1.0 + s * 0.12);
+    // Like original: grass → hill continuous blend
+    vec3 grass = vec3(0.36, 0.44, 0.22);
+    vec3 earth = vec3(0.48, 0.44, 0.32);
+    vec3 col = mix(grass, earth, h);
+    return col * (1.0 + s * 0.14);
 }
 
 vec3 terrainHighland(float s, float h, vec3 wp, vec3 N) {
-    vec3 rock = vec3(0.42, 0.38, 0.30);
-    vec3 veg  = vec3(0.34, 0.36, 0.24);
-    float mask = snoise(normalize(wp) * 14.0);
-    vec3 col = mix(rock, veg, smoothstep(0.2, 0.5, mask * 0.5 + 0.5) * 0.4);
-    float cracks = ridgedNoise(normalize(wp) * 10.0);
-    col = mix(col * 0.78, col, cracks);
-    col = mix(col * 0.92, col * 1.04, h);
+    // Like original: hill → snow blend
+    vec3 hill = vec3(0.48, 0.44, 0.32);
+    vec3 snow = vec3(0.72, 0.74, 0.76);
+    vec3 col = mix(hill, snow, h * 0.4);
     return col * (1.0 + s * 0.10);
 }
 
 vec3 terrainMountain(float s, float h, vec3 wp, vec3 N) {
-    vec3 darkRock = vec3(0.34, 0.32, 0.28);
-    vec3 lightRock = vec3(0.46, 0.44, 0.38);
-    vec3 snow = vec3(0.72, 0.74, 0.76);
-    float ridge = ridgedNoise(normalize(wp) * 8.0);
-    vec3 rock = mix(darkRock, lightRock, h) * (1.0 + s * 0.12);
-    float snowMask = smoothstep(0.5, 0.8, h) * (1.0 - ridge * 0.5);
-    return mix(rock, snow, snowMask);
+    // Like original: hill → snow blend at high ratio
+    vec3 rock = vec3(0.48, 0.44, 0.32);
+    vec3 snow = vec3(0.78, 0.80, 0.84);
+    vec3 col = mix(rock, snow, h);
+    return col * (1.0 + s * 0.08);
 }
 
 // ── Wall cross-section ──────────────────────────────────────
