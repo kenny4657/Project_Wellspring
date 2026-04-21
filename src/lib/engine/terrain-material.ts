@@ -134,18 +134,18 @@ vec3 waterColor(float scratchy) {
 }
 
 vec3 grassColor(float scratchy) {
-    vec3 base = vec3(0.48, 0.72, 0.28);
+    vec3 base = vec3(0.38, 0.60, 0.22);
     vec3 variation = vec3(0.02, 0.05, 0.01) * scratchy;
     return (base + variation) * (1.0 + scratchy * 0.14);
 }
 
 vec3 hillColor(float scratchy) {
-    vec3 base = vec3(0.60, 0.54, 0.40);
+    vec3 base = vec3(0.48, 0.44, 0.32);
     return base * (1.0 + scratchy * 0.14);
 }
 
 vec3 snowColor(float scratchy) {
-    vec3 base = vec3(0.90, 0.92, 0.95);
+    vec3 base = vec3(0.82, 0.84, 0.88);
     return base * (1.0 + scratchy * 0.08);
 }
 
