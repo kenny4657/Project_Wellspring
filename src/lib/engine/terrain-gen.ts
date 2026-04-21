@@ -72,29 +72,25 @@ export function assignTerrain(cells: HexCell[]): void {
 		if (heightLevel <= 1) {
 			// Water hexes: terrain type by depth
 			t = heightLevel === 0 ? 0 : 1; // deep_ocean / shallow_ocean
-			if (heightLevel === 1 && detail > 0.6) t = 2; // reef
 		} else {
 			// Land hexes: terrain type by biome factors (latitude, detail noise)
-			// NOT locked to height — a forest can be at height 2, 3, or 4
 			if (latitude > 0.82) {
-				t = 9; // tundra
+				t = 8; // tundra
 			} else if (detail < 0.35) {
-				t = 7; // desert
+				t = 6; // desert
 			} else if (detail < 0.48) {
-				t = 5; // plains
+				t = 4; // plains
 			} else if (detail < 0.58) {
-				t = 6; // grassland
-			} else if (latitude < 0.5 && detail > 0.65) {
-				t = 11; // jungle
+				t = 5; // grassland
 			} else if (detail > 0.6) {
-				t = 10; // forest
+				t = 9; // hills
 			} else {
-				t = 12; // hills
+				t = 5; // grassland
 			}
 
-			// High terrain gets special types occasionally
-			if (heightLevel >= 4 && detail < 0.4) t = 13; // highland
-			if (heightLevel >= 5) t = 15; // mountain (only at peak elevation)
+			// High terrain gets special types
+			if (heightLevel >= 4 && detail < 0.4) t = 10; // highland
+			if (heightLevel >= 5) t = 11; // mountain (only at peak elevation)
 		}
 
 		cell.terrain = t;

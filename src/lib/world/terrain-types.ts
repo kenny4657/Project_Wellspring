@@ -22,21 +22,16 @@ export interface TerrainProfile {
 export const TERRAIN_TYPES = {
 	deep_ocean: 0,
 	shallow_ocean: 1,
-	reef: 2,
-	coast: 3,
-	lake: 4,
-	plains: 5,
-	grassland: 6,
-	desert: 7,
-	swamp: 8,
-	tundra: 9,
-	forest: 10,
-	jungle: 11,
-	hills: 12,
-	highland: 13,
-	plateau: 14,
-	mountain: 15,
-	island: 16,
+	coast: 2,
+	lake: 3,
+	plains: 4,
+	grassland: 5,
+	desert: 6,
+	swamp: 7,
+	tundra: 8,
+	hills: 9,
+	highland: 10,
+	mountain: 11,
 } as const;
 
 export type TerrainTypeId = keyof typeof TERRAIN_TYPES;
@@ -47,13 +42,11 @@ export const TERRAIN_COUNT = Object.keys(TERRAIN_TYPES).length;
 const H = 3; // km per tier unit (max displacement ~15km for mountains on 75km hex)
 
 export const TERRAIN_PROFILES: TerrainProfile[] = [
-	// Colors are muted/natural — Sota-style. Shader adds procedural variation.
 	// Tier 0: Below surface
 	{ id: 'deep_ocean',    name: 'Deep Ocean',    tier: 0, height: -1.5 * H, amplitude: 0.3,  frequency: 0.5,  ridged: false, color: [0.12, 0.22, 0.48] },
 
 	// Tier 1: Surface level
 	{ id: 'shallow_ocean', name: 'Shallow Ocean', tier: 1, height: -0.5 * H, amplitude: 0.2,  frequency: 1.0,  ridged: false, color: [0.18, 0.38, 0.58] },
-	{ id: 'reef',          name: 'Reef',          tier: 1, height: -0.3 * H, amplitude: 0.5,  frequency: 3.0,  ridged: false, color: [0.15, 0.50, 0.48] },
 	{ id: 'coast',         name: 'Coast',         tier: 1, height:  0.0 * H, amplitude: 0.2,  frequency: 1.5,  ridged: false, color: [0.72, 0.65, 0.45] },
 	{ id: 'lake',          name: 'Lake',          tier: 1, height: -0.3 * H, amplitude: 0.1,  frequency: 0.5,  ridged: false, color: [0.15, 0.35, 0.60] },
 
@@ -65,19 +58,13 @@ export const TERRAIN_PROFILES: TerrainProfile[] = [
 	{ id: 'tundra',        name: 'Tundra',        tier: 2, height:  0.2 * H, amplitude: 0.3,  frequency: 1.0,  ridged: false, color: [0.72, 0.74, 0.70] },
 
 	// Tier 3: Medium
-	{ id: 'forest',        name: 'Forest',        tier: 3, height:  0.5 * H, amplitude: 0.8,  frequency: 1.5,  ridged: false, color: [0.15, 0.40, 0.12] },
-	{ id: 'jungle',        name: 'Jungle',        tier: 3, height:  0.5 * H, amplitude: 1.0,  frequency: 2.0,  ridged: false, color: [0.10, 0.35, 0.08] },
 	{ id: 'hills',         name: 'Hills',         tier: 3, height:  0.7 * H, amplitude: 1.2,  frequency: 2.0,  ridged: false, color: [0.45, 0.50, 0.28] },
 
 	// Tier 4: High
 	{ id: 'highland',      name: 'Highland',      tier: 4, height:  1.2 * H, amplitude: 0.8,  frequency: 1.0,  ridged: false, color: [0.52, 0.45, 0.32] },
-	{ id: 'plateau',       name: 'Plateau',       tier: 4, height:  1.5 * H, amplitude: 0.4,  frequency: 1.0,  ridged: false, color: [0.58, 0.50, 0.35] },
 
 	// Tier 5: Peak
 	{ id: 'mountain',      name: 'Mountain',      tier: 5, height:  2.5 * H, amplitude: 2.5,  frequency: 3.0,  ridged: true,  color: [0.62, 0.58, 0.52] },
-
-	// Special
-	{ id: 'island',        name: 'Island',        tier: 2, height:  0.3 * H, amplitude: 0.6,  frequency: 2.0,  ridged: false, color: [0.40, 0.55, 0.25] },
 ];
 
 /**

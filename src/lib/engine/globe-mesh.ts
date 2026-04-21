@@ -91,7 +91,7 @@ function getTerrainColor(idx: number): [number, number, number] {
 	if (!profile) return [0.5, 0.5, 0.5];
 	const tier = profile.tier;
 	const g = tier <= 1 ? 0.0 : tier <= 2 ? 0.5 : tier <= 4 ? 0.75 : 1.0;
-	return [idx / 16.0, g, 0.0];
+	return [idx / 11.0, g, 0.0];
 }
 function getLevelHeight(level: number): number { return LEVEL_HEIGHTS[Math.min(level, LEVEL_HEIGHTS.length - 1)] ?? 0; }
 
@@ -181,9 +181,9 @@ function smoothWaterCornerPositions(
 
 	for (let i = 0; i < vertexCount; i++) {
 		if (colors[i * 4 + 3] < 0.5) continue; // skip walls
-		// Detect water by terrain ID encoded in R channel (IDs 0-4 are water)
-		const terrainId = Math.round(colors[i * 4] * 16.0);
-		if (terrainId > 4) continue; // skip land
+		// Detect water by terrain ID encoded in R channel (IDs 0-3 are water)
+		const terrainId = Math.round(colors[i * 4] * 11.0);
+		if (terrainId > 3) continue; // skip land
 
 		// Key by angular direction (normalize position to unit sphere)
 		const px = positions[i * 3];

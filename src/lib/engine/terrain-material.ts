@@ -154,15 +154,6 @@ vec3 terrainShallowOcean(float s, float h, vec3 wp, vec3 N) {
     return base * (1.0 + s * 0.08 + ripple * 0.06);
 }
 
-vec3 terrainReef(float s, float h, vec3 wp, vec3 N) {
-    vec3 turquoise = vec3(0.12, 0.38, 0.36);
-    vec3 coral = vec3(0.48, 0.28, 0.20);
-    float mask = snoise(normalize(wp) * 12.0) * 0.5 + 0.5;
-    vec3 col = mix(turquoise, coral, mask);
-    col = mix(col * 0.8, col, h);
-    return col * (1.0 + s * 0.10);
-}
-
 vec3 terrainCoast(float s, float h, vec3 wp, vec3 N) {
     vec3 wetSand = vec3(0.45, 0.38, 0.26);
     vec3 drySand = vec3(0.62, 0.55, 0.38);
@@ -227,28 +218,6 @@ vec3 terrainTundra(float s, float h, vec3 wp, vec3 N) {
     return col * (1.0 + s * 0.08);
 }
 
-vec3 terrainForest(float s, float h, vec3 wp, vec3 N) {
-    vec3 shadow = vec3(0.10, 0.18, 0.08);
-    vec3 canopy = vec3(0.18, 0.28, 0.12);
-    float mask = snoise(normalize(wp) * 10.0) * 0.5 + 0.5;
-    vec3 col = mix(shadow, canopy, mask);
-    col = mix(col * 0.88, col * 1.06, h);
-    float specks = snoise(normalize(wp) * 50.0);
-    col += vec3(0.01, 0.02, 0.005) * max(specks, 0.0);
-    return col * (1.0 + s * 0.10);
-}
-
-vec3 terrainJungle(float s, float h, vec3 wp, vec3 N) {
-    vec3 deep = vec3(0.08, 0.16, 0.06);
-    vec3 top  = vec3(0.14, 0.24, 0.08);
-    vec3 base = mix(deep, top, h);
-    float s2 = triplanarScratchy2(wp, N, 0.008, 80.0);
-    base *= (1.0 + s2 * 0.16);
-    float bright = snoise(normalize(wp) * 20.0);
-    if (bright > 0.6) base += vec3(0.03, 0.05, 0.01);
-    return base * (1.0 + s * 0.10);
-}
-
 vec3 terrainHills(float s, float h, vec3 wp, vec3 N) {
     vec3 grass = vec3(0.32, 0.38, 0.20);
     vec3 earth = vec3(0.44, 0.40, 0.30);
@@ -269,16 +238,6 @@ vec3 terrainHighland(float s, float h, vec3 wp, vec3 N) {
     return col * (1.0 + s * 0.10);
 }
 
-vec3 terrainPlateau(float s, float h, vec3 wp, vec3 N) {
-    vec3 darkStrata = vec3(0.40, 0.36, 0.26);
-    vec3 sandstone  = vec3(0.50, 0.44, 0.32);
-    float strata = sin(length(wp) * 0.5) * 0.5 + 0.5;
-    strata *= strata;
-    vec3 col = mix(darkStrata, sandstone, strata);
-    col = mix(col * 0.92, col * 1.04, h);
-    return col * (1.0 + s * 0.08);
-}
-
 vec3 terrainMountain(float s, float h, vec3 wp, vec3 N) {
     vec3 darkRock = vec3(0.34, 0.32, 0.28);
     vec3 lightRock = vec3(0.46, 0.44, 0.38);
@@ -289,20 +248,11 @@ vec3 terrainMountain(float s, float h, vec3 wp, vec3 N) {
     return mix(rock, snow, snowMask);
 }
 
-vec3 terrainIsland(float s, float h, vec3 wp, vec3 N) {
-    vec3 low  = vec3(0.32, 0.38, 0.20);
-    vec3 high = vec3(0.38, 0.44, 0.24);
-    vec3 base = mix(low, high, h);
-    float warm = snoise(normalize(wp) * 4.0) * 0.5 + 0.5;
-    base += vec3(0.02, 0.01, 0.0) * warm;
-    return base * (1.0 + s * 0.12);
-}
-
 // ── Wall cross-section ──────────────────────────────────────
 
 vec3 textureWall(int terrainId, vec3 wp) {
     vec3 np = wp * 0.003;
-    bool isWater = terrainId <= 4;
+    bool isWater = terrainId <= 3;
 
     vec3 dirt = vec3(0.38, 0.28, 0.18);
     vec3 rock = vec3(0.50, 0.46, 0.40);
@@ -333,8 +283,8 @@ vec3 textureWall(int terrainId, vec3 wp) {
 void main() {
     vec3 N = normalize(vWorldNormal);
     bool isWall = vColor.a < 0.05;
-    int terrainId = int(floor(vColor.r * 16.0 + 0.5));
-    bool isWater = terrainId <= 4;
+    int terrainId = int(floor(vColor.r * 11.0 + 0.5));
+    bool isWater = terrainId <= 3;
 
     float distFromCenter = length(vWorldPos);
     float heightAboveR = distFromCenter - planetRadius;
@@ -352,21 +302,16 @@ void main() {
 
         if      (terrainId == 0)  procColor = terrainDeepOcean(scratchy, hNorm, vWorldPos, N);
         else if (terrainId == 1)  procColor = terrainShallowOcean(scratchy, hNorm, vWorldPos, N);
-        else if (terrainId == 2)  procColor = terrainReef(scratchy, hNorm, vWorldPos, N);
-        else if (terrainId == 3)  procColor = terrainCoast(scratchy, hNorm, vWorldPos, N);
-        else if (terrainId == 4)  procColor = terrainLake(scratchy, hNorm, vWorldPos, N);
-        else if (terrainId == 5)  procColor = terrainPlains(scratchy, hNorm, vWorldPos, N);
-        else if (terrainId == 6)  procColor = terrainGrassland(scratchy, hNorm, vWorldPos, N);
-        else if (terrainId == 7)  procColor = terrainDesert(scratchy, hNorm, vWorldPos, N);
-        else if (terrainId == 8)  procColor = terrainSwamp(scratchy, hNorm, vWorldPos, N);
-        else if (terrainId == 9)  procColor = terrainTundra(scratchy, hNorm, vWorldPos, N);
-        else if (terrainId == 10) procColor = terrainForest(scratchy, hNorm, vWorldPos, N);
-        else if (terrainId == 11) procColor = terrainJungle(scratchy, hNorm, vWorldPos, N);
-        else if (terrainId == 12) procColor = terrainHills(scratchy, hNorm, vWorldPos, N);
-        else if (terrainId == 13) procColor = terrainHighland(scratchy, hNorm, vWorldPos, N);
-        else if (terrainId == 14) procColor = terrainPlateau(scratchy, hNorm, vWorldPos, N);
-        else if (terrainId == 15) procColor = terrainMountain(scratchy, hNorm, vWorldPos, N);
-        else if (terrainId == 16) procColor = terrainIsland(scratchy, hNorm, vWorldPos, N);
+        else if (terrainId == 2)  procColor = terrainCoast(scratchy, hNorm, vWorldPos, N);
+        else if (terrainId == 3)  procColor = terrainLake(scratchy, hNorm, vWorldPos, N);
+        else if (terrainId == 4)  procColor = terrainPlains(scratchy, hNorm, vWorldPos, N);
+        else if (terrainId == 5)  procColor = terrainGrassland(scratchy, hNorm, vWorldPos, N);
+        else if (terrainId == 6)  procColor = terrainDesert(scratchy, hNorm, vWorldPos, N);
+        else if (terrainId == 7)  procColor = terrainSwamp(scratchy, hNorm, vWorldPos, N);
+        else if (terrainId == 8)  procColor = terrainTundra(scratchy, hNorm, vWorldPos, N);
+        else if (terrainId == 9)  procColor = terrainHills(scratchy, hNorm, vWorldPos, N);
+        else if (terrainId == 10) procColor = terrainHighland(scratchy, hNorm, vWorldPos, N);
+        else if (terrainId == 11) procColor = terrainMountain(scratchy, hNorm, vWorldPos, N);
         else                      procColor = vec3(1.0, 0.0, 1.0); // magenta = unknown
     }
 
