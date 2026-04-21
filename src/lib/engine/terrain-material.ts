@@ -252,26 +252,29 @@ void main() {
             N = waveNormal; // replace normal for lighting pass
 
             // ── Toon shore foam (IronWarrior-style) ──
-            // depthFrac: 0 at shore → 1 deep. Cutoff = depthFrac * max,
-            // so shore cutoff ≈ 0 (all noise passes → foam) and deep
-            // cutoff ≈ 0.75 (almost no noise passes → no foam).
-            float foamMaxDist = abs(seaLevel) * 2.0;
-            float depthFrac = clamp((seaLevel - heightAboveR) / foamMaxDist, 0.0, 1.0);
+            // Narrow band: foam only within ~0.3 * seaLevel of shore.
+            float foamMaxDist = abs(seaLevel) * 0.35;
+            float depthDiff = seaLevel - heightAboveR; // 0 at shore, grows deeper
+            float foamDepth01 = clamp(depthDiff / foamMaxDist, 0.0, 1.0);
 
-            // Scrolling noise for foam pattern
-            vec2 foamScroll = vec2(time * 0.08, time * 0.06);
-            float foamNoise1 = snoise(nDir * 40.0 + vec3(foamScroll.x, 0.0, foamScroll.y));
-            float foamNoise2 = snoise(nDir * 25.0 + vec3(-foamScroll.y, foamScroll.x, 0.0) + 80.0);
-            float foamSample = foamNoise1 * 0.6 + foamNoise2 * 0.4;
-            foamSample = foamSample * 0.5 + 0.5; // remap to 0-1
+            // Distortion: second noise offsets the foam noise for organic movement
+            vec3 distortCoord = nDir * 80.0 + vec3(time * 0.06, -time * 0.04, time * 0.05);
+            float2 distort = vec2(snoise(distortCoord), snoise(distortCoord + 100.0)) * 0.15;
 
-            // Cutoff: low at shore (foam everywhere) → high deep (no foam)
-            float foamCutoff = depthFrac * 0.75;
-            float aa = 0.01;
-            float foam = smoothstep(foamCutoff - aa, foamCutoff + aa, foamSample);
+            // High-freq scrolling noise for foam pattern
+            vec3 foamCoord = nDir * 180.0 + vec3(
+                time * 0.1 + distort.x,
+                distort.y,
+                time * 0.08
+            );
+            float foamSample = snoise(foamCoord) * 0.5 + 0.5;
 
-            vec3 foamColor = vec3(0.90, 0.95, 0.97);
-            baseWater = mix(baseWater, foamColor, foam * 0.85);
+            // Cutoff: 0 at shore (all noise passes) → 0.777 deep (nothing passes)
+            float foamCutoff = foamDepth01 * 0.777;
+            float foam = smoothstep(foamCutoff - 0.01, foamCutoff + 0.01, foamSample);
+
+            vec3 foamColor = vec3(0.92, 0.96, 0.98);
+            baseWater = mix(baseWater, foamColor, foam * 0.9);
 
             procColor = baseWater;
         } else if (heightAboveR < seaLevel + shoreWidth * amplitude) {
