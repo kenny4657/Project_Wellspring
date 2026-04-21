@@ -55,17 +55,9 @@ float noise3d(vec3 p) {
 
 void main() {
     vec3 pos = position;
-    vec3 n = normalize(position);
 
-    // Two scrolling noise octaves for wave displacement
-    float wave1 = noise3d(n * waveFreq + time * 0.4) - 0.5;
-    float wave2 = noise3d(n * waveFreq * 2.1 + time * 0.7 + 50.0) - 0.5;
-    float wave = (wave1 * 0.7 + wave2 * 0.3) * waveAmp;
-
-    // Only push waves downward — never above base sphere to avoid clipping land
-    wave = min(wave, 0.0);
-    pos += n * wave;
-
+    // No vertex displacement — creates ice-sheet bumps.
+    // Waves are handled by normal perturbation in fragment shader.
     vec4 wp = world * vec4(pos, 1.0);
     vWorldPos = wp.xyz;
     vWorldNormal = normalize((world * vec4(normal, 0.0)).xyz);
@@ -160,13 +152,13 @@ void main() {
 
     vec3 wp1 = nDir * 8.0 + vec3(time * 0.12, -time * 0.08, time * 0.06);
     float n1 = waveNoise(wp1);
-    float dx = (waveNoise(wp1 + vec3(eps,0,0)) - n1) / eps * 0.012;
-    float dz = (waveNoise(wp1 + vec3(0,0,eps)) - n1) / eps * 0.012;
+    float dx = (waveNoise(wp1 + vec3(eps,0,0)) - n1) / eps * 0.025;
+    float dz = (waveNoise(wp1 + vec3(0,0,eps)) - n1) / eps * 0.025;
 
     vec3 wp2 = nDir * 20.0 + vec3(-time * 0.18, time * 0.14, -time * 0.1);
     float n2 = waveNoise(wp2);
-    dx += (waveNoise(wp2 + vec3(eps,0,0)) - n2) / eps * 0.005;
-    dz += (waveNoise(wp2 + vec3(0,0,eps)) - n2) / eps * 0.005;
+    dx += (waveNoise(wp2 + vec3(eps,0,0)) - n2) / eps * 0.012;
+    dz += (waveNoise(wp2 + vec3(0,0,eps)) - n2) / eps * 0.012;
 
     vec3 waveN = normalize(N + tangent * dx + bitangent * dz);
 
