@@ -198,7 +198,6 @@ export async function createGlobeEngine(
 		const sunDirVec = new Vector3(sx / sl, sy / sl, sz / sl);
 		terrainMat.setVector3('sunDir', sunDirVec);
 		waterTime += engine.getDeltaTime() * 0.001;
-		terrainMat.setFloat('time', waterTime);
 		waterMat.setFloat('time', waterTime);
 		waterMat.setVector3('cameraPos', camPos);
 		waterMat.setVector3('sunDir', sunDirVec);
