@@ -240,11 +240,14 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 
 		if (isWater) {
 			// ── Water hex edge logic ──
-			// Every water edge is an explicit continuity constraint so adjacent
-			// water hexes agree on their shared boundary, even when one cell has
-			// other nearby coast/depth transitions.
+			// Exclude same-depth water edges from distance competition so the
+			// ramp extends broadly across the hex, softening depth transitions.
 			if (nbIsWater) {
 				edgeTargets[i] = getLevelHeight(Math.min(cell.heightLevel, nb.heightLevel));
+				if (cell.heightLevel === nb.heightLevel) {
+					excludedEdges[i] = true;
+					excludedCount++;
+				}
 			} else {
 				// Water → land: ramp up to sea level
 				edgeTargets[i] = 0;
