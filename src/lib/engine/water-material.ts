@@ -55,9 +55,17 @@ float noise3d(vec3 p) {
 
 void main() {
     vec3 pos = position;
+    vec3 n = normalize(position);
 
-    // No vertex displacement — creates ice-sheet bumps.
-    // Waves are handled by normal perturbation in fragment shader.
+    // Two scrolling noise octaves for wave displacement
+    float wave1 = noise3d(n * waveFreq + time * 0.4) - 0.5;
+    float wave2 = noise3d(n * waveFreq * 2.1 + time * 0.7 + 50.0) - 0.5;
+    float wave = (wave1 * 0.7 + wave2 * 0.3) * waveAmp;
+
+    // Only push waves downward — never above base sphere to avoid clipping land
+    wave = min(wave, 0.0);
+    pos += n * wave;
+
     vec4 wp = world * vec4(pos, 1.0);
     vWorldPos = wp.xyz;
     vWorldNormal = normalize((world * vec4(normal, 0.0)).xyz);
@@ -170,13 +178,13 @@ void main() {
     float light = ambient + diffuse + cam;
     waterCol *= light;
 
-    // Specular — identical to 0f9a3c0 but using waveN
+    // Specular — toned down, sun follows camera so highlight is always centered
     vec3 halfVec = normalize(sunDir + V);
-    float spec = pow(max(dot(waveN, halfVec), 0.0), 96.0);
-    waterCol += vec3(1.0, 0.98, 0.92) * spec * 0.5;
+    float spec = pow(max(dot(waveN, halfVec), 0.0), 196.0);
+    waterCol += vec3(1.0, 0.98, 0.92) * spec * 0.2;
 
-    float spec2 = pow(max(dot(waveN, halfVec), 0.0), 16.0);
-    waterCol += vec3(0.7, 0.85, 1.0) * spec2 * 0.08;
+    float spec2 = pow(max(dot(waveN, halfVec), 0.0), 32.0);
+    waterCol += vec3(0.6, 0.75, 0.9) * spec2 * 0.03;
 
     float alpha = 0.85 + fresnel * 0.15;
 
