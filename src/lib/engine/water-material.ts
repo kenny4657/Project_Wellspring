@@ -55,9 +55,17 @@ float noise3d(vec3 p) {
 
 void main() {
     vec3 pos = position;
+    vec3 n = normalize(position);
 
-    // No vertex displacement — wave visuals handled by normal
-    // perturbation in fragment shader. Keeps sphere smooth.
+    // Two scrolling noise octaves for wave displacement
+    float wave1 = noise3d(n * waveFreq + time * 0.4) - 0.5;
+    float wave2 = noise3d(n * waveFreq * 2.1 + time * 0.7 + 50.0) - 0.5;
+    float wave = (wave1 * 0.7 + wave2 * 0.3) * waveAmp;
+
+    // Only push waves downward — never above base sphere to avoid clipping land
+    wave = min(wave, 0.0);
+    pos += n * wave;
+
     vec4 wp = world * vec4(pos, 1.0);
     vWorldPos = wp.xyz;
     vWorldNormal = normalize((world * vec4(normal, 0.0)).xyz);
@@ -156,38 +164,31 @@ void main() {
     float depthDiff = max(sceneDepth - vLinearDepth, 0.0);
 
     // ── Animated wave color ──
-    vec3 wc1 = nDir * 4.0 + vec3(time * 0.2, time * 0.15, -time * 0.1);
-    vec3 wc2 = nDir * 8.0 + vec3(-time * 0.15, time * 0.1, time * 0.2);
+    vec3 wc1 = nDir * 18.0 + vec3(time * 0.3, time * 0.2, -time * 0.1);
+    vec3 wc2 = nDir * 35.0 + vec3(-time * 0.2, time * 0.15, time * 0.25);
     float wave1 = snoise(wc1) * 0.5 + 0.5;
     float wave2 = snoise(wc2) * 0.5 + 0.5;
 
-    // Color: fresnel-based blend
+    // Depth-based color
+    float depthT = clamp(depthDiff * 80.0, 0.0, 1.0);
+    vec3 waterCol = mix(shallowColor, deepColor, depthT);
+    waterCol += vec3(0.03, 0.05, 0.06) * (wave1 * 0.6 + wave2 * 0.4 - 0.5);
+
+    // Fresnel
     float fresnel = pow(1.0 - max(dot(N, V), 0.0), 3.0);
-    vec3 waterCol = mix(deepColor, shallowColor, fresnel * 0.5 + 0.15);
-    waterCol += vec3(0.02, 0.03, 0.04) * (wave1 * 0.6 + wave2 * 0.4 - 0.5);
     waterCol += vec3(0.04, 0.07, 0.10) * fresnel;
 
-    // ── Wave normal perturbation (two octaves) ──
-    vec3 tangent = normalize(cross(N, vec3(0.0, 1.0, 0.0)));
-    vec3 bitangent = cross(N, tangent);
-    float eps = 0.008;
-
-    // Broad rolling waves
-    vec3 wc_lo = nDir * 5.0 + vec3(time * 0.18, time * 0.12, -time * 0.08);
-    float lo = snoise(wc_lo);
-    float loDx = (snoise(wc_lo + vec3(eps, 0.0, 0.0)) - lo) / eps;
-    float loDz = (snoise(wc_lo + vec3(0.0, 0.0, eps)) - lo) / eps;
-
-    // Smaller chop
-    vec3 wc_hi = nDir * 12.0 + vec3(-time * 0.25, time * 0.2, time * 0.15);
-    float hi = snoise(wc_hi);
-    float hiDx = (snoise(wc_hi + vec3(eps, 0.0, 0.0)) - hi) / eps;
-    float hiDz = (snoise(wc_hi + vec3(0.0, 0.0, eps)) - hi) / eps;
-
-    float dx = loDx * 0.010 + hiDx * 0.004;
-    float dz = loDz * 0.010 + hiDz * 0.004;
-    vec3 waveN = normalize(N + tangent * dx + bitangent * dz);
-
+    // ── Wave normal perturbation ──
+    float eps = 0.002;
+    vec3 tx = nDir + vec3(eps, 0.0, 0.0);
+    vec3 tz = nDir + vec3(0.0, 0.0, eps);
+    float wx = snoise(tx * 18.0 + vec3(time * 0.3, time * 0.2, -time * 0.1));
+    float wz = snoise(tz * 18.0 + vec3(time * 0.3, time * 0.2, -time * 0.1));
+    float dWdx = (wx - (wave1 * 2.0 - 1.0)) / eps;
+    float dWdz = (wz - (wave1 * 2.0 - 1.0)) / eps;
+    vec3 waveN = normalize(N
+        + (dWdx * 0.012 + dWdz * 0.012) * cross(N, vec3(0.0, 1.0, 0.0))
+        + (dWdz * 0.012 - dWdx * 0.012) * cross(N, cross(N, vec3(0.0, 1.0, 0.0))));
 
     // ── Lighting (using perturbed wave normal) ──
     float ambient = 0.50;
