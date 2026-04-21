@@ -142,8 +142,8 @@ void main() {
     float fresnel = 1.0 - max(dot(N, V), 0.0);
     fresnel = pow(fresnel, 2.5);
 
-    // Color — identical to 0f9a3c0
-    vec3 waterCol = mix(deepColor, shallowColor, fresnel * 0.6 + 0.2);
+    // Color: deep in center, slightly lighter at edges
+    vec3 waterCol = mix(deepColor, shallowColor, fresnel * 0.3 + 0.1);
 
     vec3 nDir = normalize(vLocalPos);
     float shimmer = sin(nDir.x * 30.0 + time * 1.2) * sin(nDir.z * 30.0 + time * 0.8) * 0.03;
@@ -170,11 +170,11 @@ void main() {
 
     vec3 waveN = normalize(N + tangent * dx + bitangent * dz);
 
-    // Lighting — high ambient for even water coverage, minimal directional
-    float ambient = 0.75;
-    float diffuse = max(dot(waveN, sunDir), 0.0) * 0.15;
+    // Lighting — even coverage, subtle directional variation
+    float ambient = 0.60;
+    float diffuse = max(dot(waveN, sunDir), 0.0) * 0.20;
     vec3 toCamera = normalize(cameraPos - vWorldPos);
-    float cam = max(0.0, dot(waveN, toCamera)) * 0.05;
+    float cam = max(0.0, dot(waveN, toCamera)) * 0.08;
     float light = ambient + diffuse + cam;
     waterCol *= light;
 
