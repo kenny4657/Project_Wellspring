@@ -128,8 +128,8 @@ float triplanarScratchy(vec3 worldPos, vec3 normal, float scale) {
 // ── Biome colors (muted natural tones like Sota) ────────────
 
 vec3 waterColor(float scratchy) {
-    vec3 base = vec3(0.16, 0.30, 0.52);
-    return base * (1.0 + scratchy * 0.06);
+    vec3 base = vec3(0.58, 0.52, 0.38);
+    return base * (1.0 + scratchy * 0.10);
 }
 
 vec3 grassColor(float scratchy) {
@@ -171,9 +171,9 @@ vec3 textureWall(vec3 terrainBase, vec3 wp) {
     landWall += n2;
     landWall = mix(landWall, darkRock, crevice * 0.30);
 
-    vec3 deepBlue = vec3(0.06, 0.09, 0.22);
-    vec3 midBlue  = vec3(0.10, 0.15, 0.32);
-    vec3 waterWall = mix(deepBlue, midBlue, strata * 0.35 + n1 * 0.25);
+    vec3 deepSand = vec3(0.42, 0.36, 0.26);
+    vec3 midSand  = vec3(0.52, 0.46, 0.34);
+    vec3 waterWall = mix(deepSand, midSand, strata * 0.35 + n1 * 0.25);
 
     return mix(landWall, waterWall, bDom);
 }
@@ -210,9 +210,15 @@ void main() {
         float shoreWidth = 0.06; // width of shore zone in normalized height
         float shoreCenter = 0.0; // at bottom_offset (sea level)
 
-        if (heightAboveR < seaLevel) {
-            // Below sea level → water texture (hard cutoff like Sota)
+        float belowWidth = 0.04; // underwater transition width
+        if (heightAboveR < seaLevel - belowWidth * amplitude) {
+            // Deep below sea level → sandy ocean floor
             procColor = waterColor(scratchy);
+        } else if (heightAboveR < seaLevel) {
+            // Underwater transition: sandy floor blending up to shore
+            vec3 shore = vec3(0.65, 0.58, 0.40) * (1.0 + scratchy * 0.10);
+            float belowT = (heightAboveR - (seaLevel - belowWidth * amplitude)) / (belowWidth * amplitude);
+            procColor = mix(waterColor(scratchy), shore, clamp(belowT, 0.0, 1.0));
         } else if (heightAboveR < seaLevel + shoreWidth * amplitude) {
             // Shore/beach transition zone — sand blending into grass
             vec3 shore = vec3(0.65, 0.58, 0.40) * (1.0 + scratchy * 0.10);
