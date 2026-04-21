@@ -151,7 +151,7 @@ export function createWaterMaterial(scene: Scene): ShaderMaterial {
 
 	// Transparency and waves
 	mat.setFloat('opacity', 0.55);
-	mat.setFloat('waveAmp', 8.0);    // km displacement
+	mat.setFloat('waveAmp', 1.5);    // km displacement
 	mat.setFloat('waveFreq', 12.0);  // noise frequency on unit sphere
 
 	mat.backFaceCulling = true;
