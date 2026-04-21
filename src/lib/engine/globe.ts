@@ -133,6 +133,9 @@ export async function createGlobeEngine(
 	const waterMat = createWaterMaterial(scene);
 	waterSphere.material = waterMat;
 	waterSphere.isPickable = false;
+	// Render water after terrain to avoid z-fighting
+	waterSphere.renderingGroupId = 1;
+	globeMesh.renderingGroupId = 0;
 
 	// ── Hex Edge Wireframe ──────────────────────────────────
 	report('Building hex grid overlay...');
