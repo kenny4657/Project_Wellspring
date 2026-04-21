@@ -45,6 +45,8 @@ uniform vec3 sunDir;
 uniform vec3 fillDir;
 uniform vec3 cameraPos;
 uniform float planetRadius;
+uniform float bottomOffset;
+uniform float topOffset;
 
 varying vec3 vWorldPos;
 varying vec3 vWorldNormal;
@@ -168,68 +170,56 @@ vec3 terrainLake(float s, float s2, float h, vec3 wp, vec3 N) {
     return base * (1.0 + s * 0.05);
 }
 
+// Land terrains: blend between two biome colors using per-vertex height h,
+// exactly like the original Sota shader's mix(grass, hill, t). Each biome
+// color has its own scratchy response, creating rich within-hex variation.
+
 vec3 terrainPlains(float s, float s2, float h, vec3 wp, vec3 N) {
-    vec3 base = vec3(0.38, 0.42, 0.24);
-    base *= (1.0 + s * 0.18);
-    base += vec3(0.04, -0.02, -0.03) * s2;
-    base += vec3(0.03, -0.02, -0.02) * h;
-    return base;
+    vec3 lo = vec3(0.38, 0.50, 0.22) * (1.0 + s * 0.14);  // grassy low
+    vec3 hi = vec3(0.48, 0.44, 0.30) * (1.0 + s2 * 0.12);  // earthy high
+    return mix(lo, hi, h);
 }
 
 vec3 terrainGrassland(float s, float s2, float h, vec3 wp, vec3 N) {
-    vec3 base = vec3(0.30, 0.42, 0.18);
-    base *= (1.0 + s * 0.20);
-    base += vec3(-0.02, 0.03, -0.01) * s2;
-    base += vec3(0.03, -0.02, -0.02) * h;
-    return base;
+    vec3 lo = vec3(0.32, 0.50, 0.18) * (1.0 + s * 0.16);   // lush green
+    vec3 hi = vec3(0.42, 0.44, 0.24) * (1.0 + s2 * 0.14);  // dried grass
+    return mix(lo, hi, h);
 }
 
 vec3 terrainDesert(float s, float s2, float h, vec3 wp, vec3 N) {
-    vec3 base = vec3(0.52, 0.44, 0.30);
-    base *= (1.0 + s * 0.16);
-    base += vec3(-0.04, -0.03, -0.01) * s2;
-    base += vec3(0.03, 0.02, 0.01) * h;
-    return base;
+    vec3 lo = vec3(0.52, 0.42, 0.26) * (1.0 + s * 0.12);   // shadow sand
+    vec3 hi = vec3(0.62, 0.54, 0.36) * (1.0 + s2 * 0.10);  // bright crest
+    return mix(lo, hi, h);
 }
 
 vec3 terrainSwamp(float s, float s2, float h, vec3 wp, vec3 N) {
-    vec3 base = vec3(0.20, 0.26, 0.15);
-    base *= (1.0 + s * 0.22);
-    base += vec3(-0.02, 0.03, -0.01) * s2;
-    base += vec3(0.02, 0.01, -0.02) * h;
-    return base;
+    vec3 lo = vec3(0.16, 0.22, 0.12) * (1.0 + s * 0.18);   // dark pool
+    vec3 hi = vec3(0.28, 0.32, 0.18) * (1.0 + s2 * 0.16);  // muddy bank
+    return mix(lo, hi, h);
 }
 
 vec3 terrainTundra(float s, float s2, float h, vec3 wp, vec3 N) {
-    vec3 base = vec3(0.48, 0.48, 0.44);
-    base *= (1.0 + s * 0.14);
-    base += vec3(0.03, 0.03, 0.04) * s2;
-    base += vec3(0.03, 0.03, 0.04) * h;
-    return base;
+    vec3 lo = vec3(0.46, 0.44, 0.36) * (1.0 + s * 0.10);   // bare rock
+    vec3 hi = vec3(0.62, 0.62, 0.58) * (1.0 + s2 * 0.08);  // frost
+    return mix(lo, hi, h);
 }
 
 vec3 terrainHills(float s, float s2, float h, vec3 wp, vec3 N) {
-    vec3 base = vec3(0.38, 0.40, 0.26);
-    base *= (1.0 + s * 0.20);
-    base += vec3(0.03, 0.02, -0.03) * s2;
-    base += vec3(0.04, -0.02, -0.03) * h;
-    return base;
+    vec3 lo = vec3(0.36, 0.48, 0.22) * (1.0 + s * 0.14);   // grassy base
+    vec3 hi = vec3(0.50, 0.46, 0.34) * (1.0 + s2 * 0.14);  // exposed earth
+    return mix(lo, hi, h);
 }
 
 vec3 terrainHighland(float s, float s2, float h, vec3 wp, vec3 N) {
-    vec3 base = vec3(0.44, 0.40, 0.32);
-    base *= (1.0 + s * 0.18);
-    base += vec3(-0.03, -0.02, -0.01) * s2;
-    base += vec3(0.04, 0.04, 0.05) * h;
-    return base;
+    vec3 lo = vec3(0.48, 0.44, 0.32) * (1.0 + s * 0.14);   // earthy rock
+    vec3 hi = vec3(0.72, 0.72, 0.68) * (1.0 + s2 * 0.08);  // grey stone
+    return mix(lo, hi, h);
 }
 
 vec3 terrainMountain(float s, float s2, float h, vec3 wp, vec3 N) {
-    vec3 base = vec3(0.46, 0.44, 0.38);
-    base *= (1.0 + s * 0.16);
-    base += vec3(-0.02, -0.02, 0.01) * s2;
-    base += vec3(0.12, 0.14, 0.18) * h;
-    return base;
+    vec3 lo = vec3(0.48, 0.44, 0.32) * (1.0 + s * 0.14);   // rock base
+    vec3 hi = vec3(0.82, 0.84, 0.88) * (1.0 + s2 * 0.06);  // snow cap
+    return mix(lo, hi, h);
 }
 
 // ── Wall cross-section ──────────────────────────────────────
@@ -278,31 +268,33 @@ void main() {
     if (isWall) {
         procColor = textureWall(terrainId, vWorldPos);
     } else {
-        // Two scratchy layers at different scales for independent variation
-        float s1 = triplanarScratchy(vWorldPos, N, 0.004);  // broad patches
-        float s2 = triplanarScratchy2(vWorldPos, N, 0.010, 42.0); // fine detail
+        float scratchy = triplanarScratchy(vWorldPos, N, 0.004);
+        float s2 = triplanarScratchy2(vWorldPos, N, 0.010, 42.0);
 
-        // Normalized height for secondary tint shifts
-        float hNorm = clamp((heightAboveR + 0.020 * planetRadius) / (0.10 * planetRadius), 0.0, 1.0);
+        // Height ratio exactly like original Sota shader:
+        // h goes 0→1 across the full terrain amplitude within the hex.
+        // bottomOffset = deep water floor, topOffset = mountain peak.
+        float amplitude = abs(topOffset) + abs(bottomOffset);
+        float h = clamp((heightAboveR - bottomOffset) / amplitude, 0.0, 1.0);
 
-        if      (terrainId == 0)  procColor = terrainDeepOcean(s1, s2, hNorm, vWorldPos, N);
-        else if (terrainId == 1)  procColor = terrainShallowOcean(s1, s2, hNorm, vWorldPos, N);
-        else if (terrainId == 2)  procColor = terrainCoast(s1, s2, hNorm, vWorldPos, N);
-        else if (terrainId == 3)  procColor = terrainLake(s1, s2, hNorm, vWorldPos, N);
-        else if (terrainId == 4)  procColor = terrainPlains(s1, s2, hNorm, vWorldPos, N);
-        else if (terrainId == 5)  procColor = terrainGrassland(s1, s2, hNorm, vWorldPos, N);
-        else if (terrainId == 6)  procColor = terrainDesert(s1, s2, hNorm, vWorldPos, N);
-        else if (terrainId == 7)  procColor = terrainSwamp(s1, s2, hNorm, vWorldPos, N);
-        else if (terrainId == 8)  procColor = terrainTundra(s1, s2, hNorm, vWorldPos, N);
-        else if (terrainId == 9)  procColor = terrainHills(s1, s2, hNorm, vWorldPos, N);
-        else if (terrainId == 10) procColor = terrainHighland(s1, s2, hNorm, vWorldPos, N);
-        else if (terrainId == 11) procColor = terrainMountain(s1, s2, hNorm, vWorldPos, N);
+        if      (terrainId == 0)  procColor = terrainDeepOcean(scratchy, s2, h, vWorldPos, N);
+        else if (terrainId == 1)  procColor = terrainShallowOcean(scratchy, s2, h, vWorldPos, N);
+        else if (terrainId == 2)  procColor = terrainCoast(scratchy, s2, h, vWorldPos, N);
+        else if (terrainId == 3)  procColor = terrainLake(scratchy, s2, h, vWorldPos, N);
+        else if (terrainId == 4)  procColor = terrainPlains(scratchy, s2, h, vWorldPos, N);
+        else if (terrainId == 5)  procColor = terrainGrassland(scratchy, s2, h, vWorldPos, N);
+        else if (terrainId == 6)  procColor = terrainDesert(scratchy, s2, h, vWorldPos, N);
+        else if (terrainId == 7)  procColor = terrainSwamp(scratchy, s2, h, vWorldPos, N);
+        else if (terrainId == 8)  procColor = terrainTundra(scratchy, s2, h, vWorldPos, N);
+        else if (terrainId == 9)  procColor = terrainHills(scratchy, s2, h, vWorldPos, N);
+        else if (terrainId == 10) procColor = terrainHighland(scratchy, s2, h, vWorldPos, N);
+        else if (terrainId == 11) procColor = terrainMountain(scratchy, s2, h, vWorldPos, N);
         else                      procColor = vec3(1.0, 0.0, 1.0); // magenta = unknown
     }
 
     // ── Lighting ──
-    float ambient = 0.48;
-    float sun  = max(0.0, dot(N, sunDir))  * 0.35;
+    float ambient = 0.55;
+    float sun  = max(0.0, dot(N, sunDir))  * 0.40;
     float fill = max(0.0, dot(N, fillDir)) * 0.12;
     vec3 toCamera = normalize(cameraPos - vWorldPos);
     float cam  = max(0.0, dot(N, toCamera)) * 0.20;
@@ -333,7 +325,7 @@ export function createTerrainMaterial(scene: Scene): ShaderMaterial {
 		uniforms: [
 			'world', 'viewProjection',
 			'sunDir', 'fillDir', 'cameraPos',
-			'planetRadius'
+			'planetRadius', 'bottomOffset', 'topOffset'
 		],
 		needAlphaBlending: false,
 	});
@@ -344,6 +336,8 @@ export function createTerrainMaterial(scene: Scene): ShaderMaterial {
 
 	const R = 6371; // EARTH_RADIUS_KM
 	mat.setFloat('planetRadius', R);
+	mat.setFloat('bottomOffset', -0.020 * R);
+	mat.setFloat('topOffset', 0.080 * R);
 
 	mat.backFaceCulling = true;
 
