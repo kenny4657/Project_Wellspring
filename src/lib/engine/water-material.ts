@@ -201,7 +201,8 @@ void main() {
     float spec = pow(max(dot(waveN, halfVec), 0.0), 128.0);
     waterCol += vec3(1.0, 0.98, 0.92) * spec * 0.25;
 
-    float alpha = 0.85 + fresnel * 0.15;
+    // Transparent in shallows (see terrain below), opaque in deep water
+    float alpha = clamp(depthDiff * 60.0, 0.3, 0.88) + fresnel * 0.12;
 
     gl_FragColor = vec4(waterCol, alpha);
 }
