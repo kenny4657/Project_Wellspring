@@ -46,9 +46,9 @@ const NOISE_SCALE = 35.0;
 /** Subdivision levels for hex face tessellation (3 ≈ Sota's divisions=7) */
 const SUBDIVISIONS = 3;
 const CORNER_KEY_SCALE = 1e6;
-const CORNER_EPS2 = 1e-12;
 const COAST_ROUNDING = 0.0018;
 const COAST_SMOOTHING = 0.22;
+const CORNER_PATCH_EDGE_T = 0.35;
 
 // ── Noise ───────────────────────────────────────────────────
 
@@ -322,27 +322,29 @@ function buildCornerTargetMap(cells: HexCell[], borderInfoById: Map<number, HexB
 	return cornerTargets;
 }
 
+function getLocalCornerActiveTarget(
+	cell: HexCell,
+	borderInfo: HexBorderInfo,
+	cornerIdx: number
+): number | undefined {
+	const n = cell.corners.length;
+	const prev = (cornerIdx + n - 1) % n;
+	let best = -Infinity;
+
+	if (!borderInfo.excludedEdges[prev]) best = Math.max(best, borderInfo.edgeTargets[prev]);
+	if (!borderInfo.excludedEdges[cornerIdx]) best = Math.max(best, borderInfo.edgeTargets[cornerIdx]);
+
+	return best > -Infinity ? best : undefined;
+}
+
 /** Compute minimum distance to ANY non-excluded edge, and return the ramp target.
- *  At corners where multiple edges are equidistant (dist≈0), use the HIGHEST target
- *  so all hexes sharing that corner converge to the same height. Without this,
- *  a shallow hex at a land+deep+shallow corner might pick the deep edge (target=-0.020)
- *  while land and deep both pick target=0 → 127km gap. */
+ *  Exact-corner snaps are intentionally omitted for water cells; mismatch
+ *  corners are filled by dedicated patch geometry instead of distorting the
+ *  whole distance field around them. */
 function distToBorderWithTarget(
 	vx: number, vy: number, vz: number,
-	cell: HexCell, borderInfo: HexBorderInfo, cornerTargets: Map<string, number>
+	cell: HexCell, borderInfo: HexBorderInfo
 ): { dist: number; target: number; edgeIdx: number; edgeT: number } {
-	for (let i = 0; i < cell.corners.length; i++) {
-		const c = cell.corners[i];
-		const dx = vx - c.x;
-		const dy = vy - c.y;
-		const dz = vz - c.z;
-		if (dx * dx + dy * dy + dz * dz <= CORNER_EPS2) {
-			const target = cornerTargets.get(cornerKey(c.x, c.y, c.z));
-			if (target !== undefined) return { dist: 0, target, edgeIdx: -1, edgeT: 0.5 };
-			break;
-		}
-	}
-
 	const n = cell.corners.length;
 	let minDist = Infinity;
 	let target = -Infinity;
@@ -406,7 +408,6 @@ function computeSurfaceHeight(
 	ux: number, uy: number, uz: number,
 	cell: HexCell,
 	borderInfo: HexBorderInfo,
-	cornerTargets: Map<string, number>,
 	hexRadius: number,
 	tierH: number,
 	isWaterHex: boolean
@@ -420,7 +421,7 @@ function computeSurfaceHeight(
 	}
 
 	if (borderInfo.hasBorder) {
-		const nearest = distToBorderWithTarget(ux, uy, uz, cell, borderInfo, cornerTargets);
+		const nearest = distToBorderWithTarget(ux, uy, uz, cell, borderInfo);
 		let dist = nearest.dist;
 		const borderTarget = nearest.target;
 		const edgeIdx = nearest.edgeIdx;
@@ -457,6 +458,26 @@ function computeSurfaceHeight(
 	}
 
 	return tierH + noiseH * NOISE_AMP;
+}
+
+function cornerPatchHeight(
+	ux: number, uy: number, uz: number,
+	borderTarget: number
+): number {
+	const noiseH = Math.abs(fbmNoise(ux * NOISE_SCALE, uy * NOISE_SCALE, uz * NOISE_SCALE));
+	const borderNoise = borderTarget < -0.001 ? NOISE_AMP : NOISE_AMP * 0.3;
+	return borderTarget + noiseH * borderNoise;
+}
+
+function lerpOnSphere(a: Vector3, b: Vector3, t: number): Vector3 {
+	let x = a.x + (b.x - a.x) * t;
+	let y = a.y + (b.y - a.y) * t;
+	let z = a.z + (b.z - a.z) * t;
+	const len = Math.sqrt(x * x + y * y + z * z) || 1;
+	x /= len;
+	y /= len;
+	z /= len;
+	return new Vector3(x, y, z);
 }
 
 /** Recursively build the same normalized edge polyline used by the subdivided top face. */
@@ -553,7 +574,7 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 					const ux = triVerts[j + k * 3];
 					const uy = triVerts[j + k * 3 + 1];
 					const uz = triVerts[j + k * 3 + 2];
-					const h = computeSurfaceHeight(ux, uy, uz, cell, borderInfo, cornerTargets, hexRadius, tierH, isWaterHex);
+					const h = computeSurfaceHeight(ux, uy, uz, cell, borderInfo, hexRadius, tierH, isWaterHex);
 
 					const r = radius * (1 + h);
 					displaced.push(ux * r, uy * r, uz * r);
@@ -614,8 +635,8 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 				const uy1 = edgePoints[p + 4];
 				const uz1 = edgePoints[p + 5];
 
-				const h0 = computeSurfaceHeight(ux0, uy0, uz0, cell, borderInfo, cornerTargets, hexRadius, tierH, isWaterHex);
-				const h1 = computeSurfaceHeight(ux1, uy1, uz1, cell, borderInfo, cornerTargets, hexRadius, tierH, isWaterHex);
+				const h0 = computeSurfaceHeight(ux0, uy0, uz0, cell, borderInfo, hexRadius, tierH, isWaterHex);
+				const h1 = computeSurfaceHeight(ux1, uy1, uz1, cell, borderInfo, hexRadius, tierH, isWaterHex);
 				const topR0 = radius * (1 + h0);
 				const topR1 = radius * (1 + h1);
 
@@ -674,6 +695,110 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 	vertexData.applyToMesh(mesh, true);
 
 	return { mesh, vertexStarts, totalVerticesPerCell, colorsBuffer: colorsF32, positionsBuffer: positionsF32 };
+}
+
+export function buildCornerGapPatchMesh(cells: HexCell[], radius: number, scene: Scene): Mesh {
+	const positions: number[] = [];
+	const indices: number[] = [];
+	const normals: number[] = [];
+	const colors: number[] = [];
+
+	const cellById = new Map<number, HexCell>();
+	for (const c of cells) cellById.set(c.id, c);
+	const borderInfoById = new Map<number, HexBorderInfo>();
+	for (const c of cells) borderInfoById.set(c.id, getHexBorderInfo(c, cellById));
+	const cornerTargets = buildCornerTargetMap(cells, borderInfoById);
+
+	let vOff = 0;
+
+	for (const cell of cells) {
+		if (cell.heightLevel > 1) continue;
+
+		const borderInfo = borderInfoById.get(cell.id);
+		if (!borderInfo?.hasBorder) continue;
+
+		const n = cell.corners.length;
+		if (n < 3) continue;
+
+		let hexRadius = 0;
+		for (let i = 0; i < n; i++) {
+			const dx = cell.corners[i].x - cell.center.x;
+			const dy = cell.corners[i].y - cell.center.y;
+			const dz = cell.corners[i].z - cell.center.z;
+			hexRadius += Math.sqrt(dx * dx + dy * dy + dz * dz);
+		}
+		hexRadius /= n;
+
+		const color = getTerrainColor(cell.terrain);
+		const tierH = getLevelHeight(cell.heightLevel);
+
+		for (let i = 0; i < n; i++) {
+			const corner = cell.corners[i];
+			const sharedTarget = cornerTargets.get(cornerKey(corner.x, corner.y, corner.z));
+			if (sharedTarget === undefined) continue;
+
+			const localTarget = getLocalCornerActiveTarget(cell, borderInfo, i);
+			if (localTarget !== undefined && sharedTarget <= localTarget + 1e-9) continue;
+
+			const prevCorner = cell.corners[(i + n - 1) % n];
+			const nextCorner = cell.corners[(i + 1) % n];
+			const prevDir = lerpOnSphere(corner, prevCorner, CORNER_PATCH_EDGE_T);
+			const nextDir = lerpOnSphere(corner, nextCorner, CORNER_PATCH_EDGE_T);
+
+			const apexH = cornerPatchHeight(corner.x, corner.y, corner.z, sharedTarget);
+			const prevH = computeSurfaceHeight(
+				prevDir.x, prevDir.y, prevDir.z,
+				cell, borderInfo, hexRadius, tierH, true
+			);
+			const nextH = computeSurfaceHeight(
+				nextDir.x, nextDir.y, nextDir.z,
+				cell, borderInfo, hexRadius, tierH, true
+			);
+
+			const apexR = radius * (1 + apexH);
+			const prevR = radius * (1 + prevH);
+			const nextR = radius * (1 + nextH);
+
+			const displaced = [
+				corner.x * apexR, corner.y * apexR, corner.z * apexR,
+				prevDir.x * prevR, prevDir.y * prevR, prevDir.z * prevR,
+				nextDir.x * nextR, nextDir.y * nextR, nextDir.z * nextR
+			];
+
+			const e1x = displaced[3] - displaced[0];
+			const e1y = displaced[4] - displaced[1];
+			const e1z = displaced[5] - displaced[2];
+			const e2x = displaced[6] - displaced[0];
+			const e2y = displaced[7] - displaced[1];
+			const e2z = displaced[8] - displaced[2];
+			let nx = -(e1y * e2z - e1z * e2y);
+			let ny = -(e1z * e2x - e1x * e2z);
+			let nz = -(e1x * e2y - e1y * e2x);
+			const nl = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
+			nx /= nl;
+			ny /= nl;
+			nz /= nl;
+
+			for (let k = 0; k < 3; k++) {
+				positions.push(displaced[k * 3], displaced[k * 3 + 1], displaced[k * 3 + 2]);
+				normals.push(nx, ny, nz);
+				colors.push(color[0], color[1], color[2], 1.0);
+				indices.push(vOff++);
+			}
+		}
+	}
+
+	const mesh = new Mesh('cornerGapPatches', scene);
+	if (positions.length === 0) return mesh;
+
+	const vertexData = new VertexData();
+	vertexData.positions = new Float32Array(positions);
+	vertexData.indices = new Uint32Array(indices);
+	vertexData.normals = new Float32Array(normals);
+	vertexData.colors = new Float32Array(colors);
+	vertexData.applyToMesh(mesh, true);
+	mesh.isPickable = false;
+	return mesh;
 }
 
 /** Update a single cell when painted — simplified (rebuilds just colors) */
