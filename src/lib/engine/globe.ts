@@ -125,7 +125,8 @@ export async function createGlobeEngine(
 	globeMesh.isPickable = false; // picking uses the lightweight pickSphere instead
 
 	// ── Water Surface ──────────────────────────────────────
-	const seaLevelR = EARTH_RADIUS_KM * (1 - 0.002); // match shader seaLevel
+	// Slightly below sea level so land terrain always pokes through
+	const seaLevelR = EARTH_RADIUS_KM * (1 - 0.003);
 	const waterSphere = MeshBuilder.CreateSphere('waterSurface', {
 		diameter: seaLevelR * 2,
 		segments: 64
@@ -133,9 +134,6 @@ export async function createGlobeEngine(
 	const waterMat = createWaterMaterial(scene);
 	waterSphere.material = waterMat;
 	waterSphere.isPickable = false;
-	// Render water after terrain to avoid z-fighting
-	waterSphere.renderingGroupId = 1;
-	globeMesh.renderingGroupId = 0;
 
 	// ── Hex Edge Wireframe ──────────────────────────────────
 	report('Building hex grid overlay...');
