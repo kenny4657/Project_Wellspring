@@ -278,11 +278,11 @@ void main() {
     }
 
     // ── Lighting ──
-    float ambient = 0.48;
-    float sun  = max(0.0, dot(N, sunDir))  * 0.35;
-    float fill = max(0.0, dot(N, fillDir)) * 0.12;
+    float ambient = 0.45;
+    float sun  = max(0.0, dot(N, sunDir))  * 0.30;
+    float fill = max(0.0, dot(N, fillDir)) * 0.10;
     vec3 toCamera = normalize(cameraPos - vWorldPos);
-    float cam  = max(0.0, dot(N, toCamera)) * 0.12;
+    float cam  = max(0.0, dot(N, toCamera)) * 0.35;
 
     float light = ambient + sun + fill + cam;
     vec3 litColor = procColor * light;
