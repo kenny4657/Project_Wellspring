@@ -25,7 +25,6 @@ import { EARTH_RADIUS_KM, latLngToWorld } from '$lib/geo/coords';
 import { generateIcoHexGrid, type HexCell } from '$lib/engine/icosphere';
 import { buildGlobeMesh, buildHexEdgeLines, updateCellTerrain } from '$lib/engine/globe-mesh';
 import { createTerrainMaterial } from '$lib/engine/terrain-material';
-import { createWaterMaterial } from '$lib/engine/water-material';
 // picking is inlined below using the lightweight pickSphere
 import { assignTerrain } from '$lib/engine/terrain-gen';
 import { TERRAIN_TYPES, type TerrainTypeId } from '$lib/world/terrain-types';
@@ -123,18 +122,6 @@ export async function createGlobeEngine(
 	globeMesh.material = terrainMat;
 	globeMesh.hasVertexAlpha = false;
 	globeMesh.isPickable = false; // picking uses the lightweight pickSphere instead
-	globeMesh.renderingGroupId = 0;
-
-	// ── Water Surface ──────────────────────────────────────
-	const seaLevelR = EARTH_RADIUS_KM * (1 - 0.003);
-	const waterSphere = MeshBuilder.CreateSphere('waterSurface', {
-		diameter: seaLevelR * 2,
-		segments: 64
-	}, scene);
-	const waterMat = createWaterMaterial(scene);
-	waterSphere.material = waterMat;
-	waterSphere.isPickable = false;
-	waterSphere.renderingGroupId = 1;
 
 	// ── Hex Edge Wireframe ──────────────────────────────────
 	report('Building hex grid overlay...');
@@ -188,13 +175,9 @@ export async function createGlobeEngine(
 		const cl = Math.sqrt(cx * cx + cy * cy + cz * cz) || 1;
 		const sx = cx / cl + 0.3, sy = cy / cl + 0.5, sz = cz / cl;
 		const sl = Math.sqrt(sx * sx + sy * sy + sz * sz) || 1;
-		const sunDirVec = new Vector3(sx / sl, sy / sl, sz / sl);
-		terrainMat.setVector3('sunDir', sunDirVec);
+		terrainMat.setVector3('sunDir', new Vector3(sx / sl, sy / sl, sz / sl));
 		waterTime += engine.getDeltaTime() * 0.001;
 		terrainMat.setFloat('time', waterTime);
-		waterMat.setFloat('time', waterTime);
-		waterMat.setVector3('cameraPos', camPos);
-		waterMat.setVector3('sunDir', sunDirVec);
 		scene.render();
 	});
 

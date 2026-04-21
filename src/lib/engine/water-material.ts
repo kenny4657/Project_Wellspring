@@ -157,7 +157,7 @@ export function createWaterMaterial(scene: Scene): ShaderMaterial {
 	mat.setFloat('waveFreq', 12.0);  // noise frequency on unit sphere
 
 	mat.backFaceCulling = true;
-	mat.disableDepthWrite = true;
+	// Push water behind terrain in depth test to prevent z-fighting
 	mat.zOffset = 5;
 	mat.zOffsetUnits = 5;
 
