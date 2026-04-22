@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import type { GlobeEngine } from '$lib/engine/globe';
-	import { TERRAIN_PROFILES, type TerrainTypeId, type RGB, loadTerrainPalettes, saveTerrainPalettes } from '$lib/world/terrain-types';
+	import { TERRAIN_PROFILES, type TerrainTypeId, type RGB, loadTerrainSettings, saveTerrainSettings, type TerrainSettings } from '$lib/world/terrain-types';
 
 	let canvasEl: HTMLCanvasElement;
 	let engine: GlobeEngine | null = null;
@@ -16,8 +16,8 @@
 	let activeTab = $state<'paint' | 'colors'>('paint');
 
 	// Color editor state
-	let palettes = $state<[RGB, RGB, RGB, RGB][]>(loadTerrainPalettes());
-	let editingIdx = $state(5); // plains by default
+	let settings = $state<TerrainSettings>(loadTerrainSettings());
+	let editingIdx = $state(4); // plains by default
 
 	const BAND_LABELS = ['Shore', 'Grass', 'Hill', 'Snow'];
 
@@ -56,17 +56,28 @@
 	}
 
 	function onBandChange(bandIdx: number, hex: string) {
-		palettes[editingIdx][bandIdx] = hexToRgb(hex);
-		engine?.setTerrainColors(palettes);
+		settings.palettes[editingIdx][bandIdx] = hexToRgb(hex);
+		engine?.setTerrainSettings(settings);
+	}
+
+	function onBlendChange(value: number) {
+		settings.blends[editingIdx] = value;
+		engine?.setTerrainSettings(settings);
 	}
 
 	function saveColors() {
-		saveTerrainPalettes(palettes);
+		saveTerrainSettings(settings);
 	}
 
 	function resetColors() {
-		palettes = TERRAIN_PROFILES.map(p => [...p.palette] as [RGB, RGB, RGB, RGB]);
-		engine?.setTerrainColors(palettes);
+		settings = loadTerrainSettings();
+		// Clear localStorage so defaults are restored
+		if (typeof localStorage !== 'undefined') localStorage.removeItem('wellspring-terrain-settings');
+		settings = {
+			palettes: TERRAIN_PROFILES.map(p => [...p.palette] as [RGB, RGB, RGB, RGB]),
+			blends: TERRAIN_PROFILES.map(p => p.blend),
+		};
+		engine?.setTerrainSettings(settings);
 	}
 </script>
 
@@ -133,8 +144,8 @@
 				</div>
 
 				{#each BAND_LABELS as label, b}
-					{#if palettes[editingIdx]}
-						{@const c = palettes[editingIdx][b]}
+					{#if settings.palettes[editingIdx]}
+						{@const c = settings.palettes[editingIdx][b]}
 						<div class="band-row">
 							<span class="text-[10px] text-[#A09890] w-10">{label}</span>
 							<input
@@ -150,12 +161,29 @@
 					{/if}
 				{/each}
 
+				<!-- Blend slider -->
+				<div class="band-row mt-2">
+					<span class="text-[10px] text-[#A09890] w-10">Blend</span>
+					<input
+						type="range"
+						min="0.01"
+						max="0.20"
+						step="0.005"
+						value={settings.blends[editingIdx]}
+						oninput={(e) => onBlendChange(parseFloat((e.target as HTMLInputElement).value))}
+						class="blend-slider flex-1"
+					/>
+					<span class="text-[10px] text-[#706860] font-mono w-8 text-right">
+						{settings.blends[editingIdx].toFixed(2)}
+					</span>
+				</div>
+
 				<!-- Gradient preview -->
-				{#if palettes[editingIdx]}
+				{#if settings.palettes[editingIdx]}
 					<div class="mt-3 mb-2">
 						<div class="text-[10px] text-[#A09890] mb-1">Preview</div>
 						<div class="h-4 rounded-sm overflow-hidden flex">
-							{#each palettes[editingIdx] as c}
+							{#each settings.palettes[editingIdx] as c}
 								<div class="flex-1" style="background: {rgbToHex(c[0], c[1], c[2])};"></div>
 							{/each}
 						</div>
@@ -241,4 +269,8 @@
 	.color-input { width: 28px; height: 20px; padding: 0; border: 1px solid rgba(255,255,255,0.15); border-radius: 3px; cursor: pointer; background: transparent; }
 	.color-input::-webkit-color-swatch-wrapper { padding: 1px; }
 	.color-input::-webkit-color-swatch { border: none; border-radius: 2px; }
+
+	.blend-slider { -webkit-appearance: none; appearance: none; height: 4px; background: rgba(255,255,255,0.1); border-radius: 2px; outline: none; }
+	.blend-slider::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 12px; height: 12px; border-radius: 50%; background: #C4A96A; cursor: pointer; }
+	.blend-slider::-moz-range-thumb { width: 12px; height: 12px; border-radius: 50%; background: #C4A96A; cursor: pointer; border: none; }
 </style>

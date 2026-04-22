@@ -14,7 +14,7 @@ import { ShaderMaterial } from '@babylonjs/core/Materials/shaderMaterial';
 import { ShaderStore } from '@babylonjs/core/Engines/shaderStore';
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import type { Scene } from '@babylonjs/core/scene';
-import { packTerrainPalettes, loadTerrainPalettes, packCustomPalettes, type RGB } from '$lib/world/terrain-types';
+import { loadTerrainSettings, packCustomPalettes, type RGB, type TerrainSettings } from '$lib/world/terrain-types';
 
 const VERTEX = /* glsl */ `
 precision highp float;
@@ -52,6 +52,7 @@ uniform float hillRatio;     // 0-1 ratio where grass→hill transition occurs
 uniform float topOffset;     // highest height (mountain peak)
 uniform float time;          // elapsed seconds for water animation
 uniform vec3 terrainPalette[40]; // 10 types × 4 bands [shore, grass, hill, snow]
+uniform float terrainBlend[10]; // per-terrain shore→grass transition width (fraction of amplitude)
 
 varying vec3 vWorldPos;
 varying vec3 vWorldNormal;
@@ -191,8 +192,8 @@ void main() {
         float h = (heightAboveR - bottomOffset) / amplitude;
         float scratchy = triplanarScratchy(vWorldPos, N, 0.004);
 
-        float shoreWidth = 0.06;
-        float belowWidth = 0.04;
+        float shoreWidth = terrainBlend[terrainId];
+        float belowWidth = shoreWidth * 0.67; // below-water zone proportional to shore width
 
         // Water types (0-4): global seaLevel blending with per-terrain colors
         // Land types (5+): use tierH as local "sea level" so shore blend
@@ -250,7 +251,7 @@ export function createTerrainMaterial(scene: Scene): ShaderMaterial {
 			'world', 'viewProjection',
 			'sunDir', 'fillDir', 'cameraPos',
 			'planetRadius', 'seaLevel', 'bottomOffset', 'topOffset', 'hillRatio', 'time',
-			'terrainPalette'
+			'terrainPalette', 'terrainBlend'
 		],
 		needAlphaBlending: false,
 	});
@@ -269,16 +270,17 @@ export function createTerrainMaterial(scene: Scene): ShaderMaterial {
 	mat.setFloat('hillRatio', 0.40);               // grass→hill transition
 	mat.setFloat('time', 0);
 
-	// Load and upload per-terrain color palettes
-	const palettes = loadTerrainPalettes();
-	mat.setArray3('terrainPalette', packCustomPalettes(palettes));
+	// Load and upload per-terrain color palettes + blend values
+	const settings = loadTerrainSettings();
+	applyTerrainSettings(mat, settings);
 
 	mat.backFaceCulling = true;
 
 	return mat;
 }
 
-/** Update terrain palette uniforms at runtime (for color editor). */
-export function applyTerrainColors(mat: ShaderMaterial, palettes: [RGB, RGB, RGB, RGB][]): void {
-	mat.setArray3('terrainPalette', packCustomPalettes(palettes));
+/** Update terrain palette + blend uniforms at runtime (for color editor). */
+export function applyTerrainSettings(mat: ShaderMaterial, settings: TerrainSettings): void {
+	mat.setArray3('terrainPalette', packCustomPalettes(settings.palettes));
+	mat.setFloats('terrainBlend', settings.blends);
 }
