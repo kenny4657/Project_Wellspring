@@ -233,22 +233,32 @@ void main() {
         bool neighborIsWater = hasCrossBlend && (neighborId <= 3);
         bool isCoastalBlend = hasCrossBlend && (ownIsWater != neighborIsWater);
 
+        // For coastal vertices, compute color at an "inland" height so the
+        // shore palette band doesn't create a hex-shaped sandy strip.
+        // Interior vertices sit at ~tierH + noiseBias; use that height
+        // so coastal color matches seamlessly.
+        float noiseAmp = 0.008 * planetRadius;
+        float noiseBias = 0.3 * noiseAmp;
+        float inlandHeight = tierH + noiseBias;
+
         // Own terrain color
-        vec3 ownColor = computeTerrainColor(terrainId, heightAboveR, tierH, scratchy);
+        vec3 ownColor;
+        if (isCoastalBlend && !ownIsWater) {
+            // Land vertex near coast: use inland height to avoid shore band
+            float coastFade = 1.0 - smoothstep(0.0, 0.5, distToBorder);
+            float fakeH = mix(heightAboveR, inlandHeight, coastFade);
+            ownColor = computeTerrainColor(terrainId, fakeH, tierH, scratchy);
+        } else {
+            ownColor = computeTerrainColor(terrainId, heightAboveR, tierH, scratchy);
+        }
 
         if (isCoastalBlend) {
-            // Coastal blend: can't use computeTerrainColor because the shore
-            // palette band is ~76km wide — all coastal heights fall in it,
-            // producing hex-shaped sandy strips. Use palGrass directly.
-            float coastFade = 1.0 - smoothstep(0.0, 0.5, distToBorder);
             if (ownIsWater) {
                 // Water hex vertex above water sphere: show land neighbor color
-                procColor = palGrass(neighborId, scratchy);
+                // at inland height so it matches surrounding terrain
+                procColor = computeTerrainColor(neighborId, inlandHeight, tierH, scratchy);
             } else {
-                // Land hex vertex near water: blend own color toward grass
-                // to suppress the shore band near the coast
-                vec3 grassColor = palGrass(terrainId, scratchy);
-                procColor = mix(ownColor, grassColor, coastFade);
+                procColor = ownColor;
             }
         } else if (hasCrossBlend) {
             // Land↔land terrain blend: noise-modulated boundary
