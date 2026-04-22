@@ -84,7 +84,15 @@ function fbmNoise(x: number, y: number, z: number): number {
 
 // ── Helpers ─────────────────────────────────────────────────
 
+/** Wall vertex color: terrain profile RGB (used by textureWall for blue-detection). */
 function getTerrainColor(idx: number): [number, number, number] { return TERRAIN_PROFILES[idx]?.color ?? [0.5, 0.5, 0.5]; }
+/** Top-face vertex color: R = terrainIndex/16, G = 0, B = encoded tier height.
+ *  Shader decodes: terrainId = int(r * 16.0 + 0.5), tierH = (b * 0.110 - 0.030) * R */
+function getTopFaceColor(terrainIdx: number, tierH: number): [number, number, number] {
+	const r = terrainIdx / 16.0;
+	const b = (tierH + 0.030) / 0.110; // maps [-0.020, 0.080] → [0.09, 1.0]
+	return [r, 0.0, b];
+}
 function getLevelHeight(level: number): number { return LEVEL_HEIGHTS[Math.min(level, LEVEL_HEIGHTS.length - 1)] ?? 0; }
 
 /** Recursively subdivide a triangle on the unit sphere */
@@ -593,8 +601,9 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 		vertexStarts.push(vOff);
 		const startVOff = vOff;
 
-		const color = getTerrainColor(cell.terrain);
+		const color = getTerrainColor(cell.terrain);   // wall faces
 		const tierH = getLevelHeight(cell.heightLevel);
+		const topColor = getTopFaceColor(cell.terrain, tierH); // top faces
 		const isWaterHex = cell.heightLevel <= 1;
 
 		// Border info for coastline ramps — applies to BOTH water and land hexes.
@@ -655,7 +664,7 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 				for (let k = 0; k < 3; k++) {
 					positions.push(displaced[k * 3], displaced[k * 3 + 1], displaced[k * 3 + 2]);
 					normals.push(nx, ny, nz);
-					colors.push(color[0], color[1], color[2], 1.0);
+					colors.push(topColor[0], topColor[1], topColor[2], 1.0);
 					indices.push(vOff++);
 				}
 			}
@@ -789,6 +798,7 @@ export function buildCornerGapPatchMesh(cells: HexCell[], radius: number, scene:
 
 		const color = getTerrainColor(cell.terrain);
 		const tierH = getLevelHeight(cell.heightLevel);
+		const topColor = getTopFaceColor(cell.terrain, tierH);
 
 		for (let i = 0; i < n; i++) {
 			const corner = cell.corners[i];
@@ -840,7 +850,7 @@ export function buildCornerGapPatchMesh(cells: HexCell[], radius: number, scene:
 			for (let k = 0; k < 3; k++) {
 				positions.push(displaced[k * 3], displaced[k * 3 + 1], displaced[k * 3 + 2]);
 				normals.push(nx, ny, nz);
-				colors.push(color[0], color[1], color[2], 1.0);
+				colors.push(topColor[0], topColor[1], topColor[2], 1.0);
 				indices.push(vOff++);
 			}
 		}
@@ -871,7 +881,9 @@ export function updateCellTerrain(
 	positionsBuffer: Float32Array
 ): void {
 	const cell = cells[cellIndex];
-	const color = getTerrainColor(cell.terrain);
+	const wallColor = getTerrainColor(cell.terrain);
+	const tierH = getLevelHeight(cell.heightLevel);
+	const topColor = getTopFaceColor(cell.terrain, tierH);
 	const start = vertexStarts[cellIndex];
 	const count = totalVerticesPerCell[cellIndex];
 	if (count === 0) return;
@@ -879,10 +891,11 @@ export function updateCellTerrain(
 	// Update all vertex colors for this cell
 	for (let i = 0; i < count; i++) {
 		const ci = (start + i) * 4;
-		colorsBuffer[ci] = color[0];
-		colorsBuffer[ci + 1] = color[1];
-		colorsBuffer[ci + 2] = color[2];
-		// Preserve alpha (wall vs top face flag)
+		const isTopFace = colorsBuffer[ci + 3] > 0.5;
+		const c = isTopFace ? topColor : wallColor;
+		colorsBuffer[ci] = c[0];
+		colorsBuffer[ci + 1] = c[1];
+		colorsBuffer[ci + 2] = c[2];
 	}
 
 	mesh.setVerticesData(VertexBuffer.ColorKind, new Float32Array(colorsBuffer), true);
