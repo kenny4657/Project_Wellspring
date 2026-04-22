@@ -255,6 +255,8 @@ interface HexBorderInfo {
 	edgeTargets: number[];     // ramp target height per non-excluded edge
 	allSameHeight: boolean;    // ALL neighbors at exact same height level (deep ocean fast path)
 	hasBorder: boolean;        // has at least one non-excluded edge
+	edgeNeighborTerrains: number[]; // terrain ID of neighbor across each edge (-1 if same terrain)
+	hasTerrainBorder: boolean;      // any edge borders a different terrain type
 }
 
 function cornerKey(x: number, y: number, z: number): string {
@@ -297,13 +299,21 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 	const n = cell.corners.length;
 	const excludedEdges: boolean[] = new Array(n).fill(false);
 	const edgeTargets: number[] = new Array(n).fill(0);
+	const edgeNeighborTerrains: number[] = new Array(n).fill(-1);
 	let excludedCount = 0;
 	let exactSameCount = 0;
+	let hasTerrainBorder = false;
 	const isWater = cell.heightLevel <= 1;
 
 	for (let i = 0; i < n; i++) {
 		const nb = findNeighborAcrossEdge(cell, i, cellById);
 		if (!nb) continue;
+
+		// Track terrain type differences for color blending
+		if (nb.terrain !== cell.terrain) {
+			edgeNeighborTerrains[i] = nb.terrain;
+			hasTerrainBorder = true;
+		}
 
 		if (nb.heightLevel === cell.heightLevel) exactSameCount++;
 		const nbIsWater = nb.heightLevel <= 1;
@@ -350,7 +360,9 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 		excludedEdges,
 		edgeTargets,
 		allSameHeight: isWater && exactSameCount >= n,
-		hasBorder: excludedCount < n
+		hasBorder: excludedCount < n,
+		edgeNeighborTerrains,
+		hasTerrainBorder,
 	};
 }
 
@@ -433,6 +445,28 @@ function distToBorderWithTarget(
 		}
 	}
 	return { dist: minDist, target, edgeIdx, edgeT };
+}
+
+/** Find distance to the nearest edge that borders a different terrain type.
+ *  Returns { dist, neighborTerrainId } or { dist: Infinity, neighborTerrainId: -1 } if none. */
+function distToTerrainBorder(
+	vx: number, vy: number, vz: number,
+	cell: HexCell, borderInfo: HexBorderInfo
+): { dist: number; neighborTerrainId: number } {
+	const n = cell.corners.length;
+	let minDist = Infinity;
+	let neighborTerrain = -1;
+	for (let i = 0; i < n; i++) {
+		if (borderInfo.edgeNeighborTerrains[i] < 0) continue;
+		const a = cell.corners[i];
+		const b = cell.corners[(i + 1) % n];
+		const d = distToSegment(vx, vy, vz, a.x, a.y, a.z, b.x, b.y, b.z);
+		if (d < minDist) {
+			minDist = d;
+			neighborTerrain = borderInfo.edgeNeighborTerrains[i];
+		}
+	}
+	return { dist: minDist, neighborTerrainId: neighborTerrain };
 }
 
 function smoothMin(a: number, b: number, k: number): number {
