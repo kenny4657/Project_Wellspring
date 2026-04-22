@@ -313,7 +313,10 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 		if (!nb) continue;
 
 		// Track terrain type differences for color blending
-		if (nb.terrain !== cell.terrain) {
+		// Skip water neighbors — coastline ramps handle those transitions
+		const nbIsWaterTerrain = nb.heightLevel <= 1;
+		const cellIsWaterTerrain = cell.heightLevel <= 1;
+		if (nb.terrain !== cell.terrain && !nbIsWaterTerrain && !cellIsWaterTerrain) {
 			edgeNeighborTerrains[i] = nb.terrain;
 			hasTerrainBorder = true;
 		}
@@ -708,9 +711,9 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 							const dcz = vz - cell.center.z;
 							const distToCenter = Math.sqrt(dcx * dcx + dcy * dcy + dcz * dcz);
 							const ratio = distToCenter / (distToCenter + tb.dist + 1e-9);
-							// smoothstep(0.3, 0.7, ratio) * 0.5 — gradual onset, max 50% at edge
-							const st = Math.max(0, Math.min(1, (ratio - 0.3) / 0.4));
-							blendFactor = st * st * (3 - 2 * st) * 0.5;
+							// smoothstep(0.55, 0.85, ratio) * 0.45 — outer rim only
+							const st = Math.max(0, Math.min(1, (ratio - 0.55) / 0.3));
+							blendFactor = st * st * (3 - 2 * st) * 0.45;
 							if (blendFactor > 0.001) {
 								neighborTerrainId = tb.neighborTerrainId;
 							} else {
@@ -997,8 +1000,8 @@ export function updateCellTerrain(
 						const dcz = uz - c.center.z;
 						const distToCenter = Math.sqrt(dcx * dcx + dcy * dcy + dcz * dcz);
 						const ratio = distToCenter / (distToCenter + tb.dist + 1e-9);
-						const st = Math.max(0, Math.min(1, (ratio - 0.3) / 0.4));
-						blendFactor = st * st * (3 - 2 * st) * 0.5;
+						const st = Math.max(0, Math.min(1, (ratio - 0.55) / 0.3));
+						blendFactor = st * st * (3 - 2 * st) * 0.45;
 						if (blendFactor > 0.001) {
 							neighborTerrainId = tb.neighborTerrainId;
 						} else {
