@@ -239,7 +239,7 @@ void main() {
             float noiseOffset = n1 + n2;
             // Blend boundary: noise shifts the threshold so boundary follows
             // noise contours rather than hex geometry
-            float threshold = 0.35 + noiseOffset; // ~0.03 to ~0.67
+            float threshold = max(0.35 + noiseOffset, 0.08); // clamped to avoid smoothstep NaN
             float blend = (1.0 - smoothstep(0.0, threshold, distToBorder)) * 0.45;
             vec3 neighborColor = computeTerrainColor(neighborId, heightAboveR, tierH, scratchy);
             procColor = mix(ownColor, neighborColor, blend);
