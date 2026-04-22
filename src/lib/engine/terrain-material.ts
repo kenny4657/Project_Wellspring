@@ -233,33 +233,32 @@ void main() {
         bool neighborIsWater = hasCrossBlend && (neighborId <= 3);
         bool isCoastalBlend = hasCrossBlend && (ownIsWater != neighborIsWater);
 
-        // For coastal vertices, compute color at an "inland" height so the
-        // shore palette band doesn't create a hex-shaped sandy strip.
-        // Interior vertices sit at ~tierH + noiseBias; use that height
-        // so coastal color matches seamlessly.
-        float noiseAmp = 0.008 * planetRadius;
-        float noiseBias = 0.3 * noiseAmp;
-        float inlandHeight = tierH + noiseBias;
-
         // Own terrain color
-        vec3 ownColor;
-        if (isCoastalBlend && !ownIsWater) {
-            // Land vertex near coast: use inland height to avoid shore band
-            float coastFade = 1.0 - smoothstep(0.0, 0.5, distToBorder);
-            float fakeH = mix(heightAboveR, inlandHeight, coastFade);
-            ownColor = computeTerrainColor(terrainId, fakeH, tierH, scratchy);
-        } else {
-            ownColor = computeTerrainColor(terrainId, heightAboveR, tierH, scratchy);
-        }
+        vec3 ownColor = computeTerrainColor(terrainId, heightAboveR, tierH, scratchy);
 
         if (isCoastalBlend) {
-            if (ownIsWater) {
-                // Water hex vertex above water sphere: show land neighbor color
-                // at inland height so it matches surrounding terrain
-                procColor = computeTerrainColor(neighborId, inlandHeight, tierH, scratchy);
-            } else {
-                procColor = ownColor;
-            }
+            // Coastal transition: use noise-modulated distance to determine
+            // where the shore/grass boundary falls, instead of vertex height
+            // (which follows hex geometry).
+            float noiseAmp = 0.008 * planetRadius;
+            float noiseBias = 0.3 * noiseAmp;
+
+            // Noise-driven shore threshold: determines where shore↔grass
+            // boundary falls as a function of distance-to-coast
+            float coastNoise = snoise(vWorldPos * 0.005) * 0.15
+                             + snoise(vWorldPos * 0.015) * 0.08;
+            float shoreWidth = 0.30 + coastNoise; // organic shore band width
+
+            // For the land terrain (whichever side), compute both shore and
+            // inland colors, then blend based on noise-modulated distance
+            int landId = ownIsWater ? neighborId : terrainId;
+            vec3 shoreColor = palShore(landId, scratchy);
+            float inlandH = tierH + noiseBias;
+            vec3 inlandColor = computeTerrainColor(landId, inlandH, tierH, scratchy);
+
+            // Shore→inland transition follows noise contour, not hex edge
+            float t = smoothstep(0.0, shoreWidth, distToBorder);
+            procColor = mix(shoreColor, inlandColor, t);
         } else if (hasCrossBlend) {
             // Land↔land terrain blend: noise-modulated boundary
             float n1 = snoise(vWorldPos * 0.004) * 0.22;
