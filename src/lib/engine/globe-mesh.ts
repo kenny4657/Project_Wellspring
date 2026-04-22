@@ -467,9 +467,11 @@ function computeSurfaceHeight(
 	tierH: number,
 	isWaterHex: boolean
 ): number {
-	// abs() ensures noise only displaces upward from tier height — prevents
-	// land from dipping below sea level and keeps all hex surfaces consistent.
-	const noiseH = Math.abs(fbmNoise(ux * NOISE_SCALE, uy * NOISE_SCALE, uz * NOISE_SCALE));
+	const rawNoise = fbmNoise(ux * NOISE_SCALE, uy * NOISE_SCALE, uz * NOISE_SCALE);
+	// Water hexes: abs() keeps surface above ocean floor.
+	// Land hexes: allow ± displacement so vertices straddle tierH,
+	// giving the shader a height crossing for shore-like color blending.
+	const noiseH = isWaterHex ? Math.abs(rawNoise) : rawNoise;
 
 	if (isWaterHex && borderInfo.allSameHeight) {
 		return tierH + noiseH * NOISE_AMP;
