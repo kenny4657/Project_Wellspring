@@ -206,20 +206,41 @@ void main() {
         // User-adjustable shift
         refLevel += terrainBlendPos[terrainId] * amplitude;
 
-        if (heightAboveR < refLevel - belowWidth * amplitude) {
+        // All 4 band transitions use the same local height-based blending.
+        // The noise displacement range (~noiseAmp) is divided into zones:
+        //   below refLevel          → solid shore
+        //   refLevel ± shoreWidth   → shore ↔ grass transition
+        //   grass zone              → solid grass
+        //   grassHillBoundary ± sw  → grass ↔ hill transition
+        //   hill zone               → solid hill
+        //   hillSnowBoundary ± sw   → hill ↔ snow transition
+        //   above                   → solid snow
+        float noiseAmp = 0.008 * planetRadius;
+        float sw = shoreWidth * amplitude;
+
+        // Space the 3 boundaries evenly across the noise range above refLevel
+        float bandStep = noiseAmp * 0.45;
+        float boundary1 = refLevel;              // shore ↔ grass
+        float boundary2 = refLevel + bandStep;   // grass ↔ hill
+        float boundary3 = refLevel + bandStep * 2.0; // hill ↔ snow
+
+        if (heightAboveR < boundary1 - sw) {
             procColor = palShore(terrainId, scratchy);
-        } else if (heightAboveR < refLevel) {
-            float belowT = (heightAboveR - (refLevel - belowWidth * amplitude)) / (belowWidth * amplitude);
-            procColor = mix(palShore(terrainId, scratchy), palShore(terrainId, scratchy), clamp(belowT, 0.0, 1.0));
-        } else if (heightAboveR < refLevel + shoreWidth * amplitude) {
-            float shoreT = (heightAboveR - refLevel) / (shoreWidth * amplitude);
-            procColor = mix(palShore(terrainId, scratchy), palGrass(terrainId, scratchy), clamp(shoreT, 0.0, 1.0));
-        } else if (h <= hillRatio) {
-            float t = clamp(h * firstCoef, 0.0, 1.0);
-            procColor = mix(palGrass(terrainId, scratchy), palHill(terrainId, scratchy), t);
+        } else if (heightAboveR < boundary1 + sw) {
+            float t = (heightAboveR - (boundary1 - sw)) / (2.0 * sw);
+            procColor = mix(palShore(terrainId, scratchy), palGrass(terrainId, scratchy), clamp(t, 0.0, 1.0));
+        } else if (heightAboveR < boundary2 - sw) {
+            procColor = palGrass(terrainId, scratchy);
+        } else if (heightAboveR < boundary2 + sw) {
+            float t = (heightAboveR - (boundary2 - sw)) / (2.0 * sw);
+            procColor = mix(palGrass(terrainId, scratchy), palHill(terrainId, scratchy), clamp(t, 0.0, 1.0));
+        } else if (heightAboveR < boundary3 - sw) {
+            procColor = palHill(terrainId, scratchy);
+        } else if (heightAboveR < boundary3 + sw) {
+            float t = (heightAboveR - (boundary3 - sw)) / (2.0 * sw);
+            procColor = mix(palHill(terrainId, scratchy), palSnow(terrainId, scratchy), clamp(t, 0.0, 1.0));
         } else {
-            float t = clamp((h - hillRatio) * secondCoef, 0.0, 1.0);
-            procColor = mix(palHill(terrainId, scratchy), palSnow(terrainId, scratchy), t);
+            procColor = palSnow(terrainId, scratchy);
         }
     }
 
