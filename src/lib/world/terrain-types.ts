@@ -73,45 +73,6 @@ export const TERRAIN_PROFILES: TerrainProfile[] = [
 	{ id: 'hills',         name: 'Hills',         tier: 3, height:  0.7 * H, amplitude: 1.2,  frequency: 2.0,  ridged: false, color: [0.45, 0.50, 0.28], blend: 0.06, blendPos: 0, palette: [[0.58, 0.52, 0.36], [0.40, 0.52, 0.24], [0.50, 0.46, 0.32], [0.82, 0.84, 0.88]] },
 ];
 
-/**
- * Pack terrain profiles into a Float32Array for upload as a shader uniform.
- * 4 floats per terrain type: [height, amplitude, frequency, ridged(0/1)]
- * Colors packed separately: 4 floats per type [r, g, b, 0]
- */
-export function packTerrainParams(): { params: Float32Array; colors: Float32Array } {
-	const params = new Float32Array(TERRAIN_COUNT * 4);
-	const colors = new Float32Array(TERRAIN_COUNT * 4);
-
-	for (let i = 0; i < TERRAIN_COUNT; i++) {
-		const p = TERRAIN_PROFILES[i];
-		params[i * 4 + 0] = p.height;
-		params[i * 4 + 1] = p.amplitude;
-		params[i * 4 + 2] = p.frequency;
-		params[i * 4 + 3] = p.ridged ? 1.0 : 0.0;
-
-		colors[i * 4 + 0] = p.color[0];
-		colors[i * 4 + 1] = p.color[1];
-		colors[i * 4 + 2] = p.color[2];
-		colors[i * 4 + 3] = 1.0;
-	}
-
-	return { params, colors };
-}
-
-/** Pack per-terrain palettes into a flat array for shader uniform upload.
- *  10 types × 4 bands × 3 channels = 120 floats.
- *  Shader access: terrainPalette[terrainId * 4 + bandIndex] */
-export function packTerrainPalettes(): number[] {
-	const data: number[] = [];
-	for (let i = 0; i < TERRAIN_COUNT; i++) {
-		const p = TERRAIN_PROFILES[i];
-		for (let b = 0; b < 4; b++) {
-			data.push(p.palette[b][0], p.palette[b][1], p.palette[b][2]);
-		}
-	}
-	return data;
-}
-
 const STORAGE_KEY = 'wellspring-terrain-settings';
 
 export interface TerrainSettings {
@@ -150,11 +111,6 @@ export function loadTerrainSettings(): TerrainSettings {
 export function saveTerrainSettings(settings: TerrainSettings): void {
 	if (typeof localStorage === 'undefined') return;
 	localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
-}
-
-/** For backwards compat — load just palettes. */
-export function loadTerrainPalettes(): [RGB, RGB, RGB, RGB][] {
-	return loadTerrainSettings().palettes;
 }
 
 /** Pack custom palettes array into flat number[] for shader uniform. */
