@@ -231,9 +231,11 @@ void main() {
         vec3 ownColor = computeTerrainColor(terrainId, heightAboveR, tierH, scratchy);
 
         if (hasCrossBlend) {
-            // Neighbor terrain color at same vertex position
+            // Modulate blend with world-space noise to break up hex geometry
+            float blendNoise = snoise(vWorldPos * 0.006) * 0.4 + 0.8; // range 0.4–1.2
+            float modulatedBlend = clamp(crossBlend * blendNoise, 0.0, 0.5);
             vec3 neighborColor = computeTerrainColor(neighborId, heightAboveR, tierH, scratchy);
-            procColor = mix(ownColor, neighborColor, crossBlend);
+            procColor = mix(ownColor, neighborColor, modulatedBlend);
         } else {
             procColor = ownColor;
         }

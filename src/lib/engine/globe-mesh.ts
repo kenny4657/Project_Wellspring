@@ -740,18 +740,11 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 					const vz = triVerts[j + k * 3 + 2];
 					let neighborTerrainId = -1;
 					let blendFactor = 0;
-					{
-						const tb = globalDistToTerrainBorder(vx, vy, vz, cell, cellById, borderInfoById);
+					if (borderInfo.hasTerrainBorder) {
+						const tb = distToTerrainBorder(vx, vy, vz, cell, borderInfo);
 						if (tb.neighborTerrainId >= 0) {
-							// Center-vs-edge ratio: directional gradient, not radial ring
-							const dcx = vx - cell.center.x;
-							const dcy = vy - cell.center.y;
-							const dcz = vz - cell.center.z;
-							const distToCenter = Math.sqrt(dcx * dcx + dcy * dcy + dcz * dcz);
-							const ratio = distToCenter / (distToCenter + tb.dist + 1e-9);
-							// smoothstep(0.55, 0.85, ratio) * 0.45 — outer rim only
-							const st = Math.max(0, Math.min(1, (ratio - 0.55) / 0.3));
-							blendFactor = st * st * (3 - 2 * st) * 0.45;
+							// Narrow linear falloff: blend only within 20% of hex radius from border
+							blendFactor = Math.max(0, 1 - tb.dist / (hexRadius * 0.2)) * 0.35;
 							if (blendFactor > 0.001) {
 								neighborTerrainId = tb.neighborTerrainId;
 							} else {
@@ -985,37 +978,13 @@ export function updateCellTerrain(
 	const cellIdToIdx = new Map<number, number>();
 	for (let i = 0; i < cells.length; i++) cellIdToIdx.set(cells[i].id, i);
 
-	// Collect affected cells: painted cell + 2 rings of neighbors
-	// (blend propagates through same-terrain neighbors, so we need ring 2)
+	// Collect affected cells: painted cell + all its neighbors
 	const affected = new Set<number>();
 	affected.add(cellIndex);
 	const cell = cells[cellIndex];
 	for (const nId of cell.neighbors) {
 		const nIdx = cellIdToIdx.get(nId);
-		if (nIdx !== undefined) {
-			affected.add(nIdx);
-			// Ring 2: neighbors of neighbors
-			const nb = cellById.get(nId);
-			if (nb) {
-				for (const nnId of nb.neighbors) {
-					const nnIdx = cellIdToIdx.get(nnId);
-					if (nnIdx !== undefined) affected.add(nnIdx);
-				}
-			}
-		}
-	}
-
-	// Build borderInfo for all affected cells + their neighbors (needed by globalDistToTerrainBorder)
-	const borderInfoById = new Map<number, HexBorderInfo>();
-	for (const ci of affected) {
-		const c = cells[ci];
-		borderInfoById.set(c.id, getHexBorderInfo(c, cellById));
-		for (const nId of c.neighbors) {
-			if (!borderInfoById.has(nId)) {
-				const nb = cellById.get(nId);
-				if (nb) borderInfoById.set(nId, getHexBorderInfo(nb, cellById));
-			}
-		}
+		if (nIdx !== undefined) affected.add(nIdx);
 	}
 
 	for (const ci of affected) {
@@ -1023,6 +992,7 @@ export function updateCellTerrain(
 		const n = c.corners.length;
 		const wallColor = getTerrainColor(c.terrain);
 		const tierH = getLevelHeight(c.heightLevel);
+		const borderInfo = getHexBorderInfo(c, cellById);
 
 		let hexRadius = 0;
 		for (let i = 0; i < n; i++) {
@@ -1053,16 +1023,10 @@ export function updateCellTerrain(
 
 				let neighborTerrainId = -1;
 				let blendFactor = 0;
-				{
-					const tb = globalDistToTerrainBorder(ux, uy, uz, c, cellById, borderInfoById);
+				if (borderInfo.hasTerrainBorder) {
+					const tb = distToTerrainBorder(ux, uy, uz, c, borderInfo);
 					if (tb.neighborTerrainId >= 0) {
-						const dcx = ux - c.center.x;
-						const dcy = uy - c.center.y;
-						const dcz = uz - c.center.z;
-						const distToCenter = Math.sqrt(dcx * dcx + dcy * dcy + dcz * dcz);
-						const ratio = distToCenter / (distToCenter + tb.dist + 1e-9);
-						const st = Math.max(0, Math.min(1, (ratio - 0.55) / 0.3));
-						blendFactor = st * st * (3 - 2 * st) * 0.45;
+						blendFactor = Math.max(0, 1 - tb.dist / (hexRadius * 0.2)) * 0.35;
 						if (blendFactor > 0.001) {
 							neighborTerrainId = tb.neighborTerrainId;
 						} else {
