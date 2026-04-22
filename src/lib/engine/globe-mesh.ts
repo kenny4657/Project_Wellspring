@@ -46,6 +46,9 @@ const SUBDIVISIONS = 3;
 const CORNER_KEY_SCALE = 1e6;
 const COAST_ROUNDING = 0.0018;
 const COAST_SMOOTHING = 0.22;
+const COAST_NOISE_STRENGTH = 0.35;
+const COAST_NOISE_SCALE = 12.0;
+const COAST_NOISE_SAFE_ZONE = 0.08;
 const CORNER_PATCH_EDGE_T = 0.18;
 
 // ── Noise ───────────────────────────────────────────────────
@@ -573,6 +576,18 @@ function computeSurfaceHeight(
 		// into a smooth union instead of using a hard nearest-edge switch.
 		if (borderTarget === 0) {
 			dist = Math.min(dist, smoothDistanceToTargetEdges(ux, uy, uz, cell, borderInfo, 0, hexRadius));
+
+			// Noise-perturb coastal distance field so height contours (and thus
+			// the shore color band) follow organic noise instead of hex geometry.
+			// edgeSafety is zero at the shared edge (dist=0), preserving watertight mesh.
+			const coastNoise = fbmNoise(
+				ux * COAST_NOISE_SCALE + 100,
+				uy * COAST_NOISE_SCALE + 100,
+				uz * COAST_NOISE_SCALE + 100
+			);
+			const safeT = Math.min(dist / (hexRadius * COAST_NOISE_SAFE_ZONE), 1.0);
+			const edgeSafety = safeT * safeT * (3 - 2 * safeT);
+			dist = Math.max(0, dist + coastNoise * hexRadius * COAST_NOISE_STRENGTH * edgeSafety);
 		}
 
 		const t = Math.min(dist / hexRadius, 1.0);
