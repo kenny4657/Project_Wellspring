@@ -221,21 +221,28 @@ void main() {
         float scratchy = triplanarScratchy(vWorldPos, N, 0.004);
 
         // Decode cross-terrain blend from G channel
-        // G = (neighborTerrainId + blendFactor) / 10.0
+        // G = (neighborTerrainId + distToBorder) / 10.0
+        // distToBorder: 0 = at border edge, ~1 = hexRadius away
         float rawG = vColor.g * 10.0;
         int neighborId = int(floor(rawG + 0.001));
-        float crossBlend = fract(rawG + 0.001);
-        bool hasCrossBlend = (neighborId != terrainId) && (crossBlend > 0.001);
+        float distToBorder = fract(rawG + 0.001);
+        bool hasCrossBlend = (neighborId != terrainId);
 
         // Own terrain color
         vec3 ownColor = computeTerrainColor(terrainId, heightAboveR, tierH, scratchy);
 
         if (hasCrossBlend) {
-            // Modulate blend with world-space noise to break up hex geometry
-            float blendNoise = snoise(vWorldPos * 0.006) * 0.4 + 0.8; // range 0.4–1.2
-            float modulatedBlend = clamp(crossBlend * blendNoise, 0.0, 0.5);
+            // World-space noise determines where the terrain boundary falls
+            // Multi-octave for organic shape at different scales
+            float n1 = snoise(vWorldPos * 0.004) * 0.22;
+            float n2 = snoise(vWorldPos * 0.012) * 0.10;
+            float noiseOffset = n1 + n2;
+            // Blend boundary: noise shifts the threshold so boundary follows
+            // noise contours rather than hex geometry
+            float threshold = 0.35 + noiseOffset; // ~0.03 to ~0.67
+            float blend = (1.0 - smoothstep(0.0, threshold, distToBorder)) * 0.45;
             vec3 neighborColor = computeTerrainColor(neighborId, heightAboveR, tierH, scratchy);
-            procColor = mix(ownColor, neighborColor, modulatedBlend);
+            procColor = mix(ownColor, neighborColor, blend);
         } else {
             procColor = ownColor;
         }

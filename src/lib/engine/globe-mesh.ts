@@ -743,13 +743,10 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 					if (borderInfo.hasTerrainBorder) {
 						const tb = distToTerrainBorder(vx, vy, vz, cell, borderInfo);
 						if (tb.neighborTerrainId >= 0) {
-							// Narrow linear falloff: blend only within 20% of hex radius from border
-							blendFactor = Math.max(0, 1 - tb.dist / (hexRadius * 0.2)) * 0.35;
-							if (blendFactor > 0.001) {
-								neighborTerrainId = tb.neighborTerrainId;
-							} else {
-								blendFactor = 0;
-							}
+							// Encode normalized distance to border (0 = at edge, 1 = hexRadius away)
+							// Shader uses noise to determine where the blend boundary falls
+							blendFactor = Math.min(tb.dist / hexRadius, 0.999);
+							neighborTerrainId = tb.neighborTerrainId;
 						}
 					}
 					const topColor = getTopFaceColor(cell.terrain, tierH, neighborTerrainId, blendFactor);
@@ -1026,12 +1023,8 @@ export function updateCellTerrain(
 				if (borderInfo.hasTerrainBorder) {
 					const tb = distToTerrainBorder(ux, uy, uz, c, borderInfo);
 					if (tb.neighborTerrainId >= 0) {
-						blendFactor = Math.max(0, 1 - tb.dist / (hexRadius * 0.2)) * 0.35;
-						if (blendFactor > 0.001) {
-							neighborTerrainId = tb.neighborTerrainId;
-						} else {
-							blendFactor = 0;
-						}
+						blendFactor = Math.min(tb.dist / hexRadius, 0.999);
+						neighborTerrainId = tb.neighborTerrainId;
 					}
 				}
 				const topColor = getTopFaceColor(c.terrain, tierH, neighborTerrainId, blendFactor);
