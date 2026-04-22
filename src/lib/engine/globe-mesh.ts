@@ -702,7 +702,7 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 					if (borderInfo.hasTerrainBorder) {
 						const tb = distToTerrainBorder(vx, vy, vz, cell, borderInfo);
 						if (tb.neighborTerrainId >= 0) {
-							const t = Math.min(tb.dist / hexRadius, 1.0);
+							const t = Math.min(tb.dist / (hexRadius * 0.3), 1.0);
 							const mu = (1 - Math.cos(t * Math.PI)) / 2; // 0 at edge, 1 at center
 							blendFactor = 1 - mu;
 							if (blendFactor > 0.001) {
@@ -986,7 +986,7 @@ export function updateCellTerrain(
 				if (borderInfo.hasTerrainBorder) {
 					const tb = distToTerrainBorder(ux, uy, uz, c, borderInfo);
 					if (tb.neighborTerrainId >= 0) {
-						const t = Math.min(tb.dist / hexRadius, 1.0);
+						const t = Math.min(tb.dist / (hexRadius * 0.3), 1.0);
 						const mu = (1 - Math.cos(t * Math.PI)) / 2;
 						blendFactor = 1 - mu;
 						if (blendFactor > 0.001) {
