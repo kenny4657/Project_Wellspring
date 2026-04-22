@@ -312,9 +312,11 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 		const nb = findNeighborAcrossEdge(cell, i, cellById);
 		if (!nb) continue;
 
-		// Track terrain type differences for color blending.
-		// Includes water↔land so shader can suppress the shore palette band.
-		if (nb.terrain !== cell.terrain) {
+		// Track terrain type differences for color blending
+		// Skip water neighbors — coastline ramps handle those transitions
+		const nbIsWaterTerrain = nb.heightLevel <= 1;
+		const cellIsWaterTerrain = cell.heightLevel <= 1;
+		if (nb.terrain !== cell.terrain && !nbIsWaterTerrain && !cellIsWaterTerrain) {
 			edgeNeighborTerrains[i] = nb.terrain;
 			hasTerrainBorder = true;
 		}
@@ -884,6 +886,7 @@ export function buildCornerGapPatchMesh(cells: HexCell[], radius: number, scene:
 
 		const color = getTerrainColor(cell.terrain);
 		const tierH = getLevelHeight(cell.heightLevel);
+		const topColor = getTopFaceColor(cell.terrain, tierH, -1, 0);
 
 		for (let i = 0; i < n; i++) {
 			const corner = cell.corners[i];
@@ -932,26 +935,7 @@ export function buildCornerGapPatchMesh(cells: HexCell[], radius: number, scene:
 			ny /= nl;
 			nz /= nl;
 
-			const patchVerts = [
-				corner.x, corner.y, corner.z,
-				prevDir.x, prevDir.y, prevDir.z,
-				nextDir.x, nextDir.y, nextDir.z
-			];
-
 			for (let k = 0; k < 3; k++) {
-				const vx = patchVerts[k * 3];
-				const vy = patchVerts[k * 3 + 1];
-				const vz = patchVerts[k * 3 + 2];
-				let neighborTerrainId = -1;
-				let blendFactor = 0;
-				if (borderInfo.hasTerrainBorder) {
-					const tb = distToTerrainBorder(vx, vy, vz, cell, borderInfo);
-					if (tb.neighborTerrainId >= 0) {
-						blendFactor = Math.min(tb.dist / hexRadius, 0.999);
-						neighborTerrainId = tb.neighborTerrainId;
-					}
-				}
-				const topColor = getTopFaceColor(cell.terrain, tierH, neighborTerrainId, blendFactor);
 				positions.push(displaced[k * 3], displaced[k * 3 + 1], displaced[k * 3 + 2]);
 				normals.push(nx, ny, nz);
 				colors.push(topColor[0], topColor[1], topColor[2], 1.0);
