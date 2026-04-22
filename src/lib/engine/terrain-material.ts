@@ -232,9 +232,12 @@ void main() {
         // world-space noise. This breaks the hex-shaped shore/grass boundary
         // by making the palette band follow noise contours instead of hex
         // geometry. Only active near sea level; fades to zero inland.
-        float seaProximity = 1.0 - smoothstep(seaLevel, seaLevel + 30.0, heightAboveR);
-        float heightNoise = (snoise(vWorldPos * 0.005) * 0.7
-                           + snoise(vWorldPos * 0.015) * 0.3) * 20.0 * seaProximity;
+        // The shore-grass blend zone is ~76km wide (sw=38km each side of
+        // boundary1), so noise needs ±60km amplitude to visibly shift it.
+        float seaProximity = 1.0 - smoothstep(seaLevel, seaLevel + 60.0, heightAboveR);
+        float heightNoise = (snoise(vWorldPos * 0.004) * 0.6
+                           + snoise(vWorldPos * 0.012) * 0.3
+                           + snoise(vWorldPos * 0.03) * 0.1) * 60.0 * seaProximity;
         float colorHeight = heightAboveR + heightNoise;
 
         // Own terrain color
