@@ -51,7 +51,7 @@ uniform float bottomOffset;  // lowest height (water floor)
 uniform float hillRatio;     // 0-1 ratio where grass→hill transition occurs
 uniform float topOffset;     // highest height (mountain peak)
 uniform float time;          // elapsed seconds for water animation
-uniform vec3 terrainPalette[68]; // 17 types × 4 bands [shore, grass, hill, snow]
+uniform vec3 terrainPalette[40]; // 10 types × 4 bands [shore, grass, hill, snow]
 
 varying vec3 vWorldPos;
 varying vec3 vWorldNormal;
@@ -182,7 +182,7 @@ void main() {
     } else {
         // ── Per-terrain Sota-style height blending ────
         // Top faces encode: R = terrainId/16, B = tier height
-        int terrainId = int(vColor.r * 16.0 + 0.5);
+        int terrainId = int(vColor.r * 9.0 + 0.5);
         float tierH = (vColor.b * 0.110 - 0.030) * planetRadius;
 
         float amplitude = abs(topOffset) + abs(bottomOffset);
@@ -197,7 +197,7 @@ void main() {
         // Water types (0-4): global seaLevel blending with per-terrain colors
         // Land types (5+): use tierH as local "sea level" so shore blend
         //                   appears at every tier, not just at global sea level
-        float refLevel = (terrainId <= 4) ? seaLevel : tierH;
+        float refLevel = (terrainId <= 3) ? seaLevel : tierH;
 
         if (heightAboveR < refLevel - belowWidth * amplitude) {
             procColor = palShore(terrainId, scratchy);

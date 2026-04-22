@@ -30,8 +30,6 @@ const LEVEL_HEIGHTS = [
 	-0.008,  // level 1: shallow water
 	 0.000,  // level 2: lowland
 	 0.020,  // level 3: midland
-	 0.045,  // level 4: highland
-	 0.080,  // level 5: peak
 ];
 
 /** Walls extend down to this floor */
@@ -87,9 +85,9 @@ function fbmNoise(x: number, y: number, z: number): number {
 /** Wall vertex color: terrain profile RGB (used by textureWall for blue-detection). */
 function getTerrainColor(idx: number): [number, number, number] { return TERRAIN_PROFILES[idx]?.color ?? [0.5, 0.5, 0.5]; }
 /** Top-face vertex color: R = terrainIndex/16, G = 0, B = encoded tier height.
- *  Shader decodes: terrainId = int(r * 16.0 + 0.5), tierH = (b * 0.110 - 0.030) * R */
+ *  Shader decodes: terrainId = int(r * 9.0 + 0.5), tierH = (b * 0.110 - 0.030) * R */
 function getTopFaceColor(terrainIdx: number, tierH: number): [number, number, number] {
-	const r = terrainIdx / 16.0;
+	const r = terrainIdx / 9.0;
 	const b = (tierH + 0.030) / 0.110; // maps [-0.020, 0.080] → [0.09, 1.0]
 	return [r, 0.0, b];
 }

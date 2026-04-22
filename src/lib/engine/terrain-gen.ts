@@ -39,12 +39,12 @@ function fbm(x: number, y: number, z: number, octaves: number): number {
 /**
  * Assign terrain type and height level to each cell.
  *
- * Height level (0-5) is driven by a "continent" noise field — this determines
+ * Height level (0-3) is driven by a "continent" noise field — this determines
  * the physical elevation. Terrain type is influenced by height but also by
  * separate detail noise, so the same height level can have different terrain types.
  *
  * Height levels:
- *   0 = deep water, 1 = shallow water, 2 = lowland, 3 = midland, 4 = highland, 5 = peak
+ *   0 = deep water, 1 = shallow water, 2 = lowland, 3 = midland
  */
 export function assignTerrain(cells: HexCell[]): void {
 	const CS = 2.8;  // continent noise scale
@@ -58,43 +58,33 @@ export function assignTerrain(cells: HexCell[]): void {
 		const detail = fbm(x * DS + 100, y * DS + 100, z * DS + 100, 3);
 		const latitude = Math.abs(y);
 
-		// ── Height level (0-5) from continent noise ─────────
+		// ── Height level (0-3) from continent noise ─────────
 		let heightLevel: number;
 		if (continent < 0.38) heightLevel = 0;       // deep water
 		else if (continent < 0.44) heightLevel = 1;   // shallow water
-		else if (continent < 0.52) heightLevel = 2;   // lowland
-		else if (continent < 0.62) heightLevel = 3;   // midland
-		else if (continent < 0.74) heightLevel = 4;   // highland
-		else heightLevel = 5;                          // peak
+		else if (continent < 0.58) heightLevel = 2;   // lowland
+		else heightLevel = 3;                          // midland
 
 		// ── Terrain type (independent of height) ────────────
 		let t: number;
 		if (heightLevel <= 1) {
 			// Water hexes: terrain type by depth
 			t = heightLevel === 0 ? 0 : 1; // deep_ocean / shallow_ocean
-			if (heightLevel === 1 && detail > 0.6) t = 2; // reef
 		} else {
 			// Land hexes: terrain type by biome factors (latitude, detail noise)
-			// NOT locked to height — a forest can be at height 2, 3, or 4
 			if (latitude > 0.82) {
-				t = 9; // tundra
+				t = 8; // tundra
 			} else if (detail < 0.35) {
-				t = 7; // desert
+				t = 6; // desert
 			} else if (detail < 0.48) {
-				t = 5; // plains
+				t = 4; // plains
 			} else if (detail < 0.58) {
-				t = 6; // grassland
-			} else if (latitude < 0.5 && detail > 0.65) {
-				t = 11; // jungle
+				t = 5; // grassland
 			} else if (detail > 0.6) {
-				t = 10; // forest
+				t = 9; // hills
 			} else {
-				t = 12; // hills
+				t = 4; // plains (default)
 			}
-
-			// High terrain gets special types occasionally
-			if (heightLevel >= 4 && detail < 0.4) t = 13; // highland
-			if (heightLevel >= 5) t = 15; // mountain (only at peak elevation)
 		}
 
 		cell.terrain = t;

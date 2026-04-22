@@ -28,21 +28,14 @@ export interface TerrainProfile {
 export const TERRAIN_TYPES = {
 	deep_ocean: 0,
 	shallow_ocean: 1,
-	reef: 2,
-	coast: 3,
-	lake: 4,
-	plains: 5,
-	grassland: 6,
-	desert: 7,
-	swamp: 8,
-	tundra: 9,
-	forest: 10,
-	jungle: 11,
-	hills: 12,
-	highland: 13,
-	plateau: 14,
-	mountain: 15,
-	island: 16,
+	coast: 2,
+	lake: 3,
+	plains: 4,
+	grassland: 5,
+	desert: 6,
+	swamp: 7,
+	tundra: 8,
+	hills: 9,
 } as const;
 
 export type TerrainTypeId = keyof typeof TERRAIN_TYPES;
@@ -53,7 +46,6 @@ export const TERRAIN_COUNT = Object.keys(TERRAIN_TYPES).length;
 const H = 3; // km per tier unit (max displacement ~15km for mountains on 75km hex)
 
 export const TERRAIN_PROFILES: TerrainProfile[] = [
-	// Colors are muted/natural — Sota-style. Shader adds procedural variation.
 	// palette: [shore, grass, hill, snow] — shore+grass create the visible two-tone blend.
 	//                                                                                                            shore                grass                hill                 snow
 	// Tier 0: Below surface — sandy ocean floor (water mesh provides blue)
@@ -61,7 +53,6 @@ export const TERRAIN_PROFILES: TerrainProfile[] = [
 
 	// Tier 1: Surface level — sandy tones
 	{ id: 'shallow_ocean', name: 'Shallow Ocean', tier: 1, height: -0.5 * H, amplitude: 0.2,  frequency: 1.0,  ridged: false, color: [0.18, 0.38, 0.58], palette: [[0.58, 0.52, 0.38], [0.54, 0.50, 0.36], [0.48, 0.44, 0.32], [0.82, 0.84, 0.88]] },
-	{ id: 'reef',          name: 'Reef',          tier: 1, height: -0.3 * H, amplitude: 0.5,  frequency: 3.0,  ridged: false, color: [0.15, 0.50, 0.48], palette: [[0.58, 0.52, 0.38], [0.50, 0.52, 0.36], [0.48, 0.44, 0.32], [0.82, 0.84, 0.88]] },
 	{ id: 'coast',         name: 'Coast',         tier: 1, height:  0.0 * H, amplitude: 0.2,  frequency: 1.5,  ridged: false, color: [0.72, 0.65, 0.45], palette: [[0.65, 0.58, 0.40], [0.58, 0.52, 0.36], [0.48, 0.44, 0.32], [0.82, 0.84, 0.88]] },
 	{ id: 'lake',          name: 'Lake',          tier: 1, height: -0.3 * H, amplitude: 0.1,  frequency: 0.5,  ridged: false, color: [0.15, 0.35, 0.60], palette: [[0.58, 0.52, 0.38], [0.50, 0.48, 0.36], [0.48, 0.44, 0.32], [0.82, 0.84, 0.88]] },
 
@@ -73,19 +64,7 @@ export const TERRAIN_PROFILES: TerrainProfile[] = [
 	{ id: 'tundra',        name: 'Tundra',        tier: 2, height:  0.2 * H, amplitude: 0.3,  frequency: 1.0,  ridged: false, color: [0.72, 0.74, 0.70], palette: [[0.56, 0.54, 0.46], [0.48, 0.50, 0.40], [0.52, 0.50, 0.46], [0.86, 0.88, 0.92]] },
 
 	// Tier 3: Medium
-	{ id: 'forest',        name: 'Forest',        tier: 3, height:  0.5 * H, amplitude: 0.8,  frequency: 1.5,  ridged: false, color: [0.15, 0.40, 0.12], palette: [[0.46, 0.42, 0.28], [0.18, 0.42, 0.12], [0.36, 0.36, 0.24], [0.82, 0.84, 0.88]] },
-	{ id: 'jungle',        name: 'Jungle',        tier: 3, height:  0.5 * H, amplitude: 1.0,  frequency: 2.0,  ridged: false, color: [0.10, 0.35, 0.08], palette: [[0.40, 0.38, 0.24], [0.14, 0.38, 0.10], [0.30, 0.32, 0.20], [0.78, 0.80, 0.82]] },
 	{ id: 'hills',         name: 'Hills',         tier: 3, height:  0.7 * H, amplitude: 1.2,  frequency: 2.0,  ridged: false, color: [0.45, 0.50, 0.28], palette: [[0.58, 0.52, 0.36], [0.40, 0.52, 0.24], [0.50, 0.46, 0.32], [0.82, 0.84, 0.88]] },
-
-	// Tier 4: High
-	{ id: 'highland',      name: 'Highland',      tier: 4, height:  1.2 * H, amplitude: 0.8,  frequency: 1.0,  ridged: false, color: [0.52, 0.45, 0.32], palette: [[0.56, 0.50, 0.38], [0.48, 0.44, 0.32], [0.52, 0.50, 0.42], [0.84, 0.86, 0.90]] },
-	{ id: 'plateau',       name: 'Plateau',       tier: 4, height:  1.5 * H, amplitude: 0.4,  frequency: 1.0,  ridged: false, color: [0.58, 0.50, 0.35], palette: [[0.60, 0.54, 0.40], [0.52, 0.48, 0.34], [0.50, 0.48, 0.40], [0.84, 0.86, 0.90]] },
-
-	// Tier 5: Peak
-	{ id: 'mountain',      name: 'Mountain',      tier: 5, height:  2.5 * H, amplitude: 2.5,  frequency: 3.0,  ridged: true,  color: [0.62, 0.58, 0.52], palette: [[0.52, 0.48, 0.40], [0.44, 0.44, 0.38], [0.52, 0.52, 0.48], [0.86, 0.88, 0.92]] },
-
-	// Special
-	{ id: 'island',        name: 'Island',        tier: 2, height:  0.3 * H, amplitude: 0.6,  frequency: 2.0,  ridged: false, color: [0.40, 0.55, 0.25], palette: [[0.62, 0.56, 0.38], [0.36, 0.56, 0.20], [0.46, 0.44, 0.30], [0.82, 0.84, 0.88]] },
 ];
 
 /**
@@ -114,7 +93,7 @@ export function packTerrainParams(): { params: Float32Array; colors: Float32Arra
 }
 
 /** Pack per-terrain palettes into a flat array for shader uniform upload.
- *  17 types × 4 bands × 3 channels = 204 floats.
+ *  10 types × 4 bands × 3 channels = 120 floats.
  *  Shader access: terrainPalette[terrainId * 4 + bandIndex] */
 export function packTerrainPalettes(): number[] {
 	const data: number[] = [];
@@ -136,7 +115,6 @@ export function loadTerrainPalettes(): [RGB, RGB, RGB, RGB][] {
 		const raw = localStorage.getItem(PALETTE_STORAGE_KEY);
 		if (!raw) return TERRAIN_PROFILES.map(p => [...p.palette] as [RGB, RGB, RGB, RGB]);
 		const saved = JSON.parse(raw) as [RGB, RGB, RGB, RGB][];
-		// Merge with defaults in case new terrains were added
 		return TERRAIN_PROFILES.map((p, i) => saved[i] ?? [...p.palette] as [RGB, RGB, RGB, RGB]);
 	} catch {
 		return TERRAIN_PROFILES.map(p => [...p.palette] as [RGB, RGB, RGB, RGB]);
