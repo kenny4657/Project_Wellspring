@@ -920,7 +920,8 @@ export function buildCornerGapPatchMesh(cells: HexCell[], radius: number, scene:
 	return mesh;
 }
 
-/** Update a single cell when painted — simplified (rebuilds just colors) */
+/** Update colors for a cell and its neighbors when terrain is painted.
+ *  Recomputes per-vertex terrain blend for all affected cells. */
 export function updateCellTerrain(
 	mesh: Mesh,
 	cells: HexCell[],
@@ -931,22 +932,76 @@ export function updateCellTerrain(
 	colorsBuffer: Float32Array,
 	positionsBuffer: Float32Array
 ): void {
-	const cell = cells[cellIndex];
-	const wallColor = getTerrainColor(cell.terrain);
-	const tierH = getLevelHeight(cell.heightLevel);
-	const topColor = getTopFaceColor(cell.terrain, tierH);
-	const start = vertexStarts[cellIndex];
-	const count = totalVerticesPerCell[cellIndex];
-	if (count === 0) return;
+	// Build lookup maps
+	const cellById = new Map<number, HexCell>();
+	for (const c of cells) cellById.set(c.id, c);
+	const cellIdToIdx = new Map<number, number>();
+	for (let i = 0; i < cells.length; i++) cellIdToIdx.set(cells[i].id, i);
 
-	// Update all vertex colors for this cell
-	for (let i = 0; i < count; i++) {
-		const ci = (start + i) * 4;
-		const isTopFace = colorsBuffer[ci + 3] > 0.5;
-		const c = isTopFace ? topColor : wallColor;
-		colorsBuffer[ci] = c[0];
-		colorsBuffer[ci + 1] = c[1];
-		colorsBuffer[ci + 2] = c[2];
+	// Collect affected cells: painted cell + all its neighbors
+	const affected = new Set<number>();
+	affected.add(cellIndex);
+	const cell = cells[cellIndex];
+	for (const nId of cell.neighbors) {
+		const nIdx = cellIdToIdx.get(nId);
+		if (nIdx !== undefined) affected.add(nIdx);
+	}
+
+	for (const ci of affected) {
+		const c = cells[ci];
+		const n = c.corners.length;
+		const wallColor = getTerrainColor(c.terrain);
+		const tierH = getLevelHeight(c.heightLevel);
+		const borderInfo = getHexBorderInfo(c, cellById);
+
+		let hexRadius = 0;
+		for (let i = 0; i < n; i++) {
+			const dx = c.corners[i].x - c.center.x;
+			const dy = c.corners[i].y - c.center.y;
+			const dz = c.corners[i].z - c.center.z;
+			hexRadius += Math.sqrt(dx * dx + dy * dy + dz * dz);
+		}
+		hexRadius /= n;
+
+		const start = vertexStarts[ci];
+		const count = totalVerticesPerCell[ci];
+
+		for (let i = 0; i < count; i++) {
+			const vi = (start + i) * 4;
+			const pi = (start + i) * 3;
+			const isTopFace = colorsBuffer[vi + 3] > 0.5;
+
+			if (!isTopFace) {
+				colorsBuffer[vi] = wallColor[0];
+				colorsBuffer[vi + 1] = wallColor[1];
+				colorsBuffer[vi + 2] = wallColor[2];
+			} else {
+				// Recover unit-sphere direction from world position
+				const px = positionsBuffer[pi], py = positionsBuffer[pi + 1], pz = positionsBuffer[pi + 2];
+				const len = Math.sqrt(px * px + py * py + pz * pz) || 1;
+				const ux = px / len, uy = py / len, uz = pz / len;
+
+				let neighborTerrainId = -1;
+				let blendFactor = 0;
+				if (borderInfo.hasTerrainBorder) {
+					const tb = distToTerrainBorder(ux, uy, uz, c, borderInfo);
+					if (tb.neighborTerrainId >= 0) {
+						const t = Math.min(tb.dist / hexRadius, 1.0);
+						const mu = (1 - Math.cos(t * Math.PI)) / 2;
+						blendFactor = 1 - mu;
+						if (blendFactor > 0.001) {
+							neighborTerrainId = tb.neighborTerrainId;
+						} else {
+							blendFactor = 0;
+						}
+					}
+				}
+				const topColor = getTopFaceColor(c.terrain, tierH, neighborTerrainId, blendFactor);
+				colorsBuffer[vi] = topColor[0];
+				colorsBuffer[vi + 1] = topColor[1];
+				colorsBuffer[vi + 2] = topColor[2];
+			}
+		}
 	}
 
 	mesh.setVerticesData(VertexBuffer.ColorKind, new Float32Array(colorsBuffer), true);
