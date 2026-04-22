@@ -312,11 +312,19 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 		const nb = findNeighborAcrossEdge(cell, i, cellById);
 		if (!nb) continue;
 
-		// Track terrain type differences for color blending
-		// Skip water neighbors — coastline ramps handle those transitions
+		// Track terrain type differences for color blending.
+		// Land↔land: different terrain types get cross-terrain blend.
+		// Water→land: water hex edges facing land get the land terrain ID
+		// so water vertices above the water sphere can show land colors
+		// instead of sandy ocean-floor palette.
 		const nbIsWaterTerrain = nb.heightLevel <= 1;
 		const cellIsWaterTerrain = cell.heightLevel <= 1;
 		if (nb.terrain !== cell.terrain && !nbIsWaterTerrain && !cellIsWaterTerrain) {
+			// Land↔land blend (existing behavior)
+			edgeNeighborTerrains[i] = nb.terrain;
+			hasTerrainBorder = true;
+		} else if (cellIsWaterTerrain && !nbIsWaterTerrain) {
+			// Water hex facing land: encode land neighbor terrain
 			edgeNeighborTerrains[i] = nb.terrain;
 			hasTerrainBorder = true;
 		}
@@ -834,6 +842,102 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 	const colorsF32 = new Float32Array(colors);
 	const normalsF32 = new Float32Array(normals);
 
+	// ── Diagnostic: analyze coastal vertices ──────────────────
+	{
+		const R = radius;
+		const waterSphereR = R * 0.9995;
+		interface CoastalSample {
+			cellId: number; terrain: number; heightLevel: number;
+			isWater: boolean; h: number; distFromCenter: number;
+			aboveWaterSphere: boolean;
+			vertexColor: [number, number, number, number];
+			decodedTerrainId: number; decodedNeighborId: number; decodedDist: number;
+		}
+		const coastalSamples: CoastalSample[] = [];
+		const waterSphereHeight = 0.9995 - 1; // -0.0005
+
+		for (let ci = 0; ci < cells.length; ci++) {
+			const cell = cells[ci];
+			let isCoastal = false;
+			for (const nId of cell.neighbors) {
+				const nb = cellById.get(nId);
+				if (nb && ((cell.heightLevel <= 1) !== (nb.heightLevel <= 1))) {
+					isCoastal = true;
+					break;
+				}
+			}
+			if (!isCoastal) continue;
+
+			const start = vertexStarts[ci];
+			const count = totalVerticesPerCell[ci];
+			for (let vi = start; vi < start + count && coastalSamples.length < 200; vi++) {
+				const px = positions[vi * 3], py = positions[vi * 3 + 1], pz = positions[vi * 3 + 2];
+				const dist = Math.sqrt(px * px + py * py + pz * pz);
+				const r = colorsF32[vi * 4], g = colorsF32[vi * 4 + 1], b = colorsF32[vi * 4 + 2], a = colorsF32[vi * 4 + 3];
+				if (a < 0.5) continue; // skip walls
+				const terrainId = Math.round(r * 9);
+				const rawG = g * 10;
+				const neighborId = Math.min(Math.floor(rawG + 0.001), 9);
+				const distToBorder = rawG - Math.floor(rawG + 0.001);
+				coastalSamples.push({
+					cellId: cell.id, terrain: cell.terrain, heightLevel: cell.heightLevel,
+					isWater: cell.heightLevel <= 1,
+					h: dist / R - 1,
+					distFromCenter: dist,
+					aboveWaterSphere: dist > waterSphereR,
+					vertexColor: [r, g, b, a],
+					decodedTerrainId: terrainId,
+					decodedNeighborId: neighborId,
+					decodedDist: distToBorder
+				});
+			}
+		}
+
+		// Summarize
+		const waterAbove = coastalSamples.filter(s => s.isWater && s.aboveWaterSphere);
+		const waterBelow = coastalSamples.filter(s => s.isWater && !s.aboveWaterSphere);
+		const landCoastal = coastalSamples.filter(s => !s.isWater);
+
+		const summary = {
+			totalCoastalVertices: coastalSamples.length,
+			waterAboveWaterSphere: {
+				count: waterAbove.length,
+				terrainIds: [...new Set(waterAbove.map(s => s.terrain))],
+				neighborIds: [...new Set(waterAbove.map(s => s.decodedNeighborId))],
+				hasBlendData: waterAbove.filter(s => s.decodedNeighborId !== s.decodedTerrainId).length,
+				heightRange: waterAbove.length ? [
+					Math.min(...waterAbove.map(s => s.h)),
+					Math.max(...waterAbove.map(s => s.h))
+				] : [],
+				samples: waterAbove.slice(0, 5)
+			},
+			waterBelowWaterSphere: {
+				count: waterBelow.length,
+				terrainIds: [...new Set(waterBelow.map(s => s.terrain))]
+			},
+			landCoastal: {
+				count: landCoastal.length,
+				terrainIds: [...new Set(landCoastal.map(s => s.terrain))],
+				neighborIds: [...new Set(landCoastal.map(s => s.decodedNeighborId))],
+				hasBlendData: landCoastal.filter(s => s.decodedNeighborId !== s.decodedTerrainId).length,
+				heightRange: landCoastal.length ? [
+					Math.min(...landCoastal.map(s => s.h)),
+					Math.max(...landCoastal.map(s => s.h))
+				] : [],
+				// Heights of vertices near coast that show sandy
+				heightsNearCoast: landCoastal
+					.filter(s => s.h < 0.01)
+					.slice(0, 10)
+					.map(s => ({ h: s.h, terrain: s.terrain, neighborId: s.decodedNeighborId, dist: s.decodedDist }))
+			}
+		};
+
+		if (typeof window !== 'undefined') {
+			(window as any).__coastalDebug = summary;
+			console.log('[COASTAL DEBUG]', JSON.stringify(summary, null, 2));
+		}
+	}
+
 	// ── Smooth normals pass (Sota-style) ────────────────────
 	// Average normals at coincident vertex positions for top-face vertices.
 	// This makes terrain look continuous across triangle/hex boundaries.
@@ -886,7 +990,6 @@ export function buildCornerGapPatchMesh(cells: HexCell[], radius: number, scene:
 
 		const color = getTerrainColor(cell.terrain);
 		const tierH = getLevelHeight(cell.heightLevel);
-		const topColor = getTopFaceColor(cell.terrain, tierH, -1, 0);
 
 		for (let i = 0; i < n; i++) {
 			const corner = cell.corners[i];
@@ -935,7 +1038,25 @@ export function buildCornerGapPatchMesh(cells: HexCell[], radius: number, scene:
 			ny /= nl;
 			nz /= nl;
 
+			const patchVerts = [
+				corner.x, corner.y, corner.z,
+				prevDir.x, prevDir.y, prevDir.z,
+				nextDir.x, nextDir.y, nextDir.z
+			];
 			for (let k = 0; k < 3; k++) {
+				const vx = patchVerts[k * 3];
+				const vy = patchVerts[k * 3 + 1];
+				const vz = patchVerts[k * 3 + 2];
+				let neighborTerrainId = -1;
+				let blendFactor = 0;
+				if (borderInfo.hasTerrainBorder) {
+					const tb = distToTerrainBorder(vx, vy, vz, cell, borderInfo);
+					if (tb.neighborTerrainId >= 0) {
+						blendFactor = Math.min(tb.dist / hexRadius, 0.999);
+						neighborTerrainId = tb.neighborTerrainId;
+					}
+				}
+				const topColor = getTopFaceColor(cell.terrain, tierH, neighborTerrainId, blendFactor);
 				positions.push(displaced[k * 3], displaced[k * 3 + 1], displaced[k * 3 + 2]);
 				normals.push(nx, ny, nz);
 				colors.push(topColor[0], topColor[1], topColor[2], 1.0);
