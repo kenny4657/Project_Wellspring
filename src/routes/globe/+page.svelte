@@ -76,6 +76,7 @@
 		settings = {
 			palettes: TERRAIN_PROFILES.map(p => [...p.palette] as [RGB, RGB, RGB, RGB]),
 			blends: TERRAIN_PROFILES.map(p => p.blend),
+			blendPositions: TERRAIN_PROFILES.map(p => p.blendPos),
 		};
 		engine?.setTerrainSettings(settings);
 	}
@@ -175,6 +176,23 @@
 					/>
 					<span class="text-[10px] text-[#706860] font-mono w-8 text-right">
 						{settings.blends[editingIdx].toFixed(2)}
+					</span>
+				</div>
+
+				<!-- Blend position slider -->
+				<div class="band-row">
+					<span class="text-[10px] text-[#A09890] w-10">Split</span>
+					<input
+						type="range"
+						min="-0.10"
+						max="0.10"
+						step="0.005"
+						value={settings.blendPositions[editingIdx]}
+						oninput={(e) => { settings.blendPositions[editingIdx] = parseFloat((e.target as HTMLInputElement).value); engine?.setTerrainSettings(settings); }}
+						class="blend-slider flex-1"
+					/>
+					<span class="text-[10px] text-[#706860] font-mono w-8 text-right">
+						{settings.blendPositions[editingIdx] > 0 ? '+' : ''}{settings.blendPositions[editingIdx].toFixed(2)}
 					</span>
 				</div>
 

@@ -25,6 +25,9 @@ export interface TerrainProfile {
 	/** Shore→grass transition width as fraction of amplitude (0.01–0.20).
 	 *  Higher = wider/smoother blend zone. Default 0.06. */
 	blend: number;
+	/** Shore/grass boundary position offset (-0.10 to +0.10).
+	 *  Negative = more shore visible, positive = more grass visible. Default 0. */
+	blendPos: number;
 }
 
 /** Terrain type index — used as the numeric ID in instance buffers */
@@ -52,22 +55,22 @@ export const TERRAIN_PROFILES: TerrainProfile[] = [
 	// palette: [shore, grass, hill, snow] — shore+grass create the visible two-tone blend.
 	//                                                                                                            shore                grass                hill                 snow
 	// Tier 0: Below surface — sandy ocean floor (water mesh provides blue)
-	{ id: 'deep_ocean',    name: 'Deep Ocean',    tier: 0, height: -1.5 * H, amplitude: 0.3,  frequency: 0.5,  ridged: false, color: [0.12, 0.22, 0.48], blend: 0.06, palette: [[0.58, 0.52, 0.38], [0.52, 0.48, 0.36], [0.48, 0.44, 0.32], [0.82, 0.84, 0.88]] },
+	{ id: 'deep_ocean',    name: 'Deep Ocean',    tier: 0, height: -1.5 * H, amplitude: 0.3,  frequency: 0.5,  ridged: false, color: [0.12, 0.22, 0.48], blend: 0.06, blendPos: 0, palette: [[0.58, 0.52, 0.38], [0.52, 0.48, 0.36], [0.48, 0.44, 0.32], [0.82, 0.84, 0.88]] },
 
 	// Tier 1: Surface level — sandy tones
-	{ id: 'shallow_ocean', name: 'Shallow Ocean', tier: 1, height: -0.5 * H, amplitude: 0.2,  frequency: 1.0,  ridged: false, color: [0.18, 0.38, 0.58], blend: 0.06, palette: [[0.58, 0.52, 0.38], [0.54, 0.50, 0.36], [0.48, 0.44, 0.32], [0.82, 0.84, 0.88]] },
-	{ id: 'coast',         name: 'Coast',         tier: 1, height:  0.0 * H, amplitude: 0.2,  frequency: 1.5,  ridged: false, color: [0.72, 0.65, 0.45], blend: 0.06, palette: [[0.65, 0.58, 0.40], [0.58, 0.52, 0.36], [0.48, 0.44, 0.32], [0.82, 0.84, 0.88]] },
-	{ id: 'lake',          name: 'Lake',          tier: 1, height: -0.3 * H, amplitude: 0.1,  frequency: 0.5,  ridged: false, color: [0.15, 0.35, 0.60], blend: 0.06, palette: [[0.58, 0.52, 0.38], [0.50, 0.48, 0.36], [0.48, 0.44, 0.32], [0.82, 0.84, 0.88]] },
+	{ id: 'shallow_ocean', name: 'Shallow Ocean', tier: 1, height: -0.5 * H, amplitude: 0.2,  frequency: 1.0,  ridged: false, color: [0.18, 0.38, 0.58], blend: 0.06, blendPos: 0, palette: [[0.58, 0.52, 0.38], [0.54, 0.50, 0.36], [0.48, 0.44, 0.32], [0.82, 0.84, 0.88]] },
+	{ id: 'coast',         name: 'Coast',         tier: 1, height:  0.0 * H, amplitude: 0.2,  frequency: 1.5,  ridged: false, color: [0.72, 0.65, 0.45], blend: 0.06, blendPos: 0, palette: [[0.65, 0.58, 0.40], [0.58, 0.52, 0.36], [0.48, 0.44, 0.32], [0.82, 0.84, 0.88]] },
+	{ id: 'lake',          name: 'Lake',          tier: 1, height: -0.3 * H, amplitude: 0.1,  frequency: 0.5,  ridged: false, color: [0.15, 0.35, 0.60], blend: 0.06, blendPos: 0, palette: [[0.58, 0.52, 0.38], [0.50, 0.48, 0.36], [0.48, 0.44, 0.32], [0.82, 0.84, 0.88]] },
 
 	// Tier 2: Low land
-	{ id: 'plains',        name: 'Plains',        tier: 2, height:  0.2 * H, amplitude: 0.4,  frequency: 1.0,  ridged: false, color: [0.42, 0.58, 0.22], blend: 0.06, palette: [[0.65, 0.58, 0.40], [0.38, 0.60, 0.22], [0.48, 0.44, 0.32], [0.82, 0.84, 0.88]] },
-	{ id: 'grassland',     name: 'Grassland',     tier: 2, height:  0.2 * H, amplitude: 0.5,  frequency: 1.5,  ridged: false, color: [0.35, 0.55, 0.18], blend: 0.06, palette: [[0.58, 0.52, 0.34], [0.30, 0.56, 0.16], [0.42, 0.44, 0.28], [0.82, 0.84, 0.88]] },
-	{ id: 'desert',        name: 'Desert',        tier: 2, height:  0.2 * H, amplitude: 0.6,  frequency: 0.8,  ridged: false, color: [0.72, 0.62, 0.38], blend: 0.06, palette: [[0.62, 0.54, 0.36], [0.56, 0.48, 0.30], [0.52, 0.46, 0.34], [0.82, 0.84, 0.88]] },
-	{ id: 'swamp',         name: 'Swamp',         tier: 2, height:  0.0 * H, amplitude: 0.2,  frequency: 2.0,  ridged: false, color: [0.28, 0.38, 0.18], blend: 0.06, palette: [[0.36, 0.32, 0.20], [0.24, 0.34, 0.14], [0.34, 0.32, 0.22], [0.78, 0.80, 0.82]] },
-	{ id: 'tundra',        name: 'Tundra',        tier: 2, height:  0.2 * H, amplitude: 0.3,  frequency: 1.0,  ridged: false, color: [0.72, 0.74, 0.70], blend: 0.06, palette: [[0.56, 0.54, 0.46], [0.48, 0.50, 0.40], [0.52, 0.50, 0.46], [0.86, 0.88, 0.92]] },
+	{ id: 'plains',        name: 'Plains',        tier: 2, height:  0.2 * H, amplitude: 0.4,  frequency: 1.0,  ridged: false, color: [0.42, 0.58, 0.22], blend: 0.06, blendPos: 0, palette: [[0.65, 0.58, 0.40], [0.38, 0.60, 0.22], [0.48, 0.44, 0.32], [0.82, 0.84, 0.88]] },
+	{ id: 'grassland',     name: 'Grassland',     tier: 2, height:  0.2 * H, amplitude: 0.5,  frequency: 1.5,  ridged: false, color: [0.35, 0.55, 0.18], blend: 0.06, blendPos: 0, palette: [[0.58, 0.52, 0.34], [0.30, 0.56, 0.16], [0.42, 0.44, 0.28], [0.82, 0.84, 0.88]] },
+	{ id: 'desert',        name: 'Desert',        tier: 2, height:  0.2 * H, amplitude: 0.6,  frequency: 0.8,  ridged: false, color: [0.72, 0.62, 0.38], blend: 0.06, blendPos: 0, palette: [[0.62, 0.54, 0.36], [0.56, 0.48, 0.30], [0.52, 0.46, 0.34], [0.82, 0.84, 0.88]] },
+	{ id: 'swamp',         name: 'Swamp',         tier: 2, height:  0.0 * H, amplitude: 0.2,  frequency: 2.0,  ridged: false, color: [0.28, 0.38, 0.18], blend: 0.06, blendPos: 0, palette: [[0.36, 0.32, 0.20], [0.24, 0.34, 0.14], [0.34, 0.32, 0.22], [0.78, 0.80, 0.82]] },
+	{ id: 'tundra',        name: 'Tundra',        tier: 2, height:  0.2 * H, amplitude: 0.3,  frequency: 1.0,  ridged: false, color: [0.72, 0.74, 0.70], blend: 0.06, blendPos: 0, palette: [[0.56, 0.54, 0.46], [0.48, 0.50, 0.40], [0.52, 0.50, 0.46], [0.86, 0.88, 0.92]] },
 
 	// Tier 3: Medium
-	{ id: 'hills',         name: 'Hills',         tier: 3, height:  0.7 * H, amplitude: 1.2,  frequency: 2.0,  ridged: false, color: [0.45, 0.50, 0.28], blend: 0.06, palette: [[0.58, 0.52, 0.36], [0.40, 0.52, 0.24], [0.50, 0.46, 0.32], [0.82, 0.84, 0.88]] },
+	{ id: 'hills',         name: 'Hills',         tier: 3, height:  0.7 * H, amplitude: 1.2,  frequency: 2.0,  ridged: false, color: [0.45, 0.50, 0.28], blend: 0.06, blendPos: 0, palette: [[0.58, 0.52, 0.36], [0.40, 0.52, 0.24], [0.50, 0.46, 0.32], [0.82, 0.84, 0.88]] },
 ];
 
 /**
@@ -114,12 +117,14 @@ const STORAGE_KEY = 'wellspring-terrain-settings';
 export interface TerrainSettings {
 	palettes: [RGB, RGB, RGB, RGB][];
 	blends: number[];
+	blendPositions: number[];
 }
 
 function defaultSettings(): TerrainSettings {
 	return {
 		palettes: TERRAIN_PROFILES.map(p => [...p.palette] as [RGB, RGB, RGB, RGB]),
 		blends: TERRAIN_PROFILES.map(p => p.blend),
+		blendPositions: TERRAIN_PROFILES.map(p => p.blendPos),
 	};
 }
 
@@ -134,6 +139,7 @@ export function loadTerrainSettings(): TerrainSettings {
 		return {
 			palettes: TERRAIN_PROFILES.map((p, i) => saved.palettes?.[i] ?? def.palettes[i]),
 			blends: TERRAIN_PROFILES.map((p, i) => saved.blends?.[i] ?? def.blends[i]),
+			blendPositions: TERRAIN_PROFILES.map((p, i) => saved.blendPositions?.[i] ?? def.blendPositions[i]),
 		};
 	} catch {
 		return defaultSettings();

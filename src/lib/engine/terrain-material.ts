@@ -53,6 +53,7 @@ uniform float topOffset;     // highest height (mountain peak)
 uniform float time;          // elapsed seconds for water animation
 uniform vec3 terrainPalette[40]; // 10 types × 4 bands [shore, grass, hill, snow]
 uniform float terrainBlend[10]; // per-terrain shore→grass transition width (fraction of amplitude)
+uniform float terrainBlendPos[10]; // per-terrain blend position offset (shifts shore/grass boundary)
 
 varying vec3 vWorldPos;
 varying vec3 vWorldNormal;
@@ -199,6 +200,8 @@ void main() {
         // Land types (5+): use tierH as local "sea level" so shore blend
         //                   appears at every tier, not just at global sea level
         float refLevel = (terrainId <= 3) ? seaLevel : tierH;
+        // Shift the shore/grass boundary up or down
+        refLevel += terrainBlendPos[terrainId] * amplitude;
 
         if (heightAboveR < refLevel - belowWidth * amplitude) {
             procColor = palShore(terrainId, scratchy);
@@ -251,7 +254,7 @@ export function createTerrainMaterial(scene: Scene): ShaderMaterial {
 			'world', 'viewProjection',
 			'sunDir', 'fillDir', 'cameraPos',
 			'planetRadius', 'seaLevel', 'bottomOffset', 'topOffset', 'hillRatio', 'time',
-			'terrainPalette', 'terrainBlend'
+			'terrainPalette', 'terrainBlend', 'terrainBlendPos'
 		],
 		needAlphaBlending: false,
 	});
@@ -283,4 +286,5 @@ export function createTerrainMaterial(scene: Scene): ShaderMaterial {
 export function applyTerrainSettings(mat: ShaderMaterial, settings: TerrainSettings): void {
 	mat.setArray3('terrainPalette', packCustomPalettes(settings.palettes));
 	mat.setFloats('terrainBlend', settings.blends);
+	mat.setFloats('terrainBlendPos', settings.blendPositions);
 }
