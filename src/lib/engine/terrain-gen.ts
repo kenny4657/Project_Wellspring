@@ -5,36 +5,7 @@
  * a mountain can be at height 4 or 5.
  */
 import type { HexCell } from './icosphere';
-
-function hash3(ix: number, iy: number, iz: number): number {
-	let h = (ix * 374761393 + iy * 668265263 + iz * 1274126177) | 0;
-	h = ((h ^ (h >>> 13)) * 1274126177) | 0;
-	return ((h ^ (h >>> 16)) & 0x7fffffff) / 0x7fffffff;
-}
-
-function smoothstep(t: number): number { return t * t * (3 - 2 * t); }
-
-function noise3d(x: number, y: number, z: number): number {
-	const ix = Math.floor(x), iy = Math.floor(y), iz = Math.floor(z);
-	const fx = smoothstep(x - ix), fy = smoothstep(y - iy), fz = smoothstep(z - iz);
-	const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
-	return lerp(
-		lerp(lerp(hash3(ix, iy, iz), hash3(ix + 1, iy, iz), fx),
-			lerp(hash3(ix, iy + 1, iz), hash3(ix + 1, iy + 1, iz), fx), fy),
-		lerp(lerp(hash3(ix, iy, iz + 1), hash3(ix + 1, iy, iz + 1), fx),
-			lerp(hash3(ix, iy + 1, iz + 1), hash3(ix + 1, iy + 1, iz + 1), fx), fy),
-		fz
-	);
-}
-
-function fbm(x: number, y: number, z: number, octaves: number): number {
-	let val = 0, amp = 1, max = 0;
-	for (let i = 0; i < octaves; i++) {
-		val += noise3d(x, y, z) * amp; max += amp;
-		x *= 2; y *= 2; z *= 2; amp *= 0.5;
-	}
-	return val / max;
-}
+import { fbm } from './noise';
 
 /**
  * Assign terrain type and height level to each cell.

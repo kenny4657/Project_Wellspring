@@ -18,6 +18,7 @@ import { Color3 } from '@babylonjs/core/Maths/math.color';
 import type { Scene } from '@babylonjs/core/scene';
 import type { HexCell } from './icosphere';
 import { TERRAIN_PROFILES } from '$lib/world/terrain-types';
+import { fbmNoise } from './noise';
 
 import '@babylonjs/core/Meshes/Builders/linesBuilder';
 
@@ -47,38 +48,6 @@ const CORNER_KEY_SCALE = 1e6;
 const COAST_ROUNDING = 0.0018;
 const COAST_SMOOTHING = 0.22;
 const CORNER_PATCH_EDGE_T = 0.18;
-
-// ── Noise ───────────────────────────────────────────────────
-
-function hash3(ix: number, iy: number, iz: number): number {
-	let h = (ix * 374761393 + iy * 668265263 + iz * 1274126177) | 0;
-	h = ((h ^ (h >>> 13)) * 1274126177) | 0;
-	return ((h ^ (h >>> 16)) & 0x7fffffff) / 0x7fffffff;
-}
-
-function smoothstep(t: number): number { return t * t * (3 - 2 * t); }
-
-function noise3d(x: number, y: number, z: number): number {
-	const ix = Math.floor(x), iy = Math.floor(y), iz = Math.floor(z);
-	const fx = smoothstep(x - ix), fy = smoothstep(y - iy), fz = smoothstep(z - iz);
-	const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
-	return lerp(
-		lerp(lerp(hash3(ix, iy, iz), hash3(ix + 1, iy, iz), fx),
-			lerp(hash3(ix, iy + 1, iz), hash3(ix + 1, iy + 1, iz), fx), fy),
-		lerp(lerp(hash3(ix, iy, iz + 1), hash3(ix + 1, iy, iz + 1), fx),
-			lerp(hash3(ix, iy + 1, iz + 1), hash3(ix + 1, iy + 1, iz + 1), fx), fy),
-		fz
-	);
-}
-
-function fbmNoise(x: number, y: number, z: number): number {
-	let v = 0, a = 0.5, max = 0;
-	for (let i = 0; i < 4; i++) {
-		v += noise3d(x, y, z) * a; max += a;
-		x *= 2.1; y *= 2.1; z *= 2.1; a *= 0.45;
-	}
-	return v / max - 0.5; // center around 0
-}
 
 // ── Helpers ─────────────────────────────────────────────────
 
