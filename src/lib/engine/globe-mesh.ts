@@ -313,10 +313,9 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 		if (!nb) continue;
 
 		// Track terrain type differences for color blending
-		// Skip water neighbors — coastline ramps handle those transitions
-		const nbIsWaterTerrain = nb.heightLevel <= 1;
-		const cellIsWaterTerrain = cell.heightLevel <= 1;
-		if (nb.terrain !== cell.terrain && !nbIsWaterTerrain && !cellIsWaterTerrain) {
+		// Includes water↔land edges so water hex vertices near land can
+		// show land colors instead of sandy ocean-floor palette.
+		if (nb.terrain !== cell.terrain) {
 			edgeNeighborTerrains[i] = nb.terrain;
 			hasTerrainBorder = true;
 		}
@@ -573,19 +572,6 @@ function computeSurfaceHeight(
 		// into a smooth union instead of using a hard nearest-edge switch.
 		if (borderTarget === 0) {
 			dist = Math.min(dist, smoothDistanceToTargetEdges(ux, uy, uz, cell, borderInfo, 0, hexRadius));
-
-			// Noise-perturb coastal distance field so the height contour
-			// (and thus the shore/grass color boundary) follows organic noise
-			// instead of hex geometry. edgeSafety is zero at the shared edge
-			// (dist=0) to preserve watertight geometry at water-land boundaries.
-			const coastNoise = fbmNoise(
-				ux * 12.0 + 100,
-				uy * 12.0 + 100,
-				uz * 12.0 + 100
-			);
-			const safeT = Math.min(dist / (hexRadius * 0.08), 1.0);
-			const edgeSafety = safeT * safeT * (3 - 2 * safeT);
-			dist = Math.max(0, dist + coastNoise * hexRadius * 0.35 * edgeSafety);
 		}
 
 		const t = Math.min(dist / hexRadius, 1.0);
@@ -899,7 +885,6 @@ export function buildCornerGapPatchMesh(cells: HexCell[], radius: number, scene:
 
 		const color = getTerrainColor(cell.terrain);
 		const tierH = getLevelHeight(cell.heightLevel);
-		const topColor = getTopFaceColor(cell.terrain, tierH, -1, 0);
 
 		for (let i = 0; i < n; i++) {
 			const corner = cell.corners[i];
@@ -948,7 +933,27 @@ export function buildCornerGapPatchMesh(cells: HexCell[], radius: number, scene:
 			ny /= nl;
 			nz /= nl;
 
+			// Per-vertex positions for blend computation
+			const patchVerts = [
+				corner.x, corner.y, corner.z,
+				prevDir.x, prevDir.y, prevDir.z,
+				nextDir.x, nextDir.y, nextDir.z
+			];
+
 			for (let k = 0; k < 3; k++) {
+				const vx = patchVerts[k * 3];
+				const vy = patchVerts[k * 3 + 1];
+				const vz = patchVerts[k * 3 + 2];
+				let neighborTerrainId = -1;
+				let blendFactor = 0;
+				if (borderInfo.hasTerrainBorder) {
+					const tb = distToTerrainBorder(vx, vy, vz, cell, borderInfo);
+					if (tb.neighborTerrainId >= 0) {
+						blendFactor = Math.min(tb.dist / hexRadius, 0.999);
+						neighborTerrainId = tb.neighborTerrainId;
+					}
+				}
+				const topColor = getTopFaceColor(cell.terrain, tierH, neighborTerrainId, blendFactor);
 				positions.push(displaced[k * 3], displaced[k * 3 + 1], displaced[k * 3 + 2]);
 				normals.push(nx, ny, nz);
 				colors.push(topColor[0], topColor[1], topColor[2], 1.0);

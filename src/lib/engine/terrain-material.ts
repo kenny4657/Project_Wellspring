@@ -232,17 +232,34 @@ void main() {
         vec3 ownColor = computeTerrainColor(terrainId, heightAboveR, tierH, scratchy);
 
         if (hasCrossBlend) {
-            // World-space noise determines where the terrain boundary falls
-            // Multi-octave for organic shape at different scales
-            float n1 = snoise(vWorldPos * 0.004) * 0.22;
-            float n2 = snoise(vWorldPos * 0.012) * 0.10;
-            float noiseOffset = n1 + n2;
-            // Blend boundary: noise shifts the threshold so boundary follows
-            // noise contours rather than hex geometry
-            float threshold = max(0.35 + noiseOffset, 0.08); // clamped to avoid smoothstep NaN
-            float blend = (1.0 - smoothstep(0.0, threshold, distToBorder)) * 0.45;
+            // Detect water↔land transition (water terrain IDs: 0-3)
+            bool ownIsWater = (terrainId <= 3);
+            bool neighborIsWater = (neighborId <= 3);
+            bool isCoastalBlend = (ownIsWater != neighborIsWater);
+
             vec3 neighborColor = computeTerrainColor(neighborId, heightAboveR, tierH, scratchy);
-            procColor = mix(ownColor, neighborColor, blend);
+
+            if (isCoastalBlend) {
+                // Coastal transition: water hex vertices near land should show
+                // 100% land color (water sphere provides the blue water color).
+                // Land hex vertices near water use a smooth distance-based blend.
+                float coastBlend = 1.0 - smoothstep(0.0, 0.5, distToBorder);
+                if (ownIsWater) {
+                    // Water hex vertex: fully adopt land neighbor color
+                    procColor = neighborColor;
+                } else {
+                    // Land hex vertex near water: smooth transition to neighbor
+                    procColor = mix(ownColor, neighborColor, coastBlend * 0.35);
+                }
+            } else {
+                // Land↔land terrain blend: noise-modulated boundary
+                float n1 = snoise(vWorldPos * 0.004) * 0.22;
+                float n2 = snoise(vWorldPos * 0.012) * 0.10;
+                float noiseOffset = n1 + n2;
+                float threshold = max(0.35 + noiseOffset, 0.08);
+                float blend = (1.0 - smoothstep(0.0, threshold, distToBorder)) * 0.45;
+                procColor = mix(ownColor, neighborColor, blend);
+            }
         } else {
             procColor = ownColor;
         }
