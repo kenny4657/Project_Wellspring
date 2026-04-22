@@ -14,6 +14,7 @@ import { ShaderMaterial } from '@babylonjs/core/Materials/shaderMaterial';
 import { ShaderStore } from '@babylonjs/core/Engines/shaderStore';
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import type { Scene } from '@babylonjs/core/scene';
+import { packTerrainPalettes, loadTerrainPalettes, packCustomPalettes, type RGB } from '$lib/world/terrain-types';
 
 const VERTEX = /* glsl */ `
 precision highp float;
@@ -50,6 +51,7 @@ uniform float bottomOffset;  // lowest height (water floor)
 uniform float hillRatio;     // 0-1 ratio where grass→hill transition occurs
 uniform float topOffset;     // highest height (mountain peak)
 uniform float time;          // elapsed seconds for water animation
+uniform vec3 terrainPalette[68]; // 17 types × 4 bands [shore, grass, hill, snow]
 
 varying vec3 vWorldPos;
 varying vec3 vWorldNormal;
@@ -126,28 +128,13 @@ float triplanarScratchy(vec3 worldPos, vec3 normal, float scale) {
     return tx * blend.x + ty * blend.y + tz * blend.z;
 }
 
-// ── Biome colors (muted natural tones like Sota) ────────────
+// ── Per-terrain palette lookup ──────────────────────────────
+// terrainPalette[id*4+0] = shore, [id*4+1] = grass, [id*4+2] = hill, [id*4+3] = snow
 
-vec3 waterColor(float scratchy) {
-    vec3 base = vec3(0.58, 0.52, 0.38);
-    return base * (1.0 + scratchy * 0.10);
-}
-
-vec3 grassColor(float scratchy) {
-    vec3 base = vec3(0.38, 0.60, 0.22);
-    vec3 variation = vec3(0.02, 0.05, 0.01) * scratchy;
-    return (base + variation) * (1.0 + scratchy * 0.14);
-}
-
-vec3 hillColor(float scratchy) {
-    vec3 base = vec3(0.48, 0.44, 0.32);
-    return base * (1.0 + scratchy * 0.14);
-}
-
-vec3 snowColor(float scratchy) {
-    vec3 base = vec3(0.82, 0.84, 0.88);
-    return base * (1.0 + scratchy * 0.08);
-}
+vec3 palShore(int id, float s) { return terrainPalette[id * 4]     * (1.0 + s * 0.10); }
+vec3 palGrass(int id, float s) { return terrainPalette[id * 4 + 1] * (1.0 + s * 0.14); }
+vec3 palHill(int id, float s)  { return terrainPalette[id * 4 + 2] * (1.0 + s * 0.14); }
+vec3 palSnow(int id, float s)  { return terrainPalette[id * 4 + 3] * (1.0 + s * 0.08); }
 
 // ── Wall cross-section ──────────────────────────────────────
 
@@ -193,42 +180,39 @@ void main() {
     if (isWall) {
         procColor = textureWall(vColor.rgb, vWorldPos);
     } else {
-        // ── Sota-style height-based texture blending ────
+        // ── Per-terrain Sota-style height blending ────
+        // Top faces encode: R = terrainId/16, B = tier height
+        int terrainId = int(vColor.r * 16.0 + 0.5);
+        float tierH = (vColor.b * 0.110 - 0.030) * planetRadius;
 
         float amplitude = abs(topOffset) + abs(bottomOffset);
         float firstCoef = 1.0 / hillRatio;
         float secondCoef = 1.0 / (1.0 - hillRatio);
-
         float h = (heightAboveR - bottomOffset) / amplitude;
-
         float scratchy = triplanarScratchy(vWorldPos, N, 0.004);
 
-        // Shore transition zone: narrow sand/beach blend at water/land boundary
-        float shoreWidth = 0.06; // width of shore zone in normalized height
-        float shoreCenter = 0.0; // at bottom_offset (sea level)
+        float shoreWidth = 0.06;
+        float belowWidth = 0.04;
 
-        float belowWidth = 0.04; // underwater transition width
-        if (heightAboveR < seaLevel - belowWidth * amplitude) {
-            // Deep below sea level → sandy ocean floor
-            procColor = waterColor(scratchy);
-        } else if (heightAboveR < seaLevel) {
-            // Underwater transition: sandy floor blending up to shore
-            vec3 shore = vec3(0.65, 0.58, 0.40) * (1.0 + scratchy * 0.10);
-            float belowT = (heightAboveR - (seaLevel - belowWidth * amplitude)) / (belowWidth * amplitude);
-            procColor = mix(waterColor(scratchy), shore, clamp(belowT, 0.0, 1.0));
-        } else if (heightAboveR < seaLevel + shoreWidth * amplitude) {
-            // Shore/beach transition zone — sand blending into grass
-            vec3 shore = vec3(0.65, 0.58, 0.40) * (1.0 + scratchy * 0.10);
-            float shoreT = (heightAboveR - seaLevel) / (shoreWidth * amplitude);
-            procColor = mix(shore, grassColor(scratchy), clamp(shoreT, 0.0, 1.0));
+        // Water types (0-4): global seaLevel blending with per-terrain colors
+        // Land types (5+): use tierH as local "sea level" so shore blend
+        //                   appears at every tier, not just at global sea level
+        float refLevel = (terrainId <= 4) ? seaLevel : tierH;
+
+        if (heightAboveR < refLevel - belowWidth * amplitude) {
+            procColor = palShore(terrainId, scratchy);
+        } else if (heightAboveR < refLevel) {
+            float belowT = (heightAboveR - (refLevel - belowWidth * amplitude)) / (belowWidth * amplitude);
+            procColor = mix(palShore(terrainId, scratchy), palShore(terrainId, scratchy), clamp(belowT, 0.0, 1.0));
+        } else if (heightAboveR < refLevel + shoreWidth * amplitude) {
+            float shoreT = (heightAboveR - refLevel) / (shoreWidth * amplitude);
+            procColor = mix(palShore(terrainId, scratchy), palGrass(terrainId, scratchy), clamp(shoreT, 0.0, 1.0));
         } else if (h <= hillRatio) {
-            // Plain → Hill blend (Sota's first_coef)
             float t = clamp(h * firstCoef, 0.0, 1.0);
-            procColor = mix(grassColor(scratchy), hillColor(scratchy), t);
+            procColor = mix(palGrass(terrainId, scratchy), palHill(terrainId, scratchy), t);
         } else {
-            // Hill → Snow blend (Sota's second_coef)
             float t = clamp((h - hillRatio) * secondCoef, 0.0, 1.0);
-            procColor = mix(hillColor(scratchy), snowColor(scratchy), t);
+            procColor = mix(palHill(terrainId, scratchy), palSnow(terrainId, scratchy), t);
         }
     }
 
@@ -243,7 +227,7 @@ void main() {
     vec3 litColor = procColor * light;
 
     // Specular on water
-    if (!isWall && length(vWorldPos) - planetRadius < seaLevel) {
+    if (!isWall && heightAboveR < seaLevel) {
         vec3 halfVec = normalize(sunDir + toCamera);
         float spec = pow(max(0.0, dot(N, halfVec)), 64.0);
         litColor += vec3(1.0, 0.98, 0.92) * spec * 0.10;
@@ -265,7 +249,8 @@ export function createTerrainMaterial(scene: Scene): ShaderMaterial {
 		uniforms: [
 			'world', 'viewProjection',
 			'sunDir', 'fillDir', 'cameraPos',
-			'planetRadius', 'seaLevel', 'bottomOffset', 'topOffset', 'hillRatio', 'time'
+			'planetRadius', 'seaLevel', 'bottomOffset', 'topOffset', 'hillRatio', 'time',
+			'terrainPalette'
 		],
 		needAlphaBlending: false,
 	});
@@ -284,7 +269,16 @@ export function createTerrainMaterial(scene: Scene): ShaderMaterial {
 	mat.setFloat('hillRatio', 0.40);               // grass→hill transition
 	mat.setFloat('time', 0);
 
+	// Load and upload per-terrain color palettes
+	const palettes = loadTerrainPalettes();
+	mat.setArray3('terrainPalette', packCustomPalettes(palettes));
+
 	mat.backFaceCulling = true;
 
 	return mat;
+}
+
+/** Update terrain palette uniforms at runtime (for color editor). */
+export function applyTerrainColors(mat: ShaderMaterial, palettes: [RGB, RGB, RGB, RGB][]): void {
+	mat.setArray3('terrainPalette', packCustomPalettes(palettes));
 }
