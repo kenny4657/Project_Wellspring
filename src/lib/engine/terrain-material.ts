@@ -138,6 +138,39 @@ vec3 palGrass(int id, float s) { return terrainPalette[id * 4 + 1] * (1.0 + s * 
 vec3 palHill(int id, float s)  { return terrainPalette[id * 4 + 2] * (1.0 + s * 0.14); }
 vec3 palSnow(int id, float s)  { return terrainPalette[id * 4 + 3] * (1.0 + s * 0.08); }
 
+// Compute the full 4-band terrain color for a given terrain ID at the current vertex.
+vec3 computeTerrainColor(int id, float heightAboveR, float tierH, float scratchy) {
+    float amplitude = abs(topOffset) + abs(bottomOffset);
+    float noiseAmp = 0.008 * planetRadius;
+    float noiseBias = 0.3 * noiseAmp;
+    float sw = terrainBlend[id] * amplitude;
+
+    float tierBase = (id <= 3) ? seaLevel : (tierH + noiseBias);
+    float refLevel = tierBase + terrainBlendPos[id] * amplitude;
+    float boundary1 = refLevel;
+    float boundary2 = tierBase + noiseAmp * 0.6;
+    float boundary3 = tierBase + noiseAmp * 0.85;
+
+    if (heightAboveR < boundary1 - sw) {
+        return palShore(id, scratchy);
+    } else if (heightAboveR < boundary1 + sw) {
+        float t = (heightAboveR - (boundary1 - sw)) / (2.0 * sw);
+        return mix(palShore(id, scratchy), palGrass(id, scratchy), clamp(t, 0.0, 1.0));
+    } else if (heightAboveR < boundary2 - sw) {
+        return palGrass(id, scratchy);
+    } else if (heightAboveR < boundary2 + sw) {
+        float t = (heightAboveR - (boundary2 - sw)) / (2.0 * sw);
+        return mix(palGrass(id, scratchy), palHill(id, scratchy), clamp(t, 0.0, 1.0));
+    } else if (heightAboveR < boundary3 - sw) {
+        return palHill(id, scratchy);
+    } else if (heightAboveR < boundary3 + sw) {
+        float t = (heightAboveR - (boundary3 - sw)) / (2.0 * sw);
+        return mix(palHill(id, scratchy), palSnow(id, scratchy), clamp(t, 0.0, 1.0));
+    } else {
+        return palSnow(id, scratchy);
+    }
+}
+
 // ── Wall cross-section ──────────────────────────────────────
 
 vec3 textureWall(vec3 terrainBase, vec3 wp) {
@@ -182,59 +215,27 @@ void main() {
     if (isWall) {
         procColor = textureWall(vColor.rgb, vWorldPos);
     } else {
-        // ── Per-terrain Sota-style height blending ────
-        // Top faces encode: R = terrainId/16, B = tier height
+        // ── Per-terrain height blending + cross-terrain border blend ────
         int terrainId = int(vColor.r * 9.0 + 0.5);
         float tierH = (vColor.b * 0.110 - 0.030) * planetRadius;
-
-        float amplitude = abs(topOffset) + abs(bottomOffset);
-        float firstCoef = 1.0 / hillRatio;
-        float secondCoef = 1.0 / (1.0 - hillRatio);
-        float h = (heightAboveR - bottomOffset) / amplitude;
         float scratchy = triplanarScratchy(vWorldPos, N, 0.004);
 
-        float shoreWidth = terrainBlend[terrainId];
-        float belowWidth = shoreWidth * 0.67; // below-water zone proportional to shore width
+        // Decode cross-terrain blend from G channel
+        // G = (neighborTerrainId + blendFactor) / 10.0
+        float rawG = vColor.g * 10.0;
+        int neighborId = int(floor(rawG + 0.001));
+        float crossBlend = fract(rawG + 0.001);
+        bool hasCrossBlend = (neighborId != terrainId) && (crossBlend > 0.001);
 
-        // Water types (0-4): global seaLevel blending with per-terrain colors
-        // Land types (5+): use tierH as local "sea level" so shore blend
-        //                   appears at every tier, not just at global sea level
-        // Land noise is biased +0.3 * NOISE_AMP upward, so shift refLevel
-        // to match so the shore/grass split stays centered on the terrain.
-        float noiseBias = 0.3 * 0.008 * planetRadius;
-        float refLevel = (terrainId <= 3) ? seaLevel : (tierH + noiseBias);
-        // User-adjustable shift
-        refLevel += terrainBlendPos[terrainId] * amplitude;
+        // Own terrain color
+        vec3 ownColor = computeTerrainColor(terrainId, heightAboveR, tierH, scratchy);
 
-        // All 4 band transitions use local height-based blending.
-        // boundary1 (shore↔grass) follows the split slider.
-        // boundary2/3 (grass↔hill, hill↔snow) are anchored to the
-        // upper noise range so they don't shift with the split.
-        float noiseAmp = 0.008 * planetRadius;
-        float sw = shoreWidth * amplitude;
-
-        float tierBase = (terrainId <= 3) ? seaLevel : (tierH + noiseBias);
-        float boundary1 = refLevel;                          // shore ↔ grass (moves with split)
-        float boundary2 = tierBase + noiseAmp * 0.6;         // grass ↔ hill (fixed)
-        float boundary3 = tierBase + noiseAmp * 0.85;        // hill ↔ snow (fixed)
-
-        if (heightAboveR < boundary1 - sw) {
-            procColor = palShore(terrainId, scratchy);
-        } else if (heightAboveR < boundary1 + sw) {
-            float t = (heightAboveR - (boundary1 - sw)) / (2.0 * sw);
-            procColor = mix(palShore(terrainId, scratchy), palGrass(terrainId, scratchy), clamp(t, 0.0, 1.0));
-        } else if (heightAboveR < boundary2 - sw) {
-            procColor = palGrass(terrainId, scratchy);
-        } else if (heightAboveR < boundary2 + sw) {
-            float t = (heightAboveR - (boundary2 - sw)) / (2.0 * sw);
-            procColor = mix(palGrass(terrainId, scratchy), palHill(terrainId, scratchy), clamp(t, 0.0, 1.0));
-        } else if (heightAboveR < boundary3 - sw) {
-            procColor = palHill(terrainId, scratchy);
-        } else if (heightAboveR < boundary3 + sw) {
-            float t = (heightAboveR - (boundary3 - sw)) / (2.0 * sw);
-            procColor = mix(palHill(terrainId, scratchy), palSnow(terrainId, scratchy), clamp(t, 0.0, 1.0));
+        if (hasCrossBlend) {
+            // Neighbor terrain color at same vertex position
+            vec3 neighborColor = computeTerrainColor(neighborId, heightAboveR, tierH, scratchy);
+            procColor = mix(ownColor, neighborColor, crossBlend);
         } else {
-            procColor = palSnow(terrainId, scratchy);
+            procColor = ownColor;
         }
     }
 
