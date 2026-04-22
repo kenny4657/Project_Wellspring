@@ -702,9 +702,15 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 					if (borderInfo.hasTerrainBorder) {
 						const tb = distToTerrainBorder(vx, vy, vz, cell, borderInfo);
 						if (tb.neighborTerrainId >= 0) {
-							const t = Math.min(tb.dist / (hexRadius * 0.3), 1.0);
-							const mu = (1 - Math.cos(t * Math.PI)) / 2; // 0 at edge, 1 at center
-							blendFactor = 1 - mu;
+							// Center-vs-edge ratio: directional gradient, not radial ring
+							const dcx = vx - cell.center.x;
+							const dcy = vy - cell.center.y;
+							const dcz = vz - cell.center.z;
+							const distToCenter = Math.sqrt(dcx * dcx + dcy * dcy + dcz * dcz);
+							const ratio = distToCenter / (distToCenter + tb.dist + 1e-9);
+							// smoothstep(0.3, 0.7, ratio) * 0.5 — gradual onset, max 50% at edge
+							const st = Math.max(0, Math.min(1, (ratio - 0.3) / 0.4));
+							blendFactor = st * st * (3 - 2 * st) * 0.5;
 							if (blendFactor > 0.001) {
 								neighborTerrainId = tb.neighborTerrainId;
 							} else {
@@ -986,9 +992,13 @@ export function updateCellTerrain(
 				if (borderInfo.hasTerrainBorder) {
 					const tb = distToTerrainBorder(ux, uy, uz, c, borderInfo);
 					if (tb.neighborTerrainId >= 0) {
-						const t = Math.min(tb.dist / (hexRadius * 0.3), 1.0);
-						const mu = (1 - Math.cos(t * Math.PI)) / 2;
-						blendFactor = 1 - mu;
+						const dcx = ux - c.center.x;
+						const dcy = uy - c.center.y;
+						const dcz = uz - c.center.z;
+						const distToCenter = Math.sqrt(dcx * dcx + dcy * dcy + dcz * dcz);
+						const ratio = distToCenter / (distToCenter + tb.dist + 1e-9);
+						const st = Math.max(0, Math.min(1, (ratio - 0.3) / 0.4));
+						blendFactor = st * st * (3 - 2 * st) * 0.5;
 						if (blendFactor > 0.001) {
 							neighborTerrainId = tb.neighborTerrainId;
 						} else {
