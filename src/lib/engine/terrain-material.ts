@@ -240,15 +240,7 @@ void main() {
             // Blend boundary: noise shifts the threshold so boundary follows
             // noise contours rather than hex geometry
             float threshold = max(0.35 + noiseOffset, 0.08); // clamped to avoid smoothstep NaN
-
-            // Water↔land transitions need a stronger blend so water hex vertices
-            // visible above the water sphere show land colors, not sandy ocean floor.
-            bool ownIsWater = (terrainId <= 3);
-            bool neighborIsWater = (neighborId <= 3);
-            bool isCoastalBlend = (ownIsWater != neighborIsWater);
-            float maxBlend = isCoastalBlend ? 0.92 : 0.45;
-
-            float blend = (1.0 - smoothstep(0.0, threshold, distToBorder)) * maxBlend;
+            float blend = (1.0 - smoothstep(0.0, threshold, distToBorder)) * 0.45;
             vec3 neighborColor = computeTerrainColor(neighborId, heightAboveR, tierH, scratchy);
             procColor = mix(ownColor, neighborColor, blend);
         } else {

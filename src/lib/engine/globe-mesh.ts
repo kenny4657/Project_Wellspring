@@ -312,11 +312,11 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 		const nb = findNeighborAcrossEdge(cell, i, cellById);
 		if (!nb) continue;
 
-		// Track terrain type differences for color blending.
-		// Water↔land edges: water hex vertices near land should show the land
-		// terrain's colors (not sandy ocean floor), and land hex vertices near
-		// water should blend toward the water terrain's colors.
-		if (nb.terrain !== cell.terrain) {
+		// Track terrain type differences for color blending
+		// Skip water neighbors — coastline ramps handle those transitions
+		const nbIsWaterTerrain = nb.heightLevel <= 1;
+		const cellIsWaterTerrain = cell.heightLevel <= 1;
+		if (nb.terrain !== cell.terrain && !nbIsWaterTerrain && !cellIsWaterTerrain) {
 			edgeNeighborTerrains[i] = nb.terrain;
 			hasTerrainBorder = true;
 		}
@@ -573,6 +573,19 @@ function computeSurfaceHeight(
 		// into a smooth union instead of using a hard nearest-edge switch.
 		if (borderTarget === 0) {
 			dist = Math.min(dist, smoothDistanceToTargetEdges(ux, uy, uz, cell, borderInfo, 0, hexRadius));
+
+			// Noise-perturb coastal distance field so the height contour
+			// (and thus the shore/grass color boundary) follows organic noise
+			// instead of hex geometry. edgeSafety is zero at the shared edge
+			// (dist=0) to preserve watertight geometry at water-land boundaries.
+			const coastNoise = fbmNoise(
+				ux * 12.0 + 100,
+				uy * 12.0 + 100,
+				uz * 12.0 + 100
+			);
+			const safeT = Math.min(dist / (hexRadius * 0.08), 1.0);
+			const edgeSafety = safeT * safeT * (3 - 2 * safeT);
+			dist = Math.max(0, dist + coastNoise * hexRadius * 0.35 * edgeSafety);
 		}
 
 		const t = Math.min(dist / hexRadius, 1.0);
