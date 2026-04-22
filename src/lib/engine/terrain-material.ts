@@ -206,23 +206,17 @@ void main() {
         // User-adjustable shift
         refLevel += terrainBlendPos[terrainId] * amplitude;
 
-        // All 4 band transitions use the same local height-based blending.
-        // The noise displacement range (~noiseAmp) is divided into zones:
-        //   below refLevel          → solid shore
-        //   refLevel ± shoreWidth   → shore ↔ grass transition
-        //   grass zone              → solid grass
-        //   grassHillBoundary ± sw  → grass ↔ hill transition
-        //   hill zone               → solid hill
-        //   hillSnowBoundary ± sw   → hill ↔ snow transition
-        //   above                   → solid snow
+        // All 4 band transitions use local height-based blending.
+        // boundary1 (shore↔grass) follows the split slider.
+        // boundary2/3 (grass↔hill, hill↔snow) are anchored to the
+        // upper noise range so they don't shift with the split.
         float noiseAmp = 0.008 * planetRadius;
         float sw = shoreWidth * amplitude;
 
-        // Space the 3 boundaries evenly across the noise range above refLevel
-        float bandStep = noiseAmp * 0.45;
-        float boundary1 = refLevel;              // shore ↔ grass
-        float boundary2 = refLevel + bandStep;   // grass ↔ hill
-        float boundary3 = refLevel + bandStep * 2.0; // hill ↔ snow
+        float tierBase = (terrainId <= 3) ? seaLevel : (tierH + noiseBias);
+        float boundary1 = refLevel;                          // shore ↔ grass (moves with split)
+        float boundary2 = tierBase + noiseAmp * 0.6;         // grass ↔ hill (fixed)
+        float boundary3 = tierBase + noiseAmp * 0.85;        // hill ↔ snow (fixed)
 
         if (heightAboveR < boundary1 - sw) {
             procColor = palShore(terrainId, scratchy);
