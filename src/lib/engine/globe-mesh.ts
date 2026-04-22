@@ -475,6 +475,44 @@ function distToTerrainBorder(
 	return { dist: minDist, neighborTerrainId: neighborTerrain };
 }
 
+/** Find distance to the nearest terrain border edge across the current hex
+ *  AND all same-terrain neighbors. This makes the blend position-dependent
+ *  rather than hex-dependent, eliminating seams at hex boundaries. */
+function globalDistToTerrainBorder(
+	vx: number, vy: number, vz: number,
+	cell: HexCell,
+	cellById: Map<number, HexCell>,
+	borderInfoById: Map<number, HexBorderInfo>
+): { dist: number; neighborTerrainId: number } {
+	let minDist = Infinity;
+	let neighborTerrain = -1;
+
+	// Check own hex
+	const ownBorder = borderInfoById.get(cell.id);
+	if (ownBorder?.hasTerrainBorder) {
+		const tb = distToTerrainBorder(vx, vy, vz, cell, ownBorder);
+		if (tb.neighborTerrainId >= 0 && tb.dist < minDist) {
+			minDist = tb.dist;
+			neighborTerrain = tb.neighborTerrainId;
+		}
+	}
+
+	// Check same-terrain neighbors' border edges
+	for (const nId of cell.neighbors) {
+		const nb = cellById.get(nId);
+		if (!nb || nb.terrain !== cell.terrain) continue;
+		const nbBorder = borderInfoById.get(nId);
+		if (!nbBorder?.hasTerrainBorder) continue;
+		const tb = distToTerrainBorder(vx, vy, vz, nb, nbBorder);
+		if (tb.neighborTerrainId >= 0 && tb.dist < minDist) {
+			minDist = tb.dist;
+			neighborTerrain = tb.neighborTerrainId;
+		}
+	}
+
+	return { dist: minDist, neighborTerrainId: neighborTerrain };
+}
+
 function smoothMin(a: number, b: number, k: number): number {
 	if (k <= 0) return Math.min(a, b);
 	const h = Math.max(k - Math.abs(a - b), 0) / k;
@@ -702,8 +740,8 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 					const vz = triVerts[j + k * 3 + 2];
 					let neighborTerrainId = -1;
 					let blendFactor = 0;
-					if (borderInfo.hasTerrainBorder) {
-						const tb = distToTerrainBorder(vx, vy, vz, cell, borderInfo);
+					{
+						const tb = globalDistToTerrainBorder(vx, vy, vz, cell, cellById, borderInfoById);
 						if (tb.neighborTerrainId >= 0) {
 							// Center-vs-edge ratio: directional gradient, not radial ring
 							const dcx = vx - cell.center.x;
@@ -947,13 +985,37 @@ export function updateCellTerrain(
 	const cellIdToIdx = new Map<number, number>();
 	for (let i = 0; i < cells.length; i++) cellIdToIdx.set(cells[i].id, i);
 
-	// Collect affected cells: painted cell + all its neighbors
+	// Collect affected cells: painted cell + 2 rings of neighbors
+	// (blend propagates through same-terrain neighbors, so we need ring 2)
 	const affected = new Set<number>();
 	affected.add(cellIndex);
 	const cell = cells[cellIndex];
 	for (const nId of cell.neighbors) {
 		const nIdx = cellIdToIdx.get(nId);
-		if (nIdx !== undefined) affected.add(nIdx);
+		if (nIdx !== undefined) {
+			affected.add(nIdx);
+			// Ring 2: neighbors of neighbors
+			const nb = cellById.get(nId);
+			if (nb) {
+				for (const nnId of nb.neighbors) {
+					const nnIdx = cellIdToIdx.get(nnId);
+					if (nnIdx !== undefined) affected.add(nnIdx);
+				}
+			}
+		}
+	}
+
+	// Build borderInfo for all affected cells + their neighbors (needed by globalDistToTerrainBorder)
+	const borderInfoById = new Map<number, HexBorderInfo>();
+	for (const ci of affected) {
+		const c = cells[ci];
+		borderInfoById.set(c.id, getHexBorderInfo(c, cellById));
+		for (const nId of c.neighbors) {
+			if (!borderInfoById.has(nId)) {
+				const nb = cellById.get(nId);
+				if (nb) borderInfoById.set(nId, getHexBorderInfo(nb, cellById));
+			}
+		}
 	}
 
 	for (const ci of affected) {
@@ -961,7 +1023,6 @@ export function updateCellTerrain(
 		const n = c.corners.length;
 		const wallColor = getTerrainColor(c.terrain);
 		const tierH = getLevelHeight(c.heightLevel);
-		const borderInfo = getHexBorderInfo(c, cellById);
 
 		let hexRadius = 0;
 		for (let i = 0; i < n; i++) {
@@ -992,8 +1053,8 @@ export function updateCellTerrain(
 
 				let neighborTerrainId = -1;
 				let blendFactor = 0;
-				if (borderInfo.hasTerrainBorder) {
-					const tb = distToTerrainBorder(ux, uy, uz, c, borderInfo);
+				{
+					const tb = globalDistToTerrainBorder(ux, uy, uz, c, cellById, borderInfoById);
 					if (tb.neighborTerrainId >= 0) {
 						const dcx = ux - c.center.x;
 						const dcy = uy - c.center.y;
