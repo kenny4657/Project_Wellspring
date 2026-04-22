@@ -228,18 +228,34 @@ void main() {
         float distToBorder = fract(rawG + 0.001);
         bool hasCrossBlend = (neighborId != terrainId);
 
+        // Detect water↔land transition
+        bool ownIsWater = (terrainId <= 3);
+        bool neighborIsWater = hasCrossBlend && (neighborId <= 3);
+        bool isCoastalBlend = hasCrossBlend && (ownIsWater != neighborIsWater);
+
         // Own terrain color
         vec3 ownColor = computeTerrainColor(terrainId, heightAboveR, tierH, scratchy);
 
-        if (hasCrossBlend) {
-            // World-space noise determines where the terrain boundary falls
-            // Multi-octave for organic shape at different scales
+        if (isCoastalBlend) {
+            // Coastal blend: can't use computeTerrainColor because the shore
+            // palette band is ~76km wide — all coastal heights fall in it,
+            // producing hex-shaped sandy strips. Use palGrass directly.
+            float coastFade = 1.0 - smoothstep(0.0, 0.5, distToBorder);
+            if (ownIsWater) {
+                // Water hex vertex above water sphere: show land neighbor color
+                procColor = palGrass(neighborId, scratchy);
+            } else {
+                // Land hex vertex near water: blend own color toward grass
+                // to suppress the shore band near the coast
+                vec3 grassColor = palGrass(terrainId, scratchy);
+                procColor = mix(ownColor, grassColor, coastFade);
+            }
+        } else if (hasCrossBlend) {
+            // Land↔land terrain blend: noise-modulated boundary
             float n1 = snoise(vWorldPos * 0.004) * 0.22;
             float n2 = snoise(vWorldPos * 0.012) * 0.10;
             float noiseOffset = n1 + n2;
-            // Blend boundary: noise shifts the threshold so boundary follows
-            // noise contours rather than hex geometry
-            float threshold = max(0.35 + noiseOffset, 0.08); // clamped to avoid smoothstep NaN
+            float threshold = max(0.35 + noiseOffset, 0.08);
             float blend = (1.0 - smoothstep(0.0, threshold, distToBorder)) * 0.45;
             vec3 neighborColor = computeTerrainColor(neighborId, heightAboveR, tierH, scratchy);
             procColor = mix(ownColor, neighborColor, blend);

@@ -312,11 +312,9 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 		const nb = findNeighborAcrossEdge(cell, i, cellById);
 		if (!nb) continue;
 
-		// Track terrain type differences for color blending
-		// Skip water neighbors — coastline ramps handle those transitions
-		const nbIsWaterTerrain = nb.heightLevel <= 1;
-		const cellIsWaterTerrain = cell.heightLevel <= 1;
-		if (nb.terrain !== cell.terrain && !nbIsWaterTerrain && !cellIsWaterTerrain) {
+		// Track terrain type differences for color blending.
+		// Includes water↔land so shader can suppress the shore palette band.
+		if (nb.terrain !== cell.terrain) {
 			edgeNeighborTerrains[i] = nb.terrain;
 			hasTerrainBorder = true;
 		}
@@ -344,18 +342,15 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 					}
 				}
 			} else {
-				// Water → land: ramp to just below the water sphere surface
-				// Water sphere is at radius*0.9995 (height -0.0005). Targeting
-				// -0.0008 puts coastal vertices below the water sphere, so the
-				// water surface hides the sandy terrain strip at the coast.
-				edgeTargets[i] = -0.0008;
+				// Water → land: ramp up to sea level
+				edgeTargets[i] = 0;
 			}
 		} else {
 			// ── Land hex edge logic ──
 			// Only ramp at water borders (coastline). All land-land edges excluded (walls handle those).
 			if (nbIsWater) {
-				// Land → water: ramp to just below the water sphere surface
-				edgeTargets[i] = -0.0008;
+				// Land → water: ramp down to sea level
+				edgeTargets[i] = 0;
 				// NOT excluded — this edge gets a ramp
 			} else {
 				// Land → land: excluded (walls handle height transitions)
@@ -572,13 +567,10 @@ function computeSurfaceHeight(
 		const edgeIdx = nearest.edgeIdx;
 		const edgeT = nearest.edgeT;
 
-		// Detect coastline edge (target is the coastal submersion value -0.0008)
-		const isCoastlineEdge = Math.abs(borderTarget - (-0.0008)) < 1e-6;
-
 		// Round coastline corners by blending adjacent coast-edge distance fields
 		// into a smooth union instead of using a hard nearest-edge switch.
-		if (isCoastlineEdge) {
-			dist = Math.min(dist, smoothDistanceToTargetEdges(ux, uy, uz, cell, borderInfo, borderTarget, hexRadius));
+		if (borderTarget === 0) {
+			dist = Math.min(dist, smoothDistanceToTargetEdges(ux, uy, uz, cell, borderInfo, 0, hexRadius));
 		}
 
 		const t = Math.min(dist / hexRadius, 1.0);
@@ -596,7 +588,7 @@ function computeSurfaceHeight(
 		// Keep coastline continuity exact at the shared edge, but hold the terrain
 		// slightly lower around the middle of each coastal edge so the visible
 		// shoreline contour reads rounder and less like a straight hex cut.
-		if (isCoastlineEdge && edgeIdx >= 0) {
+		if (borderTarget === 0 && edgeIdx >= 0) {
 			const coastMid = 4 * edgeT * (1 - edgeT);      // 0 at corners, 1 at edge midpoint
 			const coastBlend = mu * (1 - mu);              // 0 on the edge and in the far interior
 			h -= COAST_ROUNDING * coastMid * coastBlend * 4;
@@ -892,7 +884,6 @@ export function buildCornerGapPatchMesh(cells: HexCell[], radius: number, scene:
 
 		const color = getTerrainColor(cell.terrain);
 		const tierH = getLevelHeight(cell.heightLevel);
-		const topColor = getTopFaceColor(cell.terrain, tierH, -1, 0);
 
 		for (let i = 0; i < n; i++) {
 			const corner = cell.corners[i];
@@ -941,7 +932,26 @@ export function buildCornerGapPatchMesh(cells: HexCell[], radius: number, scene:
 			ny /= nl;
 			nz /= nl;
 
+			const patchVerts = [
+				corner.x, corner.y, corner.z,
+				prevDir.x, prevDir.y, prevDir.z,
+				nextDir.x, nextDir.y, nextDir.z
+			];
+
 			for (let k = 0; k < 3; k++) {
+				const vx = patchVerts[k * 3];
+				const vy = patchVerts[k * 3 + 1];
+				const vz = patchVerts[k * 3 + 2];
+				let neighborTerrainId = -1;
+				let blendFactor = 0;
+				if (borderInfo.hasTerrainBorder) {
+					const tb = distToTerrainBorder(vx, vy, vz, cell, borderInfo);
+					if (tb.neighborTerrainId >= 0) {
+						blendFactor = Math.min(tb.dist / hexRadius, 0.999);
+						neighborTerrainId = tb.neighborTerrainId;
+					}
+				}
+				const topColor = getTopFaceColor(cell.terrain, tierH, neighborTerrainId, blendFactor);
 				positions.push(displaced[k * 3], displaced[k * 3 + 1], displaced[k * 3 + 2]);
 				normals.push(nx, ny, nz);
 				colors.push(topColor[0], topColor[1], topColor[2], 1.0);
