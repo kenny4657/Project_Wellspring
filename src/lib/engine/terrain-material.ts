@@ -224,7 +224,7 @@ void main() {
         // G = (neighborTerrainId + distToBorder) / 10.0
         // distToBorder: 0 = at border edge, ~1 = hexRadius away
         float rawG = vColor.g * 10.0;
-        int neighborId = int(floor(rawG + 0.001));
+        int neighborId = min(int(floor(rawG + 0.001)), 9);
         float distToBorder = fract(rawG + 0.001);
         bool hasCrossBlend = (neighborId != terrainId);
 

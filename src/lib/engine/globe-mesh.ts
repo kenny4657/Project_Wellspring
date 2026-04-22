@@ -91,7 +91,7 @@ function getTopFaceColor(terrainIdx: number, tierH: number, neighborTerrainId: n
 	const r = terrainIdx / 9.0;
 	const b = (tierH + 0.030) / 0.110;
 	const nId = neighborTerrainId >= 0 ? neighborTerrainId : terrainIdx;
-	const g = (nId + Math.min(blendFactor, 0.999)) / 10.0;
+	const g = (nId + Math.min(blendFactor, 0.99)) / 10.0;
 	return [r, g, b];
 }
 function getLevelHeight(level: number): number { return LEVEL_HEIGHTS[Math.min(level, LEVEL_HEIGHTS.length - 1)] ?? 0; }
