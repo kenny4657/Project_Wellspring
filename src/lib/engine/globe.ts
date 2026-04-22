@@ -25,11 +25,11 @@ import '@babylonjs/core/Rendering/depthRendererSceneComponent';
 import { EARTH_RADIUS_KM, latLngToWorld } from '$lib/geo/coords';
 import { generateIcoHexGrid, type HexCell } from '$lib/engine/icosphere';
 import { buildGlobeMesh, buildHexEdgeLines, updateCellTerrain } from '$lib/engine/globe-mesh';
-import { createTerrainMaterial } from '$lib/engine/terrain-material';
+import { createTerrainMaterial, applyTerrainColors } from '$lib/engine/terrain-material';
 import { createWaterMaterial } from '$lib/engine/water-material';
 // picking is inlined below using the lightweight pickSphere
 import { assignTerrain } from '$lib/engine/terrain-gen';
-import { TERRAIN_TYPES, type TerrainTypeId } from '$lib/world/terrain-types';
+import { TERRAIN_TYPES, type TerrainTypeId, type RGB } from '$lib/world/terrain-types';
 
 /** Icosphere resolution — controls hex count. Total ~ 10 * res² + 2 */
 const ICO_RESOLUTION = 20;
@@ -39,6 +39,7 @@ export interface GlobeEngine {
 	flyTo(lat: number, lng: number, altitude?: number): void;
 	setHexTerrain(cellIndex: number, terrain: TerrainTypeId): void;
 	setGridVisible(visible: boolean): void;
+	setTerrainColors(palettes: [RGB, RGB, RGB, RGB][]): void;
 	readonly hexCount: number;
 	readonly cells: HexCell[];
 	onHexClick: ((cellIndex: number) => void) | null;
@@ -230,6 +231,10 @@ export async function createGlobeEngine(
 
 		setGridVisible(visible: boolean) {
 			edgeLines.setEnabled(visible);
+		},
+
+		setTerrainColors(palettes: [RGB, RGB, RGB, RGB][]) {
+			applyTerrainColors(terrainMat, palettes);
 		},
 
 		get hexCount() { return cells.length; },

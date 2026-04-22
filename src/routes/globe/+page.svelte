@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import type { GlobeEngine } from '$lib/engine/globe';
-	import { TERRAIN_PROFILES, type TerrainTypeId } from '$lib/world/terrain-types';
+	import { TERRAIN_PROFILES, type TerrainTypeId, type RGB, loadTerrainPalettes, saveTerrainPalettes } from '$lib/world/terrain-types';
 
 	let canvasEl: HTMLCanvasElement;
 	let engine: GlobeEngine | null = null;
@@ -12,6 +12,15 @@
 	let hexCount = $state(0);
 	let gridVisible = $state(false);
 
+	// Tab: 'paint' or 'colors'
+	let activeTab = $state<'paint' | 'colors'>('paint');
+
+	// Color editor state
+	let palettes = $state<[RGB, RGB, RGB, RGB][]>(loadTerrainPalettes());
+	let editingIdx = $state(5); // plains by default
+
+	const BAND_LABELS = ['Shore', 'Grass', 'Hill', 'Snow'];
+
 	onMount(async () => {
 		try {
 			const { createGlobeEngine } = await import('$lib/engine/globe');
@@ -20,7 +29,6 @@
 			});
 			hexCount = engine.hexCount;
 
-			// Wire up click-to-paint
 			engine.onHexClick = (cellIndex: number) => {
 				engine!.setHexTerrain(cellIndex, selectedTerrain);
 			};
@@ -41,6 +49,25 @@
 		const toHex = (v: number) => Math.round(v * 255).toString(16).padStart(2, '0');
 		return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
 	}
+
+	function hexToRgb(hex: string): RGB {
+		const v = parseInt(hex.slice(1), 16);
+		return [(v >> 16) / 255, ((v >> 8) & 0xff) / 255, (v & 0xff) / 255];
+	}
+
+	function onBandChange(bandIdx: number, hex: string) {
+		palettes[editingIdx][bandIdx] = hexToRgb(hex);
+		engine?.setTerrainColors(palettes);
+	}
+
+	function saveColors() {
+		saveTerrainPalettes(palettes);
+	}
+
+	function resetColors() {
+		palettes = TERRAIN_PROFILES.map(p => [...p.palette] as [RGB, RGB, RGB, RGB]);
+		engine?.setTerrainColors(palettes);
+	}
 </script>
 
 <svelte:head>
@@ -58,24 +85,94 @@
 			<p class="text-[10px] text-[#A09890] mt-0.5">Babylon.js 9.0 Globe · {hexCount.toLocaleString()} hexes</p>
 		</div>
 
-		<!-- Terrain Palette -->
-		<div class="flex-1 overflow-y-auto px-3 py-2">
-			<div class="text-[10px] uppercase tracking-wider text-[#A09890] mb-1.5">Terrain Types</div>
-			{#each TERRAIN_PROFILES as profile}
-				<button
-					class="terrain-item"
-					class:selected={selectedTerrain === profile.id}
-					onclick={() => selectedTerrain = profile.id as TerrainTypeId}
-				>
-					<span
-						class="w-4 h-4 rounded-sm flex-shrink-0"
-						style="background: {rgbToHex(...profile.color)};"
-					></span>
-					<span class="flex-1 text-xs truncate">{profile.name}</span>
-					<span class="text-[10px] text-[#A09890]">T{profile.tier}</span>
-				</button>
-			{/each}
+		<!-- Tab bar -->
+		<div class="flex border-b border-[rgba(255,255,255,0.08)]">
+			<button class="tab-btn" class:tab-active={activeTab === 'paint'} onclick={() => activeTab = 'paint'}>Paint</button>
+			<button class="tab-btn" class:tab-active={activeTab === 'colors'} onclick={() => activeTab = 'colors'}>Colors</button>
 		</div>
+
+		<!-- Paint tab -->
+		{#if activeTab === 'paint'}
+			<div class="flex-1 overflow-y-auto px-3 py-2">
+				<div class="text-[10px] uppercase tracking-wider text-[#A09890] mb-1.5">Terrain Types</div>
+				{#each TERRAIN_PROFILES as profile, i}
+					<button
+						class="terrain-item"
+						class:selected={selectedTerrain === profile.id}
+						onclick={() => selectedTerrain = profile.id as TerrainTypeId}
+					>
+						<span
+							class="w-4 h-4 rounded-sm flex-shrink-0"
+							style="background: {rgbToHex(...profile.color)};"
+						></span>
+						<span class="flex-1 text-xs truncate">{profile.name}</span>
+						<span class="text-[10px] text-[#A09890]">T{profile.tier}</span>
+					</button>
+				{/each}
+			</div>
+		{/if}
+
+		<!-- Colors tab -->
+		{#if activeTab === 'colors'}
+			<div class="flex-1 overflow-y-auto px-3 py-2">
+				<div class="text-[10px] uppercase tracking-wider text-[#A09890] mb-1.5">Select Terrain</div>
+				<div class="grid grid-cols-2 gap-1 mb-3">
+					{#each TERRAIN_PROFILES as profile, i}
+						<button
+							class="terrain-chip"
+							class:chip-active={editingIdx === i}
+							onclick={() => editingIdx = i}
+						>
+							{profile.name}
+						</button>
+					{/each}
+				</div>
+
+				<div class="text-[10px] uppercase tracking-wider text-[#A09890] mb-1.5">
+					{TERRAIN_PROFILES[editingIdx].name} Bands
+				</div>
+
+				{#each BAND_LABELS as label, b}
+					{#if palettes[editingIdx]}
+						{@const c = palettes[editingIdx][b]}
+						<div class="band-row">
+							<span class="text-[10px] text-[#A09890] w-10">{label}</span>
+							<input
+								type="color"
+								value={rgbToHex(c[0], c[1], c[2])}
+								oninput={(e) => onBandChange(b, (e.target as HTMLInputElement).value)}
+								class="color-input"
+							/>
+							<span class="text-[10px] text-[#706860] font-mono">
+								{rgbToHex(c[0], c[1], c[2])}
+							</span>
+						</div>
+					{/if}
+				{/each}
+
+				<!-- Gradient preview -->
+				{#if palettes[editingIdx]}
+					<div class="mt-3 mb-2">
+						<div class="text-[10px] text-[#A09890] mb-1">Preview</div>
+						<div class="h-4 rounded-sm overflow-hidden flex">
+							{#each palettes[editingIdx] as c}
+								<div class="flex-1" style="background: {rgbToHex(c[0], c[1], c[2])};"></div>
+							{/each}
+						</div>
+						<div class="flex text-[8px] text-[#706860] mt-0.5">
+							{#each BAND_LABELS as label}
+								<span class="flex-1 text-center">{label}</span>
+							{/each}
+						</div>
+					</div>
+				{/if}
+
+				<div class="flex gap-1.5 mt-2">
+					<button class="tool-btn flex-1" onclick={saveColors}>Save</button>
+					<button class="tool-btn flex-1" onclick={resetColors}>Reset</button>
+				</div>
+			</div>
+		{/if}
 
 		<!-- View -->
 		<div class="px-3 py-2 border-t border-[rgba(255,255,255,0.08)] space-y-1">
@@ -131,4 +228,17 @@
 	.terrain-item.selected { background: rgba(196,169,106,0.15); border-color: rgba(196,169,106,0.3); }
 	.loading-bar { animation: loading 2s ease-in-out infinite; }
 	@keyframes loading { 0% { width: 5%; } 50% { width: 70%; } 100% { width: 5%; } }
+
+	.tab-btn { flex: 1; padding: 6px 0; font-size: 11px; font-weight: 500; color: #706860; background: transparent; border: none; cursor: pointer; border-bottom: 2px solid transparent; transition: all 0.15s; }
+	.tab-btn:hover { color: #a09890; }
+	.tab-active { color: #C4A96A; border-bottom-color: #C4A96A; }
+
+	.terrain-chip { padding: 3px 6px; font-size: 10px; border-radius: 3px; border: 1px solid rgba(255,255,255,0.08); background: transparent; color: #a09890; cursor: pointer; transition: all 0.15s; text-align: center; }
+	.terrain-chip:hover { background: rgba(255,255,255,0.05); color: #e8dfd0; }
+	.chip-active { background: rgba(196,169,106,0.15); border-color: rgba(196,169,106,0.3); color: #C4A96A; }
+
+	.band-row { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+	.color-input { width: 28px; height: 20px; padding: 0; border: 1px solid rgba(255,255,255,0.15); border-radius: 3px; cursor: pointer; background: transparent; }
+	.color-input::-webkit-color-swatch-wrapper { padding: 1px; }
+	.color-input::-webkit-color-swatch { border: none; border-radius: 2px; }
 </style>
