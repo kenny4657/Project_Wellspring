@@ -84,12 +84,15 @@ function fbmNoise(x: number, y: number, z: number): number {
 
 /** Wall vertex color: terrain profile RGB (used by textureWall for blue-detection). */
 function getTerrainColor(idx: number): [number, number, number] { return TERRAIN_PROFILES[idx]?.color ?? [0.5, 0.5, 0.5]; }
-/** Top-face vertex color: R = terrainIndex/16, G = 0, B = encoded tier height.
- *  Shader decodes: terrainId = int(r * 9.0 + 0.5), tierH = (b * 0.110 - 0.030) * R */
-function getTopFaceColor(terrainIdx: number, tierH: number): [number, number, number] {
+/** Top-face vertex color: R = terrainId/9, G = packed blend data, B = encoded tier height.
+ *  G encodes: (neighborTerrainId + blendFactor) / 10.0
+ *  Shader decodes: neighborId = int(floor(G*10)), blend = fract(G*10) */
+function getTopFaceColor(terrainIdx: number, tierH: number, neighborTerrainId: number, blendFactor: number): [number, number, number] {
 	const r = terrainIdx / 9.0;
-	const b = (tierH + 0.030) / 0.110; // maps [-0.020, 0.080] → [0.09, 1.0]
-	return [r, 0.0, b];
+	const b = (tierH + 0.030) / 0.110;
+	const nId = neighborTerrainId >= 0 ? neighborTerrainId : terrainIdx;
+	const g = (nId + Math.min(blendFactor, 0.999)) / 10.0;
+	return [r, g, b];
 }
 function getLevelHeight(level: number): number { return LEVEL_HEIGHTS[Math.min(level, LEVEL_HEIGHTS.length - 1)] ?? 0; }
 
@@ -636,23 +639,18 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 
 		const color = getTerrainColor(cell.terrain);   // wall faces
 		const tierH = getLevelHeight(cell.heightLevel);
-		const topColor = getTopFaceColor(cell.terrain, tierH); // top faces
 		const isWaterHex = cell.heightLevel <= 1;
 
-		// Border info for coastline ramps — applies to BOTH water and land hexes.
-		// Water hexes: ramp at water→land and water→water depth transitions.
-		// Land hexes: ramp at land→water coastline edges (smooth slope to sea level).
+		// Border info for coastline ramps + terrain blending
 		const borderInfo = borderInfoById.get(cell.id)!;
 		let hexRadius = 0;
-		if (borderInfo.hasBorder) {
-			for (let i = 0; i < n; i++) {
-				const dx = cell.corners[i].x - cell.center.x;
-				const dy = cell.corners[i].y - cell.center.y;
-				const dz = cell.corners[i].z - cell.center.z;
-				hexRadius += Math.sqrt(dx * dx + dy * dy + dz * dz);
-			}
-			hexRadius /= n;
+		for (let i = 0; i < n; i++) {
+			const dx = cell.corners[i].x - cell.center.x;
+			const dy = cell.corners[i].y - cell.center.y;
+			const dz = cell.corners[i].z - cell.center.z;
+			hexRadius += Math.sqrt(dx * dx + dy * dy + dz * dz);
 		}
+		hexRadius /= n;
 
 		// ── Subdivided top face ─────────────────────────────
 		for (let i = 0; i < n; i++) {
@@ -695,6 +693,26 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 				nx /= nl; ny /= nl; nz /= nl;
 
 				for (let k = 0; k < 3; k++) {
+					// Compute per-vertex terrain blend
+					const vx = triVerts[j + k * 3];
+					const vy = triVerts[j + k * 3 + 1];
+					const vz = triVerts[j + k * 3 + 2];
+					let neighborTerrainId = -1;
+					let blendFactor = 0;
+					if (borderInfo.hasTerrainBorder) {
+						const tb = distToTerrainBorder(vx, vy, vz, cell, borderInfo);
+						if (tb.neighborTerrainId >= 0) {
+							const t = Math.min(tb.dist / hexRadius, 1.0);
+							const mu = (1 - Math.cos(t * Math.PI)) / 2; // 0 at edge, 1 at center
+							blendFactor = 1 - mu;
+							if (blendFactor > 0.001) {
+								neighborTerrainId = tb.neighborTerrainId;
+							} else {
+								blendFactor = 0;
+							}
+						}
+					}
+					const topColor = getTopFaceColor(cell.terrain, tierH, neighborTerrainId, blendFactor);
 					positions.push(displaced[k * 3], displaced[k * 3 + 1], displaced[k * 3 + 2]);
 					normals.push(nx, ny, nz);
 					colors.push(topColor[0], topColor[1], topColor[2], 1.0);
@@ -831,7 +849,7 @@ export function buildCornerGapPatchMesh(cells: HexCell[], radius: number, scene:
 
 		const color = getTerrainColor(cell.terrain);
 		const tierH = getLevelHeight(cell.heightLevel);
-		const topColor = getTopFaceColor(cell.terrain, tierH);
+		const topColor = getTopFaceColor(cell.terrain, tierH, -1, 0);
 
 		for (let i = 0; i < n; i++) {
 			const corner = cell.corners[i];
