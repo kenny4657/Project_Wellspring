@@ -475,9 +475,10 @@ function computeSurfaceHeight(
 ): number {
 	const rawNoise = fbmNoise(ux * NOISE_SCALE, uy * NOISE_SCALE, uz * NOISE_SCALE);
 	// Water hexes: abs() keeps surface above ocean floor.
-	// Land hexes: allow ± displacement so vertices straddle tierH,
-	// giving the shader a height crossing for shore-like color blending.
-	const noiseH = isWaterHex ? Math.abs(rawNoise) : rawNoise;
+	// Land hexes: bias upward (+0.3) so terrain mostly rises but still
+	// dips slightly below tierH for the shore color blend. Prevents
+	// vertices from dropping far enough to trigger water specular.
+	const noiseH = isWaterHex ? Math.abs(rawNoise) : rawNoise + 0.3;
 
 	if (isWaterHex && borderInfo.allSameHeight) {
 		return tierH + noiseH * NOISE_AMP;

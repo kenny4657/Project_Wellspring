@@ -199,8 +199,11 @@ void main() {
         // Water types (0-4): global seaLevel blending with per-terrain colors
         // Land types (5+): use tierH as local "sea level" so shore blend
         //                   appears at every tier, not just at global sea level
-        float refLevel = (terrainId <= 3) ? seaLevel : tierH;
-        // Shift the shore/grass boundary up or down
+        // Land noise is biased +0.3 * NOISE_AMP upward, so shift refLevel
+        // to match so the shore/grass split stays centered on the terrain.
+        float noiseBias = 0.3 * 0.008 * planetRadius;
+        float refLevel = (terrainId <= 3) ? seaLevel : (tierH + noiseBias);
+        // User-adjustable shift
         refLevel += terrainBlendPos[terrainId] * amplitude;
 
         if (heightAboveR < refLevel - belowWidth * amplitude) {
