@@ -9,6 +9,9 @@ import { Engine } from '@babylonjs/core/Engines/engine';
 import { Scene } from '@babylonjs/core/scene';
 import { Vector3, Color3, Color4 } from '@babylonjs/core/Maths/math';
 import { MeshBuilder } from '@babylonjs/core/Meshes/meshBuilder';
+// StandardMaterial import is a required side-effect — pickSphere needs
+// a default material to be pickable via scene.pick()
+import '@babylonjs/core/Materials/standardMaterial';
 import { DirectionalLight } from '@babylonjs/core/Lights/directionalLight';
 import { HemisphericLight } from '@babylonjs/core/Lights/hemisphericLight';
 import { GeospatialCamera } from '@babylonjs/core/Cameras/geospatialCamera';
