@@ -154,11 +154,15 @@ function smoothCoincidentPositions(
 		const map = new Map<string, number[]>();
 
 		for (let i = 0; i < vertexCount; i++) {
-			if (colors[i * 4 + 3] < 0.05) continue; // skip walls
+			const alpha = colors[i * 4 + 3];
+			if (alpha < 0.05) continue; // skip walls
 			// Classify water vs land by blue-dominant vertex color
 			const r = colors[i * 4], b = colors[i * 4 + 2];
 			const isWater = b > r + 0.05;
 			if (isWater !== isWaterPass) continue;
+			// Skip coastal land vertices — they're already height-matched
+			// to water by the cosine ramp; smoothing them creates coast gaps
+			if (!isWater && alpha < 0.99) continue;
 
 			const px = positions[i * 3];
 			const py = positions[i * 3 + 1];
