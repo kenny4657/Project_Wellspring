@@ -500,7 +500,7 @@ function distToBorderWithTarget(
  *  Returns { dist, neighborTerrainId } or { dist: Infinity, neighborTerrainId: -1 } if none. */
 function distToTerrainBorder(
 	vx: number, vy: number, vz: number,
-	cell: HexCell, borderInfo: HexBorderInfo
+	cell: HexCell, borderInfo: HexBorderInfo, hexRadius: number
 ): { dist: number; neighborTerrainId: number } {
 	const n = cell.corners.length;
 	let minDist = Infinity;
@@ -509,7 +509,13 @@ function distToTerrainBorder(
 		if (borderInfo.edgeNeighborTerrains[i] < 0) continue;
 		const a = cell.corners[i];
 		const b = cell.corners[(i + 1) % n];
-		const d = distToSegment(vx, vy, vz, a.x, a.y, a.z, b.x, b.y, b.z);
+		let d = distToSegment(vx, vy, vz, a.x, a.y, a.z, b.x, b.y, b.z);
+		// If this edge is also a cliff, perturb the terrain blend distance
+		// with the same noise as cliff erosion so colors follow the cliff contour
+		if (borderInfo.cliffEdges[i]) {
+			const cliffNoise = fbmNoise(vx * 120 + 500, vy * 120 + 500, vz * 120 + 500);
+			d = Math.max(0, d + cliffNoise * hexRadius * 0.25);
+		}
 		if (d < minDist) {
 			minDist = d;
 			neighborTerrain = borderInfo.edgeNeighborTerrains[i];
@@ -823,7 +829,7 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 					for (let k = 0; k < 3; k++) {
 						const tb = distToTerrainBorder(
 							triVerts[j + k * 3], triVerts[j + k * 3 + 1], triVerts[j + k * 3 + 2],
-							cell, borderInfo);
+							cell, borderInfo, hexRadius);
 						if (tb.neighborTerrainId >= 0) {
 							triBFs[k] = Math.min(tb.dist / hexRadius, 0.999);
 							triNIds[k] = tb.neighborTerrainId;
@@ -1211,7 +1217,7 @@ export function updateCellTerrain(
 					const len = Math.sqrt(px * px + py * py + pz * pz) || 1;
 					triUVs[k] = [px / len, py / len, pz / len];
 					if (borderInfo.hasTerrainBorder) {
-						const tb = distToTerrainBorder(triUVs[k][0], triUVs[k][1], triUVs[k][2], c, borderInfo);
+						const tb = distToTerrainBorder(triUVs[k][0], triUVs[k][1], triUVs[k][2], c, borderInfo, hexRadius);
 						if (tb.neighborTerrainId >= 0) {
 							triBFs[k] = Math.min(tb.dist / hexRadius, 0.999);
 							triNIds[k] = tb.neighborTerrainId;
