@@ -265,7 +265,7 @@ void main() {
         vec3 radialDir = normalize(vWorldPos);
         float flatness = dot(N, radialDir);
         float steepness = 1.0 - flatness;
-        if (steepness > 0.015) {
+        if (steepness > 0.04) {
             // Erosion pattern: layered dirt/rock with drainage channels
             vec3 ep = vWorldPos * 0.004;
 
@@ -303,7 +303,7 @@ void main() {
 
             // Blend based on steepness with noise-modulated boundary
             float erosionNoise = snoise(vWorldPos * 0.01) * 0.01;
-            float erosionBlend = smoothstep(0.015 + erosionNoise, 0.06, steepness);
+            float erosionBlend = smoothstep(0.04 + erosionNoise, 0.10, steepness);
             procColor = mix(procColor, erosionColor, erosionBlend * 0.85);
         }
 
