@@ -287,62 +287,77 @@ void main() {
             procColor = ownColor;
         }
 
-        // Cliff texture — LightBulbBox layered slab approach
-        // Step 1: Warped rectangular slabs at different "depths"
-        // Step 2: Voronoi vertical cracks between slabs
-        // Step 3: Fine detail ONLY in crevices (masked)
-        // Step 4: Horizontal strata cracks overlaid
+        // Cliff texture — per-terrain rock colors with slab pattern
         float steepness = 1.0 - dot(N, normalize(vWorldPos));
         if (nearSteepCliff && steepness > 0.005) {
-            vec3 ochreRock   = vec3(0.55, 0.38, 0.22);
-            vec3 rustyBrown  = vec3(0.45, 0.28, 0.15);
-            vec3 darkCrevice = vec3(0.10, 0.07, 0.04);
-            vec3 paleFace    = vec3(0.62, 0.52, 0.38);
-            vec3 deepBrown   = vec3(0.35, 0.22, 0.12);
-            vec3 mossPatch   = vec3(0.28, 0.36, 0.16);
+            // Per-terrain cliff palette: light face, dark face, pale highlight
+            // Each terrain exposes different rock/soil when cut
+            vec3 cliffLight, cliffDark, cliffPale;
+            if (terrainId <= 3) {
+                // Ocean/coast/lake — sandy sedimentary layers
+                cliffLight = vec3(0.58, 0.52, 0.38);
+                cliffDark  = vec3(0.45, 0.38, 0.26);
+                cliffPale  = vec3(0.65, 0.60, 0.48);
+            } else if (terrainId == 4) {
+                // Plains — brown loam and clay earth
+                cliffLight = vec3(0.52, 0.40, 0.26);
+                cliffDark  = vec3(0.38, 0.28, 0.16);
+                cliffPale  = vec3(0.60, 0.50, 0.34);
+            } else if (terrainId == 5) {
+                // Grassland — warm red-brown clay with iron
+                cliffLight = vec3(0.55, 0.36, 0.22);
+                cliffDark  = vec3(0.40, 0.24, 0.14);
+                cliffPale  = vec3(0.62, 0.48, 0.32);
+            } else if (terrainId == 6) {
+                // Desert — sandstone, warm ochre and orange
+                cliffLight = vec3(0.65, 0.48, 0.28);
+                cliffDark  = vec3(0.50, 0.34, 0.18);
+                cliffPale  = vec3(0.72, 0.58, 0.38);
+            } else if (terrainId == 7) {
+                // Swamp — dark mudstone and wet clay
+                cliffLight = vec3(0.35, 0.30, 0.20);
+                cliffDark  = vec3(0.22, 0.18, 0.12);
+                cliffPale  = vec3(0.42, 0.36, 0.26);
+            } else if (terrainId == 8) {
+                // Tundra — grey granite and slate
+                cliffLight = vec3(0.48, 0.46, 0.42);
+                cliffDark  = vec3(0.32, 0.30, 0.28);
+                cliffPale  = vec3(0.58, 0.56, 0.52);
+            } else {
+                // Hills — rugged brown-grey rock
+                cliffLight = vec3(0.50, 0.42, 0.32);
+                cliffDark  = vec3(0.36, 0.28, 0.20);
+                cliffPale  = vec3(0.58, 0.52, 0.42);
+            }
 
             // ── Triplanar UV for the slab map ──
-            // Project world pos onto 2D planes, blend by normal
             vec3 triW = abs(N);
             triW /= (triW.x + triW.y + triW.z + 0.001);
-            // Stretch Y (radial) to create tall narrow rectangles
             vec2 uvX = vec2(vWorldPos.y * 0.4, vWorldPos.z) * 0.008;
             vec2 uvY = vec2(vWorldPos.x, vWorldPos.z) * 0.008;
             vec2 uvZ = vec2(vWorldPos.x, vWorldPos.y * 0.4) * 0.008;
 
-            // ── Step 1: Large rectangular slabs ──
+            // ── Large rectangular slabs ──
             vec3 slab1X = slabMap(uvX * 1.0, 0.4);
             vec3 slab1Y = slabMap(uvY * 1.0, 0.4);
             vec3 slab1Z = slabMap(uvZ * 1.0, 0.4);
-            float slabEdge1 = slab1X.x * triW.x + slab1Y.x * triW.y + slab1Z.x * triW.z;
             float slabCell1 = slab1X.y * triW.x + slab1Y.y * triW.y + slab1Z.y * triW.z;
-            float slabCell1b = slab1X.z * triW.x + slab1Y.z * triW.y + slab1Z.z * triW.z;
 
-            // ── Step 2: Medium slabs (higher freq, more warp) ──
+            // ── Medium slabs ──
             vec3 slab2X = slabMap(uvX * 2.8 + 10.0, 0.5);
             vec3 slab2Y = slabMap(uvY * 2.8 + 10.0, 0.5);
             vec3 slab2Z = slabMap(uvZ * 2.8 + 10.0, 0.5);
-            float slabEdge2 = slab2X.x * triW.x + slab2Y.x * triW.y + slab2Z.x * triW.z;
             float slabCell2 = slab2X.y * triW.x + slab2Y.y * triW.y + slab2Z.y * triW.z;
 
-            // ── Step 3: Fine detail — masked into crevices only ──
-            float creviceMask = 1.0 - smoothstep(0.0, 0.12, slabEdge1);
-            vec3 slab3X = slabMap(uvX * 6.0 + 30.0, 0.3);
-            vec3 slab3Y = slabMap(uvY * 6.0 + 30.0, 0.3);
-            vec3 slab3Z = slabMap(uvZ * 6.0 + 30.0, 0.3);
-            float slabEdge3 = slab3X.x * triW.x + slab3Y.x * triW.y + slab3Z.x * triW.z;
-
-            // ── Per-slab flat color ──
-            vec3 rockColor = mix(ochreRock, rustyBrown, slabCell1);
-            rockColor = mix(rockColor, paleFace, step(0.65, slabCell1) * 0.45);
-            rockColor = mix(rockColor, deepBrown, step(0.25, slabCell1) * (1.0 - step(0.45, slabCell1)) * 0.5);
+            // ── Per-slab color from terrain cliff palette ──
+            vec3 rockColor = mix(cliffLight, cliffDark, slabCell1);
+            rockColor = mix(rockColor, cliffPale, step(0.65, slabCell1) * 0.45);
             // Medium slab tonal shift
             rockColor = mix(rockColor, rockColor * 0.80, step(0.55, slabCell2) * 0.35);
             rockColor = mix(rockColor, rockColor * 1.15, (1.0 - step(0.45, slabCell2)) * 0.20);
             // Subtle surface roughness
-            float roughFine = snoise(vWorldPos * 0.06) * 0.04 * creviceMask;
-            float roughFlat = snoise(vWorldPos * 0.03) * 0.015 * (1.0 - creviceMask);
-            rockColor += roughFine + roughFlat;
+            float roughness = snoise(vWorldPos * 0.04) * 0.025;
+            rockColor += roughness;
 
             vec3 erosionColor = rockColor;
 
