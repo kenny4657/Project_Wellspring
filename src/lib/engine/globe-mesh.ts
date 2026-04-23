@@ -912,14 +912,17 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 				// Wall bottom: neighbor's surface for gentle steps, BASE_HEIGHT for cliffs
 				let wallBotR0: number, wallBotR1: number;
 				if (heightDiff <= 1) {
-					const nbH0 = computeSurfaceHeight(ux0, uy0, uz0, nb, nbBorderInfo, nbHexRadius, nbTierH, nbIsWater);
-					const nbH1 = computeSurfaceHeight(ux1, uy1, uz1, nb, nbBorderInfo, nbHexRadius, nbTierH, nbIsWater);
+					const nbH0 = computeHeightWithCliffErosion(ux0, uy0, uz0, nb, nbBorderInfo, nbHexRadius, nbTierH, nbIsWater, cellById);
+					const nbH1 = computeHeightWithCliffErosion(ux1, uy1, uz1, nb, nbBorderInfo, nbHexRadius, nbTierH, nbIsWater, cellById);
 					wallBotR0 = radius * (1 + nbH0);
 					wallBotR1 = radius * (1 + nbH1);
 				} else {
 					wallBotR0 = botR;
 					wallBotR1 = botR;
 				}
+
+				// Skip wall segment if erosion closed the gap (top ≈ bottom)
+				if (Math.abs(topR0 - wallBotR0) < 0.5 && Math.abs(topR1 - wallBotR1) < 0.5) continue;
 
 				const midX = (ux0 + ux1) * 0.5;
 				const midY = (uy0 + uy1) * 0.5;
