@@ -698,30 +698,47 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 				const nl = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
 				nx /= nl; ny /= nl; nz /= nl;
 
-				for (let k = 0; k < 3; k++) {
-					// Compute per-vertex terrain blend
-					const vx = triVerts[j + k * 3];
-					const vy = triVerts[j + k * 3 + 1];
-					const vz = triVerts[j + k * 3 + 2];
-					let neighborTerrainId = -1;
-					let blendFactor = 0;
-					if (borderInfo.hasTerrainBorder) {
-						const tb = distToTerrainBorder(vx, vy, vz, cell, borderInfo);
+				// Compute per-vertex terrain blend for all 3 vertices first
+				const triNIds = [-1, -1, -1];
+				const triBFs = [0, 0, 0];
+				if (borderInfo.hasTerrainBorder) {
+					for (let k = 0; k < 3; k++) {
+						const tb = distToTerrainBorder(
+							triVerts[j + k * 3], triVerts[j + k * 3 + 1], triVerts[j + k * 3 + 2],
+							cell, borderInfo);
 						if (tb.neighborTerrainId >= 0) {
-							blendFactor = Math.min(tb.dist / hexRadius, 0.999);
-							neighborTerrainId = tb.neighborTerrainId;
+							triBFs[k] = Math.min(tb.dist / hexRadius, 0.999);
+							triNIds[k] = tb.neighborTerrainId;
 						}
 					}
+				}
+				// Use same neighborId for all 3 vertices to prevent interpolation
+				// artifacts: GPU interpolates G across the triangle, and floor()
+				// on the interpolated value jumps at integer boundaries, creating
+				// faint lines with wrong terrain colors.
+				let chosenNId = -1;
+				let minBF = Infinity;
+				for (let k = 0; k < 3; k++) {
+					if (triNIds[k] >= 0 && triBFs[k] < minBF) {
+						minBF = triBFs[k];
+						chosenNId = triNIds[k];
+					}
+				}
+
+				for (let k = 0; k < 3; k++) {
 					// Encode coast proximity in alpha:
 					// 1.0 = not coastal, 0.5 = at water edge
 					// Walls use 0.0, shader checks < 0.05 for walls
 					let alpha = 1.0;
 					if (borderInfo.hasCoast) {
+						const vx = triVerts[j + k * 3];
+						const vy = triVerts[j + k * 3 + 1];
+						const vz = triVerts[j + k * 3 + 2];
 						const cd = distToCoast(vx, vy, vz, cell, borderInfo);
 						// 0 at coast edge → alpha=0.5, hexRadius away → alpha=1.0
 						alpha = 0.5 + 0.5 * Math.min(cd / hexRadius, 1.0);
 					}
-					const topColor = getTopFaceColor(cell.terrain, tierH, neighborTerrainId, blendFactor);
+					const topColor = getTopFaceColor(cell.terrain, tierH, chosenNId, triBFs[k]);
 					positions.push(displaced[k * 3], displaced[k * 3 + 1], displaced[k * 3 + 2]);
 					normals.push(nx, ny, nz);
 					colors.push(topColor[0], topColor[1], topColor[2], alpha);
@@ -974,41 +991,58 @@ export function updateCellTerrain(
 		const start = vertexStarts[ci];
 		const count = totalVerticesPerCell[ci];
 
-		for (let i = 0; i < count; i++) {
-			const vi = (start + i) * 4;
-			const pi = (start + i) * 3;
-			const isWall = colorsBuffer[vi + 3] < 0.05;
+		for (let i = 0; i < count; ) {
+			const vi0 = (start + i) * 4;
+			const isWall = colorsBuffer[vi0 + 3] < 0.05;
 
 			if (isWall) {
-				colorsBuffer[vi] = wallColor[0];
-				colorsBuffer[vi + 1] = wallColor[1];
-				colorsBuffer[vi + 2] = wallColor[2];
+				// Wall vertices — update color individually
+				colorsBuffer[vi0] = wallColor[0];
+				colorsBuffer[vi0 + 1] = wallColor[1];
+				colorsBuffer[vi0 + 2] = wallColor[2];
+				i++;
 			} else {
-				// Recover unit-sphere direction from world position
-				const px = positionsBuffer[pi], py = positionsBuffer[pi + 1], pz = positionsBuffer[pi + 2];
-				const len = Math.sqrt(px * px + py * py + pz * pz) || 1;
-				const ux = px / len, uy = py / len, uz = pz / len;
-
-				let neighborTerrainId = -1;
-				let blendFactor = 0;
-				if (borderInfo.hasTerrainBorder) {
-					const tb = distToTerrainBorder(ux, uy, uz, c, borderInfo);
-					if (tb.neighborTerrainId >= 0) {
-						blendFactor = Math.min(tb.dist / hexRadius, 0.999);
-						neighborTerrainId = tb.neighborTerrainId;
+				// Top-face triangle — process 3 vertices together
+				// to ensure same neighborId (prevents interpolation artifacts)
+				const triNIds = [-1, -1, -1];
+				const triBFs = [0, 0, 0];
+				const triUVs: number[][] = [[], [], []];
+				for (let k = 0; k < 3; k++) {
+					const pi = (start + i + k) * 3;
+					const px = positionsBuffer[pi], py = positionsBuffer[pi + 1], pz = positionsBuffer[pi + 2];
+					const len = Math.sqrt(px * px + py * py + pz * pz) || 1;
+					triUVs[k] = [px / len, py / len, pz / len];
+					if (borderInfo.hasTerrainBorder) {
+						const tb = distToTerrainBorder(triUVs[k][0], triUVs[k][1], triUVs[k][2], c, borderInfo);
+						if (tb.neighborTerrainId >= 0) {
+							triBFs[k] = Math.min(tb.dist / hexRadius, 0.999);
+							triNIds[k] = tb.neighborTerrainId;
+						}
 					}
 				}
-				// Recompute coast proximity
-				let alpha = 1.0;
-				if (borderInfo.hasCoast) {
-					const cd = distToCoast(ux, uy, uz, c, borderInfo);
-					alpha = 0.5 + 0.5 * Math.min(cd / hexRadius, 1.0);
+				// Pick neighborId from vertex closest to border
+				let chosenNId = -1;
+				let minBF = Infinity;
+				for (let k = 0; k < 3; k++) {
+					if (triNIds[k] >= 0 && triBFs[k] < minBF) {
+						minBF = triBFs[k];
+						chosenNId = triNIds[k];
+					}
 				}
-				const topColor = getTopFaceColor(c.terrain, tierH, neighborTerrainId, blendFactor);
-				colorsBuffer[vi] = topColor[0];
-				colorsBuffer[vi + 1] = topColor[1];
-				colorsBuffer[vi + 2] = topColor[2];
-				colorsBuffer[vi + 3] = alpha;
+				for (let k = 0; k < 3; k++) {
+					const vi = (start + i + k) * 4;
+					let alpha = 1.0;
+					if (borderInfo.hasCoast) {
+						const cd = distToCoast(triUVs[k][0], triUVs[k][1], triUVs[k][2], c, borderInfo);
+						alpha = 0.5 + 0.5 * Math.min(cd / hexRadius, 1.0);
+					}
+					const topColor = getTopFaceColor(c.terrain, tierH, chosenNId, triBFs[k]);
+					colorsBuffer[vi] = topColor[0];
+					colorsBuffer[vi + 1] = topColor[1];
+					colorsBuffer[vi + 2] = topColor[2];
+					colorsBuffer[vi + 3] = alpha;
+				}
+				i += 3;
 			}
 		}
 	}
