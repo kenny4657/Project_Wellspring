@@ -290,19 +290,14 @@ void main() {
 
         // Cliff texture — per-terrain rock colors with slab pattern
         float steepness = 1.0 - dot(N, normalize(vWorldPos));
-        // Height displacement: how far this vertex has moved from its tier height.
-        // High on the cliff face (ramped away from tierH), low on flat surfaces.
-        // Fills coverage at the midpoint where steepness drops momentarily.
-        float noiseAmp2 = 0.008 * planetRadius;
-        float noiseBias2 = 0.3 * noiseAmp2;
-        float expectedH = tierH + noiseBias2;
-        float cliffDisp = abs(heightAboveR - expectedH) / (noiseAmp2 * 3.0);
-        cliffDisp = clamp(cliffDisp, 0.0, 1.0);
+        // Height displacement: how far vertex has moved from expected tier height.
+        // A 2-level cliff displaces vertices ~16-48km from tierH at midpoint.
+        // noiseAmp alone is ~51km, so we normalize by 0.8x for strong signal.
+        float cliffNoiseAmp = 0.008 * planetRadius;
+        float expectedH = tierH + 0.3 * cliffNoiseAmp;
+        float cliffDisp = clamp(abs(heightAboveR - expectedH) / (cliffNoiseAmp * 0.8), 0.0, 1.0);
 
-        // Combined cliff metric: steep faces OR displaced-from-tier vertices
-        float cliffMetric = max(steepness, cliffDisp * 0.06);
-
-        if (nearSteepCliff && cliffMetric > 0.005) {
+        if (nearSteepCliff && (steepness > 0.005 || cliffDisp > 0.15)) {
             // Per-terrain cliff palette from uniform
             vec3 cliffLight = cliffPalette[terrainId * 3];
             vec3 cliffDark  = cliffPalette[terrainId * 3 + 1];
@@ -347,9 +342,9 @@ void main() {
             float erosionNoise = snoise(vWorldPos * 0.006) * 0.025
                                + snoise(vWorldPos * 0.018) * 0.012;
             float steepBlend = smoothstep(0.005 + erosionNoise, 0.08, steepness);
-            float dispBlend = smoothstep(0.1, 0.6, cliffDisp);
+            float dispBlend = smoothstep(0.15, 0.45, cliffDisp);
             float erosionBlend = max(steepBlend, dispBlend);
-            procColor = mix(procColor, erosionColor, erosionBlend * 0.90);
+            procColor = mix(procColor, erosionColor, erosionBlend);
         }
 
         // Then: if coastal, blend the result toward beach
