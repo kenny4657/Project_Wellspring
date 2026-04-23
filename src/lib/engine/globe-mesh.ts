@@ -57,10 +57,8 @@ function getTerrainColor(idx: number): [number, number, number] { return TERRAIN
 /** Top-face vertex color: R = terrainId/9, G = packed blend data, B = encoded tier height.
  *  G encodes: (neighborTerrainId + blendFactor) / 10.0
  *  Shader decodes: neighborId = int(floor(G*10)), blend = fract(G*10) */
-function getTopFaceColor(terrainIdx: number, tierH: number, neighborTerrainId: number, blendFactor: number, steepCliff: boolean = false, cliffTerrainIdx: number = -1): [number, number, number] {
-	// When steep cliff is flagged and a cliff terrain override is provided,
-	// use it for R so both sides of the cliff get the same cliff palette
-	const r = (steepCliff && cliffTerrainIdx >= 0 ? cliffTerrainIdx : terrainIdx) / 9.0;
+function getTopFaceColor(terrainIdx: number, tierH: number, neighborTerrainId: number, blendFactor: number, steepCliff: boolean = false): [number, number, number] {
+	const r = terrainIdx / 9.0;
 	let b = (tierH + 0.030) / 0.110;
 	if (steepCliff) b += 0.5; // flag: B >= 0.5 means near 2+ level cliff
 	const nId = neighborTerrainId >= 0 ? neighborTerrainId : terrainIdx;
@@ -912,9 +910,14 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 						// 0 at coast edge → alpha=0.5, hexRadius away → alpha=1.0
 						alpha = 0.5 + 0.5 * Math.min(cd / hexRadius, 1.0);
 					}
-					const topColor = getTopFaceColor(cell.terrain, tierH, chosenNId, triBFs[k], triSteepCliff, borderInfo.steepCliffTerrain);
+					const topColor = getTopFaceColor(cell.terrain, tierH, chosenNId, triBFs[k], triSteepCliff);
 					positions.push(displaced[k * 3], displaced[k * 3 + 1], displaced[k * 3 + 2]);
 					normals.push(nx, ny, nz);
+					// For steep cliff triangles, encode upper cliff terrain in alpha
+					// (shader decodes alpha differently when nearSteepCliff is set)
+					if (triSteepCliff && borderInfo.steepCliffTerrain >= 0) {
+						alpha = borderInfo.steepCliffTerrain / 9.0;
+					}
 					colors.push(topColor[0], topColor[1], topColor[2], alpha);
 					indices.push(vOff++);
 				}

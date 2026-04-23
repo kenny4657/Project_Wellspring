@@ -291,10 +291,12 @@ void main() {
         // Cliff texture — per-terrain rock colors with slab pattern
         float steepness = 1.0 - dot(N, normalize(vWorldPos));
         if (nearSteepCliff && steepness > 0.005) {
-            // Per-terrain cliff palette from uniform
-            vec3 cliffLight = cliffPalette[terrainId * 3];
-            vec3 cliffDark  = cliffPalette[terrainId * 3 + 1];
-            vec3 cliffPale  = cliffPalette[terrainId * 3 + 2];
+            // Cliff terrain ID encoded in alpha for steep cliff vertices
+            // (upper terrain of the cliff, same on both sides)
+            int cliffId = int(vColor.a * 9.0 + 0.5);
+            vec3 cliffLight = cliffPalette[cliffId * 3];
+            vec3 cliffDark  = cliffPalette[cliffId * 3 + 1];
+            vec3 cliffPale  = cliffPalette[cliffId * 3 + 2];
 
             // ── Triplanar UV for the slab map ──
             vec3 triW = abs(N);
