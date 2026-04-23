@@ -650,6 +650,34 @@ function computeSurfaceHeight(
 	return tierH + interiorNoiseH * NOISE_AMP;
 }
 
+/** Compute height with cliff erosion applied.
+ *  Near cliff edges, noise pulls terrain down toward the neighbor's level,
+ *  creating irregular cliff outlines that don't follow hex edges. */
+function computeHeightWithCliffErosion(
+	ux: number, uy: number, uz: number,
+	cell: HexCell, borderInfo: HexBorderInfo,
+	hexRadius: number, tierH: number, isWaterHex: boolean,
+	cellById: Map<number, HexCell>
+): number {
+	let h = computeSurfaceHeight(ux, uy, uz, cell, borderInfo, hexRadius, tierH, isWaterHex);
+	if (borderInfo.hasCliff) {
+		const cliff = distToCliffWithTarget(ux, uy, uz, cell, borderInfo, cellById);
+		// How close to cliff edge (0=at edge, 1=far)
+		const cliffT = Math.min(cliff.dist / (hexRadius * 0.5), 1.0);
+		// World-space noise determines erosion pattern
+		const cliffNoise = fbmNoise(ux * 40 + 500, uy * 40 + 500, uz * 40 + 500);
+		// Erosion: strong near edge, falls off with distance, modulated by noise
+		// cliffNoise range ~[-0.5, 0.5], shift to [0, 1] for erosion strength
+		const noiseStrength = Math.max(cliffNoise + 0.3, 0); // 0 to ~0.8
+		const proximity = 1 - cliffT; // 1 at edge, 0 far
+		const erosion = proximity * proximity * noiseStrength;
+		// Pull height toward neighbor's level
+		const nbH = cliff.neighborHeight + NOISE_AMP * 0.3; // slightly above neighbor floor
+		h = h - erosion * (h - nbH);
+	}
+	return h;
+}
+
 function cornerPatchHeight(
 	ux: number, uy: number, uz: number,
 	borderTarget: number
@@ -761,19 +789,7 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 					const ux = triVerts[j + k * 3];
 					const uy = triVerts[j + k * 3 + 1];
 					const uz = triVerts[j + k * 3 + 2];
-					let h = computeSurfaceHeight(ux, uy, uz, cell, borderInfo, hexRadius, tierH, isWaterHex);
-
-					// Near cliff edges, noise pulls terrain down toward neighbor
-					// height, creating an irregular cliff lip
-					if (borderInfo.hasCliff) {
-						const cliff = distToCliffWithTarget(ux, uy, uz, cell, borderInfo, cellById);
-						const cliffT = Math.min(cliff.dist / (hexRadius * 0.4), 1.0);
-						// Noise determines how far the cliff erosion extends
-						const cliffNoise = fbmNoise(ux * 45 + 500, uy * 45 + 500, uz * 45 + 500);
-						const erosion = (1 - cliffT) * Math.max(cliffNoise + 0.2, 0);
-						h = h - erosion * (h - cliff.neighborHeight);
-					}
-
+					const h = computeHeightWithCliffErosion(ux, uy, uz, cell, borderInfo, hexRadius, tierH, isWaterHex, cellById);
 					const r = radius * (1 + h);
 					displaced.push(ux * r, uy * r, uz * r);
 				}
@@ -888,8 +904,8 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 				const uy1 = edgePoints[p + 4];
 				const uz1 = edgePoints[p + 5];
 
-				const h0 = computeSurfaceHeight(ux0, uy0, uz0, cell, borderInfo, hexRadius, tierH, isWaterHex);
-				const h1 = computeSurfaceHeight(ux1, uy1, uz1, cell, borderInfo, hexRadius, tierH, isWaterHex);
+				const h0 = computeHeightWithCliffErosion(ux0, uy0, uz0, cell, borderInfo, hexRadius, tierH, isWaterHex, cellById);
+				const h1 = computeHeightWithCliffErosion(ux1, uy1, uz1, cell, borderInfo, hexRadius, tierH, isWaterHex, cellById);
 				const topR0 = radius * (1 + h0);
 				const topR1 = radius * (1 + h1);
 
