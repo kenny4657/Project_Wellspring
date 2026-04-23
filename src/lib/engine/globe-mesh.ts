@@ -390,18 +390,13 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 					excludedCount++;
 				}
 			} else {
-				// Land → land height transitions
+				// Land → land: all excluded (cliff erosion handles transitions)
 				if (nb.heightLevel !== cell.heightLevel) {
-					// Cliff edge: cosine ramp + erosion for irregular outline
 					cliffEdges[i] = true;
 					hasCliff = true;
-					edgeTargets[i] = getLevelHeight(nb.heightLevel);
-					// NOT excluded — ramp handles the transition
-				} else {
-					// Same height: excluded
-					excludedEdges[i] = true;
-					excludedCount++;
 				}
+				excludedEdges[i] = true;
+				excludedCount++;
 			}
 		}
 	}
@@ -656,31 +651,37 @@ function computeSurfaceHeight(
 }
 
 /** Compute height with cliff erosion applied.
- *  Near cliff edges, noise pulls terrain down toward the neighbor's level,
- *  creating irregular cliff outlines that don't follow hex edges. */
+ *  Near cliff edges, noise perturbs the distance field so the cliff
+ *  contour follows noise instead of hex edges. Uses a steep cosine
+ *  ramp (compressed to 30% of hexRadius) for a sharp cliff feel. */
 function computeHeightWithCliffErosion(
 	ux: number, uy: number, uz: number,
 	cell: HexCell, borderInfo: HexBorderInfo,
 	hexRadius: number, tierH: number, isWaterHex: boolean,
 	cellById: Map<number, HexCell>
 ): number {
-	let h = computeSurfaceHeight(ux, uy, uz, cell, borderInfo, hexRadius, tierH, isWaterHex);
-	if (borderInfo.hasCliff) {
-		const cliff = distToCliffWithTarget(ux, uy, uz, cell, borderInfo, cellById);
-		// How close to cliff edge (0=at edge, 1=far)
-		const cliffT = Math.min(cliff.dist / (hexRadius * 0.5), 1.0);
-		// World-space noise determines erosion pattern
-		const cliffNoise = fbmNoise(ux * 40 + 500, uy * 40 + 500, uz * 40 + 500);
-		// Erosion: strong near edge, falls off with distance, modulated by noise
-		// cliffNoise range ~[-0.5, 0.5], shift to [0, 1] for erosion strength
-		const noiseStrength = Math.max(cliffNoise + 0.3, 0); // 0 to ~0.8
-		const proximity = 1 - cliffT; // 1 at edge, 0 far
-		const erosion = proximity * proximity * noiseStrength;
-		// Pull height toward neighbor's level
-		const nbH = cliff.neighborHeight + NOISE_AMP * 0.3; // slightly above neighbor floor
-		h = h - erosion * (h - nbH);
-	}
-	return h;
+	const h = computeSurfaceHeight(ux, uy, uz, cell, borderInfo, hexRadius, tierH, isWaterHex);
+	if (!borderInfo.hasCliff) return h;
+
+	const cliff = distToCliffWithTarget(ux, uy, uz, cell, borderInfo, cellById);
+	if (!Number.isFinite(cliff.dist)) return h;
+
+	// Noise-perturb distance so cliff contour follows noise, not hex edge
+	const cliffNoise = fbmNoise(ux * 40 + 500, uy * 40 + 500, uz * 40 + 500);
+	const perturbedDist = Math.max(0, cliff.dist + cliffNoise * hexRadius * 0.25);
+
+	// Steep cosine ramp over 30% of hexRadius
+	const rampWidth = hexRadius * 0.3;
+	const t = Math.min(perturbedDist / rampWidth, 1.0);
+	const mu = (1 - Math.cos(t * Math.PI)) / 2; // 0 at edge, 1 at interior
+
+	// Blend from neighbor height at edge to own height in interior
+	const nbH = cliff.neighborHeight;
+	const interiorNoise = fbmNoise(ux * NOISE_SCALE, uy * NOISE_SCALE, uz * NOISE_SCALE);
+	const nbNoiseH = (Math.abs(interiorNoise) + 0.15) * NOISE_AMP * 0.3;
+	const edgeH = nbH + nbNoiseH; // height at cliff base (matches neighbor's border noise)
+
+	return edgeH * (1 - mu) + h * mu;
 }
 
 function cornerPatchHeight(
