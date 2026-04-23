@@ -79,13 +79,30 @@ export interface TerrainSettings {
 	palettes: [RGB, RGB, RGB, RGB][];
 	blends: number[];
 	blendPositions: number[];
+	/** Per-terrain cliff palette: [light, dark, pale] rock tones */
+	cliffPalettes: [RGB, RGB, RGB][];
 }
+
+/** Default cliff palettes per terrain index */
+export const DEFAULT_CLIFF_PALETTES: [RGB, RGB, RGB][] = [
+	/* 0 deep_ocean    */ [[0.58, 0.52, 0.38], [0.45, 0.38, 0.26], [0.65, 0.60, 0.48]],
+	/* 1 shallow_ocean */ [[0.58, 0.52, 0.38], [0.45, 0.38, 0.26], [0.65, 0.60, 0.48]],
+	/* 2 coast         */ [[0.58, 0.52, 0.38], [0.45, 0.38, 0.26], [0.65, 0.60, 0.48]],
+	/* 3 lake          */ [[0.58, 0.52, 0.38], [0.45, 0.38, 0.26], [0.65, 0.60, 0.48]],
+	/* 4 plains        */ [[0.52, 0.40, 0.26], [0.38, 0.28, 0.16], [0.60, 0.50, 0.34]],
+	/* 5 grassland     */ [[0.55, 0.36, 0.22], [0.40, 0.24, 0.14], [0.62, 0.48, 0.32]],
+	/* 6 desert        */ [[0.65, 0.48, 0.28], [0.50, 0.34, 0.18], [0.72, 0.58, 0.38]],
+	/* 7 swamp         */ [[0.35, 0.30, 0.20], [0.22, 0.18, 0.12], [0.42, 0.36, 0.26]],
+	/* 8 tundra        */ [[0.48, 0.46, 0.42], [0.32, 0.30, 0.28], [0.58, 0.56, 0.52]],
+	/* 9 hills         */ [[0.50, 0.42, 0.32], [0.36, 0.28, 0.20], [0.58, 0.52, 0.42]],
+];
 
 function defaultSettings(): TerrainSettings {
 	return {
 		palettes: TERRAIN_PROFILES.map(p => [...p.palette] as [RGB, RGB, RGB, RGB]),
 		blends: TERRAIN_PROFILES.map(p => p.blend),
 		blendPositions: TERRAIN_PROFILES.map(p => p.blendPos),
+		cliffPalettes: DEFAULT_CLIFF_PALETTES.map(p => [...p] as [RGB, RGB, RGB]),
 	};
 }
 
@@ -101,6 +118,7 @@ export function loadTerrainSettings(): TerrainSettings {
 			palettes: TERRAIN_PROFILES.map((p, i) => saved.palettes?.[i] ?? def.palettes[i]),
 			blends: TERRAIN_PROFILES.map((p, i) => saved.blends?.[i] ?? def.blends[i]),
 			blendPositions: TERRAIN_PROFILES.map((p, i) => saved.blendPositions?.[i] ?? def.blendPositions[i]),
+			cliffPalettes: DEFAULT_CLIFF_PALETTES.map((p, i) => saved.cliffPalettes?.[i] ?? def.cliffPalettes[i]),
 		};
 	} catch {
 		return defaultSettings();
@@ -119,6 +137,18 @@ export function packCustomPalettes(palettes: [RGB, RGB, RGB, RGB][]): number[] {
 	for (let i = 0; i < TERRAIN_COUNT; i++) {
 		const pal = palettes[i] ?? TERRAIN_PROFILES[i].palette;
 		for (let b = 0; b < 4; b++) {
+			data.push(pal[b][0], pal[b][1], pal[b][2]);
+		}
+	}
+	return data;
+}
+
+/** Pack cliff palettes into flat number[] for shader uniform (10 terrains × 3 bands). */
+export function packCliffPalettes(cliffPalettes: [RGB, RGB, RGB][]): number[] {
+	const data: number[] = [];
+	for (let i = 0; i < TERRAIN_COUNT; i++) {
+		const pal = cliffPalettes[i] ?? DEFAULT_CLIFF_PALETTES[i];
+		for (let b = 0; b < 3; b++) {
 			data.push(pal[b][0], pal[b][1], pal[b][2]);
 		}
 	}

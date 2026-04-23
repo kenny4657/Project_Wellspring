@@ -14,7 +14,7 @@ import { ShaderMaterial } from '@babylonjs/core/Materials/shaderMaterial';
 import { ShaderStore } from '@babylonjs/core/Engines/shaderStore';
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import type { Scene } from '@babylonjs/core/scene';
-import { loadTerrainSettings, packCustomPalettes, type RGB, type TerrainSettings } from '$lib/world/terrain-types';
+import { loadTerrainSettings, packCustomPalettes, packCliffPalettes, type RGB, type TerrainSettings } from '$lib/world/terrain-types';
 
 const VERTEX = /* glsl */ `
 precision highp float;
@@ -54,6 +54,7 @@ uniform float time;          // elapsed seconds for water animation
 uniform vec3 terrainPalette[40]; // 10 types × 4 bands [shore, grass, hill, snow]
 uniform float terrainBlend[10]; // per-terrain shore→grass transition width (fraction of amplitude)
 uniform float terrainBlendPos[10]; // per-terrain blend position offset (shifts shore/grass boundary)
+uniform vec3 cliffPalette[30]; // 10 types × 3 bands [light, dark, pale]
 
 varying vec3 vWorldPos;
 varying vec3 vWorldNormal;
@@ -290,45 +291,10 @@ void main() {
         // Cliff texture — per-terrain rock colors with slab pattern
         float steepness = 1.0 - dot(N, normalize(vWorldPos));
         if (nearSteepCliff && steepness > 0.005) {
-            // Per-terrain cliff palette: light face, dark face, pale highlight
-            // Each terrain exposes different rock/soil when cut
-            vec3 cliffLight, cliffDark, cliffPale;
-            if (terrainId <= 3) {
-                // Ocean/coast/lake — sandy sedimentary layers
-                cliffLight = vec3(0.58, 0.52, 0.38);
-                cliffDark  = vec3(0.45, 0.38, 0.26);
-                cliffPale  = vec3(0.65, 0.60, 0.48);
-            } else if (terrainId == 4) {
-                // Plains — brown loam and clay earth
-                cliffLight = vec3(0.52, 0.40, 0.26);
-                cliffDark  = vec3(0.38, 0.28, 0.16);
-                cliffPale  = vec3(0.60, 0.50, 0.34);
-            } else if (terrainId == 5) {
-                // Grassland — warm red-brown clay with iron
-                cliffLight = vec3(0.55, 0.36, 0.22);
-                cliffDark  = vec3(0.40, 0.24, 0.14);
-                cliffPale  = vec3(0.62, 0.48, 0.32);
-            } else if (terrainId == 6) {
-                // Desert — sandstone, warm ochre and orange
-                cliffLight = vec3(0.65, 0.48, 0.28);
-                cliffDark  = vec3(0.50, 0.34, 0.18);
-                cliffPale  = vec3(0.72, 0.58, 0.38);
-            } else if (terrainId == 7) {
-                // Swamp — dark mudstone and wet clay
-                cliffLight = vec3(0.35, 0.30, 0.20);
-                cliffDark  = vec3(0.22, 0.18, 0.12);
-                cliffPale  = vec3(0.42, 0.36, 0.26);
-            } else if (terrainId == 8) {
-                // Tundra — grey granite and slate
-                cliffLight = vec3(0.48, 0.46, 0.42);
-                cliffDark  = vec3(0.32, 0.30, 0.28);
-                cliffPale  = vec3(0.58, 0.56, 0.52);
-            } else {
-                // Hills — rugged brown-grey rock
-                cliffLight = vec3(0.50, 0.42, 0.32);
-                cliffDark  = vec3(0.36, 0.28, 0.20);
-                cliffPale  = vec3(0.58, 0.52, 0.42);
-            }
+            // Per-terrain cliff palette from uniform
+            vec3 cliffLight = cliffPalette[terrainId * 3];
+            vec3 cliffDark  = cliffPalette[terrainId * 3 + 1];
+            vec3 cliffPale  = cliffPalette[terrainId * 3 + 2];
 
             // ── Triplanar UV for the slab map ──
             vec3 triW = abs(N);
@@ -412,7 +378,7 @@ export function createTerrainMaterial(scene: Scene): ShaderMaterial {
 			'world', 'viewProjection',
 			'sunDir', 'fillDir', 'cameraPos',
 			'planetRadius', 'seaLevel', 'bottomOffset', 'topOffset', 'hillRatio', 'time',
-			'terrainPalette', 'terrainBlend', 'terrainBlendPos'
+			'terrainPalette', 'terrainBlend', 'terrainBlendPos', 'cliffPalette'
 		],
 		needAlphaBlending: false,
 	});
@@ -445,4 +411,7 @@ export function applyTerrainSettings(mat: ShaderMaterial, settings: TerrainSetti
 	mat.setArray3('terrainPalette', packCustomPalettes(settings.palettes));
 	mat.setFloats('terrainBlend', settings.blends);
 	mat.setFloats('terrainBlendPos', settings.blendPositions);
+	if (settings.cliffPalettes) {
+		mat.setArray3('cliffPalette', packCliffPalettes(settings.cliffPalettes));
+	}
 }

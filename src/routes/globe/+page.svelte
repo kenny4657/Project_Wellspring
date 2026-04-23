@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import type { GlobeEngine } from '$lib/engine/globe';
-	import { TERRAIN_PROFILES, type TerrainTypeId, type RGB, loadTerrainSettings, saveTerrainSettings, type TerrainSettings } from '$lib/world/terrain-types';
+	import { TERRAIN_PROFILES, DEFAULT_CLIFF_PALETTES, type TerrainTypeId, type RGB, loadTerrainSettings, saveTerrainSettings, type TerrainSettings } from '$lib/world/terrain-types';
 
 	let canvasEl: HTMLCanvasElement;
 	let engine: GlobeEngine | null = null;
@@ -12,8 +12,8 @@
 	let hexCount = $state(0);
 	let gridVisible = $state(false);
 
-	// Tab: 'paint' or 'colors'
-	let activeTab = $state<'paint' | 'colors'>('paint');
+	// Tab: 'paint', 'colors', or 'cliffs'
+	let activeTab = $state<'paint' | 'colors' | 'cliffs'>('paint');
 
 	// Color editor state
 	let settings = $state<TerrainSettings>(loadTerrainSettings());
@@ -65,6 +65,13 @@
 		engine?.setTerrainSettings(settings);
 	}
 
+	const CLIFF_BAND_LABELS = ['Light', 'Dark', 'Pale'];
+
+	function onCliffBandChange(bandIdx: number, hex: string) {
+		settings.cliffPalettes[editingIdx][bandIdx] = hexToRgb(hex);
+		engine?.setTerrainSettings(settings);
+	}
+
 	function saveColors() {
 		saveTerrainSettings(settings);
 	}
@@ -77,6 +84,7 @@
 			palettes: TERRAIN_PROFILES.map(p => [...p.palette] as [RGB, RGB, RGB, RGB]),
 			blends: TERRAIN_PROFILES.map(p => p.blend),
 			blendPositions: TERRAIN_PROFILES.map(p => p.blendPos),
+			cliffPalettes: DEFAULT_CLIFF_PALETTES.map(p => [...p] as [RGB, RGB, RGB]),
 		};
 		engine?.setTerrainSettings(settings);
 	}
@@ -101,6 +109,7 @@
 		<div class="flex border-b border-[rgba(255,255,255,0.08)]">
 			<button class="tab-btn" class:tab-active={activeTab === 'paint'} onclick={() => activeTab = 'paint'}>Paint</button>
 			<button class="tab-btn" class:tab-active={activeTab === 'colors'} onclick={() => activeTab = 'colors'}>Colors</button>
+			<button class="tab-btn" class:tab-active={activeTab === 'cliffs'} onclick={() => activeTab = 'cliffs'}>Cliffs</button>
 		</div>
 
 		<!-- Paint tab -->
@@ -207,6 +216,68 @@
 						</div>
 						<div class="flex text-[8px] text-[#706860] mt-0.5">
 							{#each BAND_LABELS as label}
+								<span class="flex-1 text-center">{label}</span>
+							{/each}
+						</div>
+					</div>
+				{/if}
+
+				<div class="flex gap-1.5 mt-2">
+					<button class="tool-btn flex-1" onclick={saveColors}>Save</button>
+					<button class="tool-btn flex-1" onclick={resetColors}>Reset</button>
+				</div>
+			</div>
+		{/if}
+
+		<!-- Cliffs tab -->
+		{#if activeTab === 'cliffs'}
+			<div class="flex-1 overflow-y-auto px-3 py-2">
+				<div class="text-[10px] uppercase tracking-wider text-[#A09890] mb-1.5">Select Terrain</div>
+				<div class="grid grid-cols-2 gap-1 mb-3">
+					{#each TERRAIN_PROFILES as profile, i}
+						<button
+							class="terrain-chip"
+							class:chip-active={editingIdx === i}
+							onclick={() => editingIdx = i}
+						>
+							{profile.name}
+						</button>
+					{/each}
+				</div>
+
+				<div class="text-[10px] uppercase tracking-wider text-[#A09890] mb-1.5">
+					{TERRAIN_PROFILES[editingIdx].name} Cliff Rock
+				</div>
+
+				{#each CLIFF_BAND_LABELS as label, b}
+					{#if settings.cliffPalettes[editingIdx]}
+						{@const c = settings.cliffPalettes[editingIdx][b]}
+						<div class="band-row">
+							<span class="text-[10px] text-[#A09890] w-10">{label}</span>
+							<input
+								type="color"
+								value={rgbToHex(c[0], c[1], c[2])}
+								oninput={(e) => onCliffBandChange(b, (e.target as HTMLInputElement).value)}
+								class="color-input"
+							/>
+							<span class="text-[10px] text-[#706860] font-mono">
+								{rgbToHex(c[0], c[1], c[2])}
+							</span>
+						</div>
+					{/if}
+				{/each}
+
+				<!-- Cliff color preview -->
+				{#if settings.cliffPalettes[editingIdx]}
+					<div class="mt-3 mb-2">
+						<div class="text-[10px] text-[#A09890] mb-1">Preview</div>
+						<div class="h-4 rounded-sm overflow-hidden flex">
+							{#each settings.cliffPalettes[editingIdx] as c}
+								<div class="flex-1" style="background: {rgbToHex(c[0], c[1], c[2])};"></div>
+							{/each}
+						</div>
+						<div class="flex text-[8px] text-[#706860] mt-0.5">
+							{#each CLIFF_BAND_LABELS as label}
 								<span class="flex-1 text-center">{label}</span>
 							{/each}
 						</div>
