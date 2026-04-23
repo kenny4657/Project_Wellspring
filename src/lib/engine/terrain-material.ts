@@ -333,8 +333,11 @@ void main() {
             float roughness = snoise(vWorldPos * 0.04) * 0.025;
             rockColor += roughness;
 
-            // Darken near cliff edge (high proximity) to mask palette seam
-            rockColor *= mix(1.0, 0.75, smoothstep(0.6, 1.0, cliffProximity));
+            // At the midpoint (high proximity), blend toward a shared neutral
+            // dark rock so both sides converge to the same color at the seam
+            vec3 midRock = vec3(0.32, 0.26, 0.19);
+            float midBlend = smoothstep(0.5, 1.0, cliffProximity);
+            rockColor = mix(rockColor, midRock, midBlend * 0.75);
 
             // Blend: steepness controls cliff texture, proximity controls fade
             float erosionNoise = snoise(vWorldPos * 0.006) * 0.02;
