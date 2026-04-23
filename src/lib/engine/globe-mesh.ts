@@ -100,7 +100,7 @@ function subdivTriangle(
 // ── Smooth Normals (Sota-style SmoothShadesProcessor) ───────
 
 /** Average normals at coincident vertex positions for seamless terrain.
- *  Only processes top-face vertices (color alpha > 0.5). Wall vertices keep flat normals. */
+ *  Only processes top-face vertices (color alpha >= 0.05). Wall vertices keep flat normals. */
 function smoothNormalsPass(
 	positions: Float32Array, normals: Float32Array, colors: Float32Array, vertexCount: number
 ): void {
