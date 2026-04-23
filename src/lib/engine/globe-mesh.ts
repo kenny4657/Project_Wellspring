@@ -100,7 +100,7 @@ function subdivTriangle(
 // ── Smooth Normals (Sota-style SmoothShadesProcessor) ───────
 
 /** Average normals at coincident vertex positions for seamless terrain.
- *  Only processes top-face vertices (color alpha >= 0.05). Wall vertices keep flat normals. */
+ *  Only processes top-face vertices (color alpha > 0.5). Wall vertices keep flat normals. */
 function smoothNormalsPass(
 	positions: Float32Array, normals: Float32Array, colors: Float32Array, vertexCount: number
 ): void {
@@ -511,14 +511,14 @@ function computeSurfaceHeight(
 	isWaterHex: boolean
 ): number {
 	const rawNoise = fbmNoise(ux * NOISE_SCALE, uy * NOISE_SCALE, uz * NOISE_SCALE);
-	// Interior noise: water uses abs(), land biases upward (+0.3)
-	const interiorNoiseH = isWaterHex ? Math.abs(rawNoise) : rawNoise + 0.3;
-	// Border noise: MUST match on both sides of shared edges.
-	// At coastline (borderTarget=0), both water and land use the same formula.
-	const borderNoiseH = Math.abs(rawNoise) + 0.15;
+	// Water hexes: abs() keeps surface above ocean floor.
+	// Land hexes: bias upward (+0.3) so terrain mostly rises but still
+	// dips slightly below tierH for the shore color blend. Prevents
+	// vertices from dropping far enough to trigger water specular.
+	const noiseH = isWaterHex ? Math.abs(rawNoise) : rawNoise + 0.3;
 
 	if (isWaterHex && borderInfo.allSameHeight) {
-		return tierH + interiorNoiseH * NOISE_AMP;
+		return tierH + noiseH * NOISE_AMP;
 	}
 
 	if (borderInfo.hasBorder) {
@@ -541,12 +541,9 @@ function computeSurfaceHeight(
 		// - Water↔water: border noise = NOISE_AMP (flat neighbor uses full noise)
 		// - Water↔land: border noise = NOISE_AMP * 0.3 (both sides use 0.3 at coast)
 		const isWaterNeighborBorder = borderTarget < -0.001;
-		const borderNoiseCoeff = isWaterNeighborBorder ? NOISE_AMP : NOISE_AMP * 0.3;
-		const interiorNoiseCoeff = NOISE_AMP;
-		const noiseCoeff = interiorNoiseCoeff * mu + borderNoiseCoeff * (1 - mu);
-		// Blend between interior noise shape and border noise shape
-		// so both sides of the shared edge use identical noise at dist=0
-		const noiseH = interiorNoiseH * mu + borderNoiseH * (1 - mu);
+		const borderNoise = isWaterNeighborBorder ? NOISE_AMP : NOISE_AMP * 0.3;
+		const interiorNoise = NOISE_AMP;
+		const noiseCoeff = interiorNoise * mu + borderNoise * (1 - mu);
 		let h = tierH * mu + borderTarget * (1 - mu) + noiseH * noiseCoeff;
 
 		// Keep coastline continuity exact at the shared edge, but hold the terrain
@@ -561,15 +558,14 @@ function computeSurfaceHeight(
 		return h;
 	}
 
-	return tierH + interiorNoiseH * NOISE_AMP;
+	return tierH + noiseH * NOISE_AMP;
 }
 
 function cornerPatchHeight(
 	ux: number, uy: number, uz: number,
 	borderTarget: number
 ): number {
-	const rawNoise = fbmNoise(ux * NOISE_SCALE, uy * NOISE_SCALE, uz * NOISE_SCALE);
-	const noiseH = Math.abs(rawNoise) + 0.15; // matches borderNoiseH in computeSurfaceHeight
+	const noiseH = Math.abs(fbmNoise(ux * NOISE_SCALE, uy * NOISE_SCALE, uz * NOISE_SCALE));
 	const borderNoise = borderTarget < -0.001 ? NOISE_AMP : NOISE_AMP * 0.3;
 	return borderTarget + noiseH * borderNoise;
 }
