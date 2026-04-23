@@ -339,15 +339,17 @@ void main() {
             float midBlend = smoothstep(0.5, 1.0, cliffProximity);
             rockColor = mix(rockColor, midRock, midBlend * 0.75);
 
-            // Blend: combine steepness and proximity for full coverage
+            // Blend: steep faces get full cliff regardless of proximity.
+            // Proximity adds coverage at midpoint and fades outer edges.
             float erosionNoise = snoise(vWorldPos * 0.006) * 0.02;
             float steepBlend = smoothstep(0.003 + erosionNoise, 0.06, steepness);
-            // Proximity-only coverage for the midpoint gap (even if steepness is low)
             float proxCover = smoothstep(0.3, 0.8, cliffProximity);
-            // Outer fade — smooth falloff at low proximity
-            float proxFade = smoothstep(0.0, 0.3, cliffProximity);
-            // Use whichever gives more coverage, masked by outer fade
-            float erosionBlend = max(steepBlend, proxCover) * proxFade;
+            // Steep faces: full coverage always. Low-steepness: fade by proximity.
+            float erosionBlend = max(steepBlend, proxCover);
+            // Only fade at the very outer fringe (low prox AND low steepness)
+            if (steepBlend < 0.1) {
+                erosionBlend *= smoothstep(0.0, 0.15, cliffProximity);
+            }
             procColor = mix(procColor, rockColor, erosionBlend);
         }
 
