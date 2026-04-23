@@ -241,22 +241,10 @@ function smoothLandSeamPositions(
 				let sumR = 0;
 				for (let k = cs; k < j; k++) sumR += entries[k].r;
 				const avgR = sumR / (j - cs);
-				// Also propagate max cliff proximity across shared boundary vertices
-				// so both sides of the hex edge get the same cliff blending
-				let maxProx = 0;
-				for (let k = cs; k < j; k++) {
-					const bVal = colors[entries[k].i * 4 + 2];
-					const prox = (bVal * 10 - Math.floor(bVal * 10 + 0.001)) / 0.9;
-					if (prox > maxProx) maxProx = prox;
-				}
 				for (let k = cs; k < j; k++) {
 					positions[entries[k].i * 3] = ux * avgR;
 					positions[entries[k].i * 3 + 1] = uy * avgR;
 					positions[entries[k].i * 3 + 2] = uz * avgR;
-					// Write max proximity back to B channel (keep height level)
-					const bVal = colors[entries[k].i * 4 + 2];
-					const level = Math.floor(bVal * 10 + 0.001);
-					colors[entries[k].i * 4 + 2] = level * 0.1 + Math.min(maxProx, 1.0) * 0.09;
 				}
 			}
 			cs = j;
