@@ -109,7 +109,7 @@ function smoothNormalsPass(
 
 	// Build spatial hash of top-face vertices only
 	for (let i = 0; i < vertexCount; i++) {
-		if (colors[i * 4 + 3] < 0.5) continue; // skip wall vertices
+		if (colors[i * 4 + 3] < 0.05) continue; // skip wall vertices
 		const px = positions[i * 3];
 		const py = positions[i * 3 + 1];
 		const pz = positions[i * 3 + 2];
@@ -150,7 +150,7 @@ function smoothWaterCornerPositions(
 	const map = new Map<string, number[]>();
 
 	for (let i = 0; i < vertexCount; i++) {
-		if (colors[i * 4 + 3] < 0.5) continue; // skip walls
+		if (colors[i * 4 + 3] < 0.05) continue; // skip walls
 		// Detect water by blue-dominant vertex color
 		const r = colors[i * 4], b = colors[i * 4 + 2];
 		if (b <= r + 0.05) continue; // skip land
@@ -229,6 +229,8 @@ interface HexBorderInfo {
 	hasBorder: boolean;        // has at least one non-excluded edge
 	edgeNeighborTerrains: number[]; // terrain ID of neighbor across each edge (-1 if same terrain)
 	hasTerrainBorder: boolean;      // any edge borders a different terrain type
+	coastEdges: boolean[];     // true = edge borders water↔land transition
+	hasCoast: boolean;         // any edge is a coastline
 }
 
 function cornerKey(x: number, y: number, z: number): string {
@@ -272,9 +274,11 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 	const excludedEdges: boolean[] = new Array(n).fill(false);
 	const edgeTargets: number[] = new Array(n).fill(0);
 	const edgeNeighborTerrains: number[] = new Array(n).fill(-1);
+	const coastEdges: boolean[] = new Array(n).fill(false);
 	let excludedCount = 0;
 	let exactSameCount = 0;
 	let hasTerrainBorder = false;
+	let hasCoast = false;
 	const isWater = cell.heightLevel <= 1;
 
 	for (let i = 0; i < n; i++) {
@@ -315,6 +319,8 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 			} else {
 				// Water → land: ramp up to sea level
 				edgeTargets[i] = 0;
+				coastEdges[i] = true;
+				hasCoast = true;
 			}
 		} else {
 			// ── Land hex edge logic ──
@@ -322,6 +328,8 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 			if (nbIsWater) {
 				// Land → water: ramp down to sea level
 				edgeTargets[i] = 0;
+				coastEdges[i] = true;
+				hasCoast = true;
 				// NOT excluded — this edge gets a ramp
 			} else {
 				// Land → land: excluded (walls handle height transitions)
@@ -338,6 +346,8 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 		hasBorder: excludedCount < n,
 		edgeNeighborTerrains,
 		hasTerrainBorder,
+		coastEdges,
+		hasCoast,
 	};
 }
 
@@ -442,6 +452,24 @@ function distToTerrainBorder(
 		}
 	}
 	return { dist: minDist, neighborTerrainId: neighborTerrain };
+}
+
+/** Distance from a vertex to the nearest coast edge (water↔land boundary).
+ *  Returns Infinity if no coast edges exist on this hex. */
+function distToCoast(
+	vx: number, vy: number, vz: number,
+	cell: HexCell, borderInfo: HexBorderInfo
+): number {
+	const n = cell.corners.length;
+	let minDist = Infinity;
+	for (let i = 0; i < n; i++) {
+		if (!borderInfo.coastEdges[i]) continue;
+		const a = cell.corners[i];
+		const b = cell.corners[(i + 1) % n];
+		const d = distToSegment(vx, vy, vz, a.x, a.y, a.z, b.x, b.y, b.z);
+		if (d < minDist) minDist = d;
+	}
+	return minDist;
 }
 
 function smoothMin(a: number, b: number, k: number): number {
@@ -674,16 +702,23 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 					if (borderInfo.hasTerrainBorder) {
 						const tb = distToTerrainBorder(vx, vy, vz, cell, borderInfo);
 						if (tb.neighborTerrainId >= 0) {
-							// Encode normalized distance to border (0 = at edge, 1 = hexRadius away)
-							// Shader uses noise to determine where the blend boundary falls
 							blendFactor = Math.min(tb.dist / hexRadius, 0.999);
 							neighborTerrainId = tb.neighborTerrainId;
 						}
 					}
+					// Encode coast proximity in alpha:
+					// 1.0 = not coastal, 0.5 = at water edge
+					// Walls use 0.0, shader checks < 0.05 for walls
+					let alpha = 1.0;
+					if (borderInfo.hasCoast) {
+						const cd = distToCoast(vx, vy, vz, cell, borderInfo);
+						// 0 at coast edge → alpha=0.5, hexRadius away → alpha=1.0
+						alpha = 0.5 + 0.5 * Math.min(cd / hexRadius, 1.0);
+					}
 					const topColor = getTopFaceColor(cell.terrain, tierH, neighborTerrainId, blendFactor);
 					positions.push(displaced[k * 3], displaced[k * 3 + 1], displaced[k * 3 + 2]);
 					normals.push(nx, ny, nz);
-					colors.push(topColor[0], topColor[1], topColor[2], 1.0);
+					colors.push(topColor[0], topColor[1], topColor[2], alpha);
 					indices.push(vOff++);
 				}
 			}
@@ -936,9 +971,9 @@ export function updateCellTerrain(
 		for (let i = 0; i < count; i++) {
 			const vi = (start + i) * 4;
 			const pi = (start + i) * 3;
-			const isTopFace = colorsBuffer[vi + 3] > 0.5;
+			const isWall = colorsBuffer[vi + 3] < 0.05;
 
-			if (!isTopFace) {
+			if (isWall) {
 				colorsBuffer[vi] = wallColor[0];
 				colorsBuffer[vi + 1] = wallColor[1];
 				colorsBuffer[vi + 2] = wallColor[2];
@@ -957,10 +992,17 @@ export function updateCellTerrain(
 						neighborTerrainId = tb.neighborTerrainId;
 					}
 				}
+				// Recompute coast proximity
+				let alpha = 1.0;
+				if (borderInfo.hasCoast) {
+					const cd = distToCoast(ux, uy, uz, c, borderInfo);
+					alpha = 0.5 + 0.5 * Math.min(cd / hexRadius, 1.0);
+				}
 				const topColor = getTopFaceColor(c.terrain, tierH, neighborTerrainId, blendFactor);
 				colorsBuffer[vi] = topColor[0];
 				colorsBuffer[vi + 1] = topColor[1];
 				colorsBuffer[vi + 2] = topColor[2];
+				colorsBuffer[vi + 3] = alpha;
 			}
 		}
 	}

@@ -221,25 +221,40 @@ void main() {
         float scratchy = triplanarScratchy(vWorldPos, N, 0.004);
 
         // Decode cross-terrain blend from G channel
-        // G = (neighborTerrainId + distToBorder) / 10.0
-        // distToBorder: 0 = at border edge, ~1 = hexRadius away
         float rawG = vColor.g * 10.0;
         int neighborId = min(int(floor(rawG + 0.001)), 9);
         float distToBorder = fract(rawG + 0.001);
         bool hasCrossBlend = (neighborId != terrainId);
 
-        // Own terrain color
+        // Coast proximity from alpha: 0.5 = at water edge, 1.0 = not coastal
+        float coastProximity = clamp((1.0 - vColor.a) * 2.0, 0.0, 1.0); // 1.0 at coast, 0.0 inland
+
+        // Compute terrain color at inland height (above shore band)
+        float noiseAmp = 0.008 * planetRadius;
+        float noiseBias = 0.3 * noiseAmp;
+        float inlandH = tierH + noiseBias;
+        vec3 inlandColor = computeTerrainColor(terrainId, inlandH, tierH, scratchy);
+
+        // Own terrain color (normal height-based)
         vec3 ownColor = computeTerrainColor(terrainId, heightAboveR, tierH, scratchy);
 
-        if (hasCrossBlend) {
-            // World-space noise determines where the terrain boundary falls
-            // Multi-octave for organic shape at different scales
+        // Beach color — warm sand
+        vec3 beachColor = vec3(0.68, 0.60, 0.42) * (1.0 + scratchy * 0.10);
+
+        if (coastProximity > 0.01) {
+            // Coastal vertex: blend from inland terrain → beach as we approach water
+            // Use noise to make the beach edge organic instead of hex-shaped
+            float coastNoise = snoise(vWorldPos * 0.005) * 0.12
+                             + snoise(vWorldPos * 0.015) * 0.06;
+            float beachStart = 0.25 + coastNoise; // where beach begins (noise-shifted)
+            float beachBlend = smoothstep(beachStart, 1.0, coastProximity);
+            procColor = mix(inlandColor, beachColor, beachBlend);
+        } else if (hasCrossBlend) {
+            // Land↔land terrain blend: noise-modulated boundary
             float n1 = snoise(vWorldPos * 0.004) * 0.22;
             float n2 = snoise(vWorldPos * 0.012) * 0.10;
             float noiseOffset = n1 + n2;
-            // Blend boundary: noise shifts the threshold so boundary follows
-            // noise contours rather than hex geometry
-            float threshold = max(0.35 + noiseOffset, 0.08); // clamped to avoid smoothstep NaN
+            float threshold = max(0.35 + noiseOffset, 0.08);
             float blend = (1.0 - smoothstep(0.0, threshold, distToBorder)) * 0.45;
             vec3 neighborColor = computeTerrainColor(neighborId, heightAboveR, tierH, scratchy);
             procColor = mix(ownColor, neighborColor, blend);
