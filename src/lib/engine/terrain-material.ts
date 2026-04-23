@@ -298,56 +298,77 @@ void main() {
             procColor = ownColor;
         }
 
-        // Cliff erosion texture — only on 2+ level transitions (flagged in B channel)
+        // Cliff texture — layered Voronoi approach inspired by LightBulbBox
+        // Vertically stretched cells create water-runoff crack patterns
+        // Fine detail masked into crevices only; flat faces stay planar
         float steepness = 1.0 - dot(N, normalize(vWorldPos));
         if (nearSteepCliff && steepness > 0.005) {
-            // Palette — warm ochre/brown from real cliff photos
             vec3 ochreRock   = vec3(0.55, 0.38, 0.22);
             vec3 rustyBrown  = vec3(0.45, 0.28, 0.15);
-            vec3 darkCrevice = vec3(0.12, 0.08, 0.05);
+            vec3 darkCrevice = vec3(0.10, 0.07, 0.04);
             vec3 paleFace    = vec3(0.62, 0.52, 0.38);
             vec3 deepBrown   = vec3(0.35, 0.22, 0.12);
             vec3 mossPatch   = vec3(0.28, 0.36, 0.16);
 
-            // ── Voronoi rock blocks — angular cells with sharp cracks ──
-            // Large blocks: main rock face structure
-            vec2 v1 = voronoi3D(vWorldPos * 0.012);
-            float edge1 = v1.x;  // distance to cell boundary
-            float cell1 = v1.y;  // unique cell ID [0,1]
-            // Medium blocks: sub-fractures within large blocks
-            vec2 v2 = voronoi3D(vWorldPos * 0.030 + 50.0);
+            // Build stretched coordinate: compress radial axis to elongate
+            // cells vertically (like water runoff grooves on real cliffs)
+            vec3 radial = normalize(vWorldPos);
+            float radialComp = dot(vWorldPos, radial);
+            vec3 tangentialPart = vWorldPos - radial * radialComp;
+            // Stretch: keep tangential scale, shrink radial by 0.35x
+            vec3 stretched = tangentialPart + radial * radialComp * 0.35;
+
+            // ── Layer 1: Large slab blocks (main structure) ──
+            vec2 v1 = voronoi3D(stretched * 0.010);
+            float edge1 = v1.x;
+            float cell1 = v1.y;
+
+            // ── Layer 2: Medium chunks (stretched more for vertical cracks) ──
+            vec3 stretched2 = tangentialPart + radial * radialComp * 0.25;
+            vec2 v2 = voronoi3D(stretched2 * 0.028 + 50.0);
             float edge2 = v2.x;
             float cell2 = v2.y;
-            // Fine detail
-            vec2 v3 = voronoi3D(vWorldPos * 0.065 + 120.0);
+
+            // ── Layer 3: Fine crevice detail — ONLY in deep cracks ──
+            // Masked by layer 1 edge proximity (detail in crevices, not on faces)
+            float creviceMask = 1.0 - smoothstep(0.0, 0.20, edge1);
+            vec2 v3 = voronoi3D(stretched * 0.065 + 120.0);
             float edge3 = v3.x;
 
-            // Crack lines: dark where near cell edges (small edge distance)
-            float crack1 = 1.0 - smoothstep(0.0, 0.06, edge1); // major cracks
-            float crack2 = 1.0 - smoothstep(0.0, 0.05, edge2); // medium cracks
-            float crack3 = 1.0 - smoothstep(0.0, 0.04, edge3); // fine cracks
-            float crackMask = max(crack1 * 0.85, max(crack2 * 0.55, crack3 * 0.35));
+            // ── Horizontal crack lines (strata / bedding planes) ──
+            float strataCoord = radialComp * 0.06;
+            strataCoord += snoise(vWorldPos * 0.005) * 3.0; // warp so not perfectly horizontal
+            float strata = 1.0 - smoothstep(0.0, 0.08, abs(fract(strataCoord) - 0.5) * 2.0);
 
-            // ── Per-cell color — each block gets a distinct rock tone ──
-            // cell ID selects from the palette; each face is flat-colored
+            // ── Compose crack network ──
+            float crack1 = 1.0 - smoothstep(0.0, 0.05, edge1);
+            float crack2 = 1.0 - smoothstep(0.0, 0.04, edge2);
+            float crack3 = (1.0 - smoothstep(0.0, 0.04, edge3)) * creviceMask; // detail only in crevices
+            float crackMask = max(crack1 * 0.80, max(crack2 * 0.50, crack3 * 0.35));
+            crackMask = max(crackMask, strata * 0.45); // horizontal cracks overlay
+
+            // ── Per-cell flat color — each slab gets a unique rock tone ──
             vec3 rockColor = mix(ochreRock, rustyBrown, cell1);
             rockColor = mix(rockColor, paleFace, step(0.7, cell1) * 0.4);
             rockColor = mix(rockColor, deepBrown, step(0.3, cell1) * (1.0 - step(0.5, cell1)) * 0.5);
-            // Sub-block variation within each major block
-            rockColor = mix(rockColor, rockColor * 0.85, step(0.6, cell2) * 0.3);
-            rockColor = mix(rockColor, rockColor * 1.12, step(0.4, cell2) * (1.0 - step(0.6, cell2)) * 0.2);
+            // Sub-block tonal variation
+            rockColor = mix(rockColor, rockColor * 0.82, step(0.6, cell2) * 0.35);
+            rockColor = mix(rockColor, rockColor * 1.15, step(0.35, cell2) * (1.0 - step(0.55, cell2)) * 0.25);
+            // Faces stay flat/planar; roughness only in crevices
+            float roughness = snoise(vWorldPos * 0.05) * 0.03 * creviceMask;
+            rockColor += roughness;
 
-            // Dark cracks cut through
+            // Dark cracks
             rockColor = mix(rockColor, darkCrevice, crackMask);
 
-            // Sparse moss clinging to ledges (gentler slopes only)
+            // Sparse moss in sheltered gentler spots
             float mossNoise = snoise(vWorldPos * 0.02 + 200.0) * 0.5 + 0.5;
             float mossMask = mossNoise * (1.0 - crackMask) * smoothstep(0.06, 0.02, steepness);
             rockColor = mix(rockColor, mossPatch, mossMask * 0.25);
 
             vec3 erosionColor = rockColor;
 
-            // Wide, noise-modulated blend for soft edges
+            // Soft blend at cliff boundary
             float erosionNoise = snoise(vWorldPos * 0.006) * 0.025
                                + snoise(vWorldPos * 0.018) * 0.012;
             float erosionBlend = smoothstep(0.005 + erosionNoise, 0.08, steepness);
