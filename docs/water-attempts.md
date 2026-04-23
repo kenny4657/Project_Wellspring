@@ -251,3 +251,42 @@ Every attempt tried to fix the symptom from the wrong end:
 ### C. Change the color system (shader-side)
 6. **Height-relative coloring** — Instead of absolute height for color bands, use height relative to the vertex's own `tierBase`. Coastal vertices at height 2km with tierBase=15km would compute a relative height of -13km, putting them deeper in the shore band — but if we flip this to use `max(heightAboveR, tierBase)` for color, coastal vertices would use tierBase and get grass color.
 7. **Make sw depend on height proximity to sea level** — If `heightAboveR < someThreshold`, shrink `sw` to near-zero so the shore band vanishes. The shore-grass two-tone only appears well above sea level.
+
+---
+
+## Land Seam Gap Fixes — Failed Attempts
+
+### Problem
+Thin dark lines (gaps) visible at hex edges on LAND terrain near coastlines. The background/water shows through. These follow hex edges, not terrain-type boundaries.
+
+### Root Cause (confirmed)
+`computeSurfaceHeight` is cell-dependent: two adjacent land hexes sharing an edge each compute height using their own `borderInfo`, which references their own coast edges. At the shared land-land edge, they measure different distances to different coasts → different heights → gap.
+
+### Attempt A: Post-process land vertices, 10km threshold
+Averaged coincident land vertices by angular direction, skipping groups with >10km spread.
+**Result:** Did NOT fix all gaps — actual gap can be up to ~17km due to noise variation.
+
+### Attempt B: Post-process land vertices, 20km threshold  
+Same as A but with 20km threshold.
+**Result:** Still gaps visible. Threshold approach may not work because the gap magnitude varies with noise and can overlap with intentional height differences in edge cases.
+
+### Attempt C: Unified smoothing (all vertices, height-clustered)
+Grouped ALL top-face vertices by angular direction, clustered by radius with 30km gap threshold.
+**Result:** Broke water — triangular gaps appeared because water and land vertices at coast corners got averaged together.
+
+### Attempt D: Separate water/land passes (water: no threshold, land: no coastal vertices)
+Water pass unchanged. Land pass skipped coastal vertices (alpha < 0.99).
+**Result:** Gaps migrated further inland — the coastal alpha boundary doesn't match where the height mismatch occurs.
+
+### Attempt E: Tighten cosine ramp to 0.75 * hexRadius
+Changed `dist / hexRadius` to `dist / (hexRadius * 0.75)` so ramp decays faster.
+**Result:** Did NOT fix — fails when both hexes have coast edges in different directions (dist to coast can be < 0.75 * hexRadius from shared edge).
+
+### Attempt F: Fade mu toward 1.0 near excluded edges
+Computed distance to nearest excluded (land-land) edge, faded mu toward 1.0 when close.
+**Result:** Made gaps BIGGER — the fade disrupted the height field instead of fixing it.
+
+### What has NOT been tried
+- Making computeSurfaceHeight truly position-dependent (not cell-dependent)
+- Using wall geometry to bridge the gap instead of trying to match heights
+- Computing height at shared edges using a global/shared formula

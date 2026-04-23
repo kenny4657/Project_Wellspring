@@ -865,7 +865,50 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 	// Wall vertices (alpha=0) are excluded to keep cliff faces sharp.
 	smoothNormalsPass(positionsF32, normalsF32, colorsF32, vOff);
 	smoothWaterCornerPositions(positionsF32, colorsF32, vOff);
-	smoothLandSeamPositions(positionsF32, colorsF32, vOff);
+
+	// ── Diagnostic: find height mismatches at coincident land vertices ──
+	{
+		const map = new Map<string, number[]>();
+		for (let i = 0; i < vOff; i++) {
+			if (colorsF32[i * 4 + 3] < 0.05) continue; // skip walls
+			const r = colorsF32[i * 4], b = colorsF32[i * 4 + 2];
+			if (b > r + 0.05) continue; // skip water
+			const px = positionsF32[i * 3], py = positionsF32[i * 3 + 1], pz = positionsF32[i * 3 + 2];
+			const len = Math.sqrt(px * px + py * py + pz * pz) || 1;
+			const key = `${Math.round(px / len / 0.0001)},${Math.round(py / len / 0.0001)},${Math.round(pz / len / 0.0001)}`;
+			let list = map.get(key);
+			if (!list) { list = []; map.set(key, list); }
+			list.push(i);
+		}
+		let gapCount = 0;
+		let maxGap = 0;
+		const gapExamples: string[] = [];
+		for (const indices of map.values()) {
+			if (indices.length <= 1) continue;
+			let minR = Infinity, maxR2 = -Infinity;
+			for (const i of indices) {
+				const px = positionsF32[i * 3], py = positionsF32[i * 3 + 1], pz = positionsF32[i * 3 + 2];
+				const r2 = Math.sqrt(px * px + py * py + pz * pz);
+				if (r2 < minR) minR = r2;
+				if (r2 > maxR2) maxR2 = r2;
+			}
+			const gap = maxR2 - minR;
+			if (gap > 0.5) {  // > 0.5 km
+				gapCount++;
+				if (gap > maxGap) maxGap = gap;
+				if (gapExamples.length < 5) {
+					gapExamples.push(`  gap=${gap.toFixed(2)}km, vertices=${indices.length}, radii=[${
+						indices.map(i => {
+							const px = positionsF32[i * 3], py = positionsF32[i * 3 + 1], pz = positionsF32[i * 3 + 2];
+							return Math.sqrt(px * px + py * py + pz * pz).toFixed(2);
+						}).join(', ')
+					}]`);
+				}
+			}
+		}
+		console.log(`[SEAM DIAGNOSTIC] Land vertex groups with gap > 0.5km: ${gapCount}, max gap: ${maxGap.toFixed(2)}km`);
+		for (const ex of gapExamples) console.log(ex);
+	}
 
 	const mesh = new Mesh('globeHex', scene);
 	const vertexData = new VertexData();
