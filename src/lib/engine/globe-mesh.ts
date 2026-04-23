@@ -390,13 +390,18 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 					excludedCount++;
 				}
 			} else {
-				// Land → land: walls handle all height transitions
+				// Land → land height transitions
 				if (nb.heightLevel !== cell.heightLevel) {
+					// Cliff edge: cosine ramp + erosion for irregular outline
 					cliffEdges[i] = true;
 					hasCliff = true;
+					edgeTargets[i] = getLevelHeight(nb.heightLevel);
+					// NOT excluded — ramp handles the transition
+				} else {
+					// Same height: excluded
+					excludedEdges[i] = true;
+					excludedCount++;
 				}
-				excludedEdges[i] = true;
-				excludedCount++;
 			}
 		}
 	}
@@ -874,6 +879,9 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 
 			// Skip coastline edges for low land — ramp handles the transition
 			if (nb.heightLevel <= 1 && cell.heightLevel <= 2) continue;
+
+			// No walls for land-land edges — cliff erosion handles those
+			if (nb.heightLevel > 1) continue;
 
 			// Only emit wall from the HIGHER hex.
 			if (nb.heightLevel >= cell.heightLevel) continue;
