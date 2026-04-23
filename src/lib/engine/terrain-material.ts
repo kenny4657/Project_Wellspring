@@ -235,9 +235,10 @@ void main() {
         float inlandH = tierH + noiseBias;
         vec3 inlandColor = computeTerrainColor(terrainId, inlandH, tierH, scratchy);
 
-        // Own terrain color — clamp height above shore band for non-coastal
-        // vertices so land-land ramps don't show sandy shore color
-        float colorH = (coastProximity > 0.01) ? heightAboveR : max(heightAboveR, inlandH);
+        // Own terrain color — always clamp height above shore band.
+        // Shore color only appears via the beach overlay (coast proximity),
+        // never from raw height dropping into the shore palette range.
+        float colorH = max(heightAboveR, inlandH);
         vec3 ownColor = computeTerrainColor(terrainId, colorH, tierH, scratchy);
 
         // Beach color — warm sand
