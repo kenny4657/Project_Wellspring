@@ -332,19 +332,6 @@ void main() {
             vec3 slab3Z = slabMap(uvZ * 6.0 + 30.0, 0.3);
             float slabEdge3 = slab3X.x * triW.x + slab3Y.x * triW.y + slab3Z.x * triW.z;
 
-            // ── Step 4: Horizontal strata cracks ──
-            float radialH = length(vWorldPos);
-            float strataCoord = radialH * 0.05;
-            strataCoord += snoise(vWorldPos * 0.004) * 2.5;
-            float strata = 1.0 - smoothstep(0.0, 0.06, abs(fract(strataCoord) - 0.5) * 2.0);
-
-            // ── Compose crack network ──
-            float crack1 = 1.0 - smoothstep(0.0, 0.04, slabEdge1);
-            float crack2 = 1.0 - smoothstep(0.0, 0.03, slabEdge2);
-            float crack3 = (1.0 - smoothstep(0.0, 0.03, slabEdge3)) * creviceMask;
-            float crackMask = max(crack1 * 0.80, max(crack2 * 0.45, crack3 * 0.30));
-            crackMask = max(crackMask, strata * 0.40);
-
             // ── Per-slab flat color ──
             vec3 rockColor = mix(ochreRock, rustyBrown, slabCell1);
             rockColor = mix(rockColor, paleFace, step(0.65, slabCell1) * 0.45);
@@ -352,18 +339,10 @@ void main() {
             // Medium slab tonal shift
             rockColor = mix(rockColor, rockColor * 0.80, step(0.55, slabCell2) * 0.35);
             rockColor = mix(rockColor, rockColor * 1.15, (1.0 - step(0.45, slabCell2)) * 0.20);
-            // Perlin roughness only in crevices (step 6-7 from article)
+            // Subtle surface roughness
             float roughFine = snoise(vWorldPos * 0.06) * 0.04 * creviceMask;
             float roughFlat = snoise(vWorldPos * 0.03) * 0.015 * (1.0 - creviceMask);
             rockColor += roughFine + roughFlat;
-
-            // Dark cracks
-            rockColor = mix(rockColor, darkCrevice, crackMask);
-
-            // Sparse moss
-            float mossNoise = snoise(vWorldPos * 0.02 + 200.0) * 0.5 + 0.5;
-            float mossMask = mossNoise * (1.0 - crackMask) * smoothstep(0.06, 0.02, steepness);
-            rockColor = mix(rockColor, mossPatch, mossMask * 0.25);
 
             vec3 erosionColor = rockColor;
 
