@@ -57,9 +57,10 @@ function getTerrainColor(idx: number): [number, number, number] { return TERRAIN
 /** Top-face vertex color: R = terrainId/9, G = packed blend data, B = encoded tier height.
  *  G encodes: (neighborTerrainId + blendFactor) / 10.0
  *  Shader decodes: neighborId = int(floor(G*10)), blend = fract(G*10) */
-function getTopFaceColor(terrainIdx: number, tierH: number, neighborTerrainId: number, blendFactor: number): [number, number, number] {
+function getTopFaceColor(terrainIdx: number, tierH: number, neighborTerrainId: number, blendFactor: number, steepCliff: boolean = false): [number, number, number] {
 	const r = terrainIdx / 9.0;
-	const b = (tierH + 0.030) / 0.110;
+	let b = (tierH + 0.030) / 0.110;
+	if (steepCliff) b += 0.5; // flag: B >= 0.5 means near 2+ level cliff
 	const nId = neighborTerrainId >= 0 ? neighborTerrainId : terrainIdx;
 	const g = (nId + Math.min(blendFactor, 0.99)) / 10.0;
 	return [r, g, b];
@@ -283,6 +284,8 @@ interface HexBorderInfo {
 	hasCoast: boolean;         // any edge is a coastline
 	cliffEdges: boolean[];     // true = edge has land-land height difference
 	hasCliff: boolean;         // any edge is a cliff
+	steepCliffEdges: boolean[];  // true = edge has 2+ level height difference
+	hasSteepCliff: boolean;      // any edge is a steep cliff
 }
 
 function cornerKey(x: number, y: number, z: number): string {
@@ -328,11 +331,13 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 	const edgeNeighborTerrains: number[] = new Array(n).fill(-1);
 	const coastEdges: boolean[] = new Array(n).fill(false);
 	const cliffEdges: boolean[] = new Array(n).fill(false);
+	const steepCliffEdges: boolean[] = new Array(n).fill(false);
 	let excludedCount = 0;
 	let exactSameCount = 0;
 	let hasTerrainBorder = false;
 	let hasCoast = false;
 	let hasCliff = false;
+	let hasSteepCliff = false;
 	const isWater = cell.heightLevel <= 1;
 
 	for (let i = 0; i < n; i++) {
@@ -394,6 +399,10 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 				if (nb.heightLevel !== cell.heightLevel) {
 					cliffEdges[i] = true;
 					hasCliff = true;
+					if (Math.abs(nb.heightLevel - cell.heightLevel) >= 2) {
+						steepCliffEdges[i] = true;
+						hasSteepCliff = true;
+					}
 				}
 				excludedEdges[i] = true;
 				excludedCount++;
@@ -412,6 +421,8 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 		hasCoast,
 		cliffEdges,
 		hasCliff,
+		steepCliffEdges,
+		hasSteepCliff,
 	};
 }
 
@@ -522,6 +533,23 @@ function distToTerrainBorder(
 		}
 	}
 	return { dist: minDist, neighborTerrainId: neighborTerrain };
+}
+
+/** Distance from a vertex to the nearest steep cliff edge (2+ levels). */
+function distToSteepCliff(
+	vx: number, vy: number, vz: number,
+	cell: HexCell, borderInfo: HexBorderInfo
+): number {
+	const n = cell.corners.length;
+	let minDist = Infinity;
+	for (let i = 0; i < n; i++) {
+		if (!borderInfo.steepCliffEdges[i]) continue;
+		const a = cell.corners[i];
+		const b = cell.corners[(i + 1) % n];
+		const d = distToSegment(vx, vy, vz, a.x, a.y, a.z, b.x, b.y, b.z);
+		if (d < minDist) minDist = d;
+	}
+	return minDist;
 }
 
 /** Distance from a vertex to the nearest coast edge (water↔land boundary).
@@ -862,7 +890,16 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 						// 0 at coast edge → alpha=0.5, hexRadius away → alpha=1.0
 						alpha = 0.5 + 0.5 * Math.min(cd / hexRadius, 1.0);
 					}
-					const topColor = getTopFaceColor(cell.terrain, tierH, chosenNId, triBFs[k]);
+					// Flag vertices near steep cliffs (2+ level diff)
+					let nearSteepCliff = false;
+					if (borderInfo.hasSteepCliff) {
+						const vx = triVerts[j + k * 3];
+						const vy = triVerts[j + k * 3 + 1];
+						const vz = triVerts[j + k * 3 + 2];
+						const sd = distToSteepCliff(vx, vy, vz, cell, borderInfo);
+						nearSteepCliff = sd < hexRadius * 0.5;
+					}
+					const topColor = getTopFaceColor(cell.terrain, tierH, chosenNId, triBFs[k], nearSteepCliff);
 					positions.push(displaced[k * 3], displaced[k * 3 + 1], displaced[k * 3 + 2]);
 					normals.push(nx, ny, nz);
 					colors.push(topColor[0], topColor[1], topColor[2], alpha);

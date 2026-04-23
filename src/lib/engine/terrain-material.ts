@@ -217,7 +217,10 @@ void main() {
     } else {
         // ── Per-terrain height blending + cross-terrain border blend ────
         int terrainId = int(vColor.r * 9.0 + 0.5);
-        float tierH = (vColor.b * 0.110 - 0.030) * planetRadius;
+        float rawB = vColor.b;
+        bool nearSteepCliff = rawB >= 0.5;
+        float bDecoded = nearSteepCliff ? rawB - 0.5 : rawB;
+        float tierH = (bDecoded * 0.110 - 0.030) * planetRadius;
         float scratchy = triplanarScratchy(vWorldPos, N, 0.004);
 
         // Decode cross-terrain blend from G channel
@@ -260,12 +263,9 @@ void main() {
             procColor = ownColor;
         }
 
-        // Cliff erosion texture on steep slopes between height levels
-        // Detect steepness: dot(N, radial) = 1 for flat, < 1 for slopes
-        vec3 radialDir = normalize(vWorldPos);
-        float flatness = dot(N, radialDir);
-        float steepness = 1.0 - flatness;
-        if (steepness > 0.04) {
+        // Cliff erosion texture — only on 2+ level transitions (flagged in B channel)
+        float steepness = 1.0 - dot(N, normalize(vWorldPos));
+        if (nearSteepCliff && steepness > 0.01) {
             // Erosion pattern: layered dirt/rock with drainage channels
             vec3 ep = vWorldPos * 0.004;
 
@@ -303,7 +303,7 @@ void main() {
 
             // Blend based on steepness with noise-modulated boundary
             float erosionNoise = snoise(vWorldPos * 0.01) * 0.01;
-            float erosionBlend = smoothstep(0.04 + erosionNoise, 0.10, steepness);
+            float erosionBlend = smoothstep(0.01 + erosionNoise, 0.05, steepness);
             procColor = mix(procColor, erosionColor, erosionBlend * 0.85);
         }
 
