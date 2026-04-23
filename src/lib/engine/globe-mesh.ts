@@ -155,7 +155,8 @@ function smoothWaterCornerPositions(
 	for (let i = 0; i < vertexCount; i++) {
 		if (colors[i * 4 + 3] < 0.05) continue; // skip walls
 		const r = colors[i * 4], b = colors[i * 4 + 2];
-		if (b <= r + 0.05) continue; // water only (blue-dominant)
+		const bw = b >= 0.5 ? b - 0.5 : b; // strip steep cliff flag
+		if (bw <= r + 0.05) continue; // water only (blue-dominant)
 		const px = positions[i * 3];
 		const py = positions[i * 3 + 1];
 		const pz = positions[i * 3 + 2];
@@ -198,7 +199,8 @@ function smoothLandSeamPositions(
 	for (let i = 0; i < vertexCount; i++) {
 		if (colors[i * 4 + 3] < 0.05) continue;
 		const r = colors[i * 4], b = colors[i * 4 + 2];
-		if (b > r + 0.05) continue; // skip water
+		const bStripped = b >= 0.5 ? b - 0.5 : b; // strip steep cliff flag
+		if (bStripped > r + 0.05) continue; // skip water
 		const px = positions[i * 3];
 		const py = positions[i * 3 + 1];
 		const pz = positions[i * 3 + 2];
