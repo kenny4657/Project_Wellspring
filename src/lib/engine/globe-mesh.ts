@@ -877,6 +877,18 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 					}
 				}
 
+				// Per-triangle steep cliff flag — must be same for all 3 vertices
+				// to prevent GPU interpolation from corrupting the B channel
+				let triSteepCliff = false;
+				if (borderInfo.hasSteepCliff) {
+					for (let k = 0; k < 3; k++) {
+						const sd = distToSteepCliff(
+							triVerts[j + k * 3], triVerts[j + k * 3 + 1], triVerts[j + k * 3 + 2],
+							cell, borderInfo);
+						if (sd < hexRadius * 0.5) { triSteepCliff = true; break; }
+					}
+				}
+
 				for (let k = 0; k < 3; k++) {
 					// Encode coast proximity in alpha:
 					// 1.0 = not coastal, 0.5 = at water edge
@@ -890,16 +902,7 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 						// 0 at coast edge → alpha=0.5, hexRadius away → alpha=1.0
 						alpha = 0.5 + 0.5 * Math.min(cd / hexRadius, 1.0);
 					}
-					// Flag vertices near steep cliffs (2+ level diff)
-					let nearSteepCliff = false;
-					if (borderInfo.hasSteepCliff) {
-						const vx = triVerts[j + k * 3];
-						const vy = triVerts[j + k * 3 + 1];
-						const vz = triVerts[j + k * 3 + 2];
-						const sd = distToSteepCliff(vx, vy, vz, cell, borderInfo);
-						nearSteepCliff = sd < hexRadius * 0.5;
-					}
-					const topColor = getTopFaceColor(cell.terrain, tierH, chosenNId, triBFs[k], nearSteepCliff);
+					const topColor = getTopFaceColor(cell.terrain, tierH, chosenNId, triBFs[k], triSteepCliff);
 					positions.push(displaced[k * 3], displaced[k * 3 + 1], displaced[k * 3 + 2]);
 					normals.push(nx, ny, nz);
 					colors.push(topColor[0], topColor[1], topColor[2], alpha);
