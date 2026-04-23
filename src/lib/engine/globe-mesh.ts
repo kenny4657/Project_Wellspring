@@ -373,13 +373,17 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 			}
 		} else {
 			// ── Land hex edge logic ──
-			// Only ramp at water borders (coastline). All land-land edges excluded (walls handle those).
 			if (nbIsWater) {
-				// Land → water: ramp down to sea level
-				edgeTargets[i] = 0;
-				coastEdges[i] = true;
-				hasCoast = true;
-				// NOT excluded — this edge gets a ramp
+				if (cell.heightLevel <= 2) {
+					// Low land → water: smooth ramp down to sea level
+					edgeTargets[i] = 0;
+					coastEdges[i] = true;
+					hasCoast = true;
+				} else {
+					// High land → water: cliff/wall (excluded like land-land)
+					excludedEdges[i] = true;
+					excludedCount++;
+				}
 			} else {
 				// Land → land: excluded (walls handle height transitions)
 				excludedEdges[i] = true;
@@ -808,10 +812,10 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 			const nb = findNeighborAcrossEdge(cell, i, cellById);
 			if (!nb) continue;
 
-			// Skip coastline edges — ramp handles the transition smoothly
-			if (nb.heightLevel <= 1) continue;
+			// Skip coastline edges for low land — ramp handles the transition
+			if (nb.heightLevel <= 1 && cell.heightLevel <= 2) continue;
 
-			// Only emit wall from the HIGHER land hex.
+			// Only emit wall from the HIGHER hex.
 			if (nb.heightLevel >= cell.heightLevel) continue;
 
 			const edgePoints: number[] = [];
