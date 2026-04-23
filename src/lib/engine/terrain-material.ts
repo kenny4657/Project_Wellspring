@@ -266,43 +266,56 @@ void main() {
         // Cliff erosion texture — only on 2+ level transitions (flagged in B channel)
         float steepness = 1.0 - dot(N, normalize(vWorldPos));
         if (nearSteepCliff && steepness > 0.005) {
-            // Rock/dirt cliff face colors — real exposed earth
-            vec3 warmRock  = vec3(0.52, 0.44, 0.36);  // warm sandstone
-            vec3 coolRock  = vec3(0.42, 0.40, 0.38);  // grey-brown rock
-            vec3 darkEarth = vec3(0.28, 0.22, 0.16);  // deep shadow dirt
-            vec3 dryDirt   = vec3(0.48, 0.38, 0.26);  // exposed dry soil
-            vec3 paleRock  = vec3(0.58, 0.54, 0.48);  // lighter outcrop
+            // Palette from real cliff photos — warm ochre/brown rock
+            vec3 ochreRock   = vec3(0.55, 0.38, 0.22);  // warm ochre face
+            vec3 rustyBrown  = vec3(0.45, 0.28, 0.15);  // rusty iron-stained
+            vec3 darkCrevice = vec3(0.15, 0.10, 0.08);  // deep shadow cracks
+            vec3 paleFace    = vec3(0.62, 0.52, 0.38);  // sun-bleached outcrop
+            vec3 mossPatch   = vec3(0.30, 0.38, 0.18);  // vegetation in cracks
 
-            // Rock strata — thick horizontal bands at cliff scale
-            float strataH = distFromCenter * 0.8;
-            float strata1 = sin(strataH) * 0.5 + 0.5;
-            float strata2 = sin(strataH * 2.7 + 1.5) * 0.5 + 0.5;
-            float strataBlend = strata1 * 0.6 + strata2 * 0.4;
+            // Angled strata — diagonal rock layers (not horizontal)
+            // Rotate world pos to create angled bands
+            vec3 sNorm = normalize(vWorldPos);
+            vec3 tangent = normalize(cross(sNorm, vec3(0.0, 1.0, 0.0)));
+            vec3 bitangent = cross(sNorm, tangent);
+            // Project onto angled axis (mix of radial and tangential)
+            float angledCoord = dot(vWorldPos, normalize(sNorm * 0.4 + tangent * 0.7 + bitangent * 0.3));
+            float strata1 = sin(angledCoord * 1.5) * 0.5 + 0.5;
+            float strata2 = sin(angledCoord * 3.8 + 2.0) * 0.5 + 0.5;
+            // Noise-warp the strata so they're not perfectly straight
+            float strataWarp = snoise(vWorldPos * 0.008) * 0.4;
+            float strata = clamp(strata1 * 0.55 + strata2 * 0.45 + strataWarp, 0.0, 1.0);
 
-            // Cracking / fracture pattern — irregular breaks in the rock
-            float crack1 = abs(snoise(vWorldPos * 0.012));
-            float crack2 = abs(snoise(vWorldPos * 0.025 + 50.0));
-            float cracks = min(crack1, crack2);
-            cracks = smoothstep(0.0, 0.15, cracks); // sharp crevices
+            // Deep crevice network — sharp dark lines like real rock fractures
+            float frac1 = abs(snoise(vWorldPos * 0.015));
+            float frac2 = abs(snoise(vWorldPos * 0.032 + 80.0));
+            float frac3 = abs(snoise(vWorldPos * 0.06 + 160.0));
+            // Ridged noise: take min to create sharp valleys (cracks)
+            float fractures = min(frac1, min(frac2 * 1.2, frac3 * 1.5));
+            float crackMask = 1.0 - smoothstep(0.0, 0.08, fractures); // 1 inside cracks
 
-            // Rubble / granular detail at fine scale
-            float rubble = snoise(vWorldPos * 0.04) * 0.35
-                         + snoise(vWorldPos * 0.10 + 30.0) * 0.25;
+            // Chunky block variation — large irregular patches
+            float blocks = snoise(vWorldPos * 0.007) * 0.5 + 0.5;
+            // Fine surface roughness
+            float rough = snoise(vWorldPos * 0.05) * 0.3
+                        + snoise(vWorldPos * 0.12 + 40.0) * 0.2;
 
-            // Compose: base rock varies between warm and cool
-            vec3 baseRock = mix(warmRock, coolRock, strataBlend);
-            // Add pale outcrop patches
-            baseRock = mix(baseRock, paleRock, rubble * 0.3 + 0.1);
-            // Layer in dry dirt where strata dips
-            baseRock = mix(baseRock, dryDirt, (1.0 - strataBlend) * 0.35);
-            // Darken cracks and crevices
-            baseRock = mix(baseRock, darkEarth, (1.0 - cracks) * 0.5);
-            // Subtle rubble variation
-            baseRock += rubble * 0.04;
+            // Compose: base rock from strata between ochre and rusty
+            vec3 rockColor = mix(ochreRock, rustyBrown, strata);
+            // Blocky patches of lighter/darker rock
+            rockColor = mix(rockColor, paleFace, blocks * 0.35);
+            rockColor = mix(rockColor, rustyBrown * 0.8, (1.0 - blocks) * 0.25);
+            // Surface roughness adds micro-variation
+            rockColor += rough * 0.035;
+            // Deep dark crevices cut through everything
+            rockColor = mix(rockColor, darkCrevice, crackMask * 0.7);
 
-            // Tint the rock slightly toward the surrounding terrain color
-            // so it doesn't look completely disconnected from its environment
-            vec3 erosionColor = mix(baseRock, procColor * 0.7, 0.15);
+            // Sparse moss/vegetation in sheltered spots (where cracks meet gentler slope)
+            float mossNoise = snoise(vWorldPos * 0.02 + 200.0) * 0.5 + 0.5;
+            float mossMask = mossNoise * (1.0 - crackMask) * smoothstep(0.08, 0.03, steepness);
+            rockColor = mix(rockColor, mossPatch, mossMask * 0.3);
+
+            vec3 erosionColor = rockColor;
 
             // Wide, noise-modulated blend for soft edges
             float erosionNoise = snoise(vWorldPos * 0.006) * 0.025
