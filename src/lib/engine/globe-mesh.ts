@@ -880,33 +880,35 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 			if (!list) { list = []; map.set(key, list); }
 			list.push(i);
 		}
+		// Only report SAME-LEVEL gaps (< 50km) — large gaps are intentional height steps
 		let gapCount = 0;
 		let maxGap = 0;
 		const gapExamples: string[] = [];
-		for (const indices of map.values()) {
+		for (const [key, indices] of map.entries()) {
 			if (indices.length <= 1) continue;
-			let minR = Infinity, maxR2 = -Infinity;
-			for (const i of indices) {
+			// Cluster by radius to separate intentional height levels
+			const radii = indices.map(i => {
 				const px = positionsF32[i * 3], py = positionsF32[i * 3 + 1], pz = positionsF32[i * 3 + 2];
-				const r2 = Math.sqrt(px * px + py * py + pz * pz);
-				if (r2 < minR) minR = r2;
-				if (r2 > maxR2) maxR2 = r2;
-			}
-			const gap = maxR2 - minR;
-			if (gap > 0.5) {  // > 0.5 km
-				gapCount++;
-				if (gap > maxGap) maxGap = gap;
-				if (gapExamples.length < 5) {
-					gapExamples.push(`  gap=${gap.toFixed(2)}km, vertices=${indices.length}, radii=[${
-						indices.map(i => {
-							const px = positionsF32[i * 3], py = positionsF32[i * 3 + 1], pz = positionsF32[i * 3 + 2];
-							return Math.sqrt(px * px + py * py + pz * pz).toFixed(2);
-						}).join(', ')
-					}]`);
+				return Math.sqrt(px * px + py * py + pz * pz);
+			});
+			// Sort and find same-level clusters
+			const sorted = radii.slice().sort((a, b) => a - b);
+			for (let s = 0; s < sorted.length; ) {
+				let e = s + 1;
+				while (e < sorted.length && sorted[e] - sorted[e-1] < 50) e++;
+				const clusterGap = sorted[e-1] - sorted[s];
+				if (clusterGap > 0.5 && e - s > 1) {
+					gapCount++;
+					if (clusterGap > maxGap) maxGap = clusterGap;
+					if (gapExamples.length < 10) {
+						const clusterRadii = sorted.slice(s, e).map(r => r.toFixed(2));
+						gapExamples.push(`  gap=${clusterGap.toFixed(2)}km, n=${e-s}, radii=[${clusterRadii.join(', ')}], key=${key}`);
+					}
 				}
+				s = e;
 			}
 		}
-		console.log(`[SEAM DIAGNOSTIC] Land vertex groups with gap > 0.5km: ${gapCount}, max gap: ${maxGap.toFixed(2)}km`);
+		console.log(`[SEAM DIAGNOSTIC] Same-level land gaps > 0.5km: ${gapCount}, max: ${maxGap.toFixed(2)}km`);
 		for (const ex of gapExamples) console.log(ex);
 	}
 
