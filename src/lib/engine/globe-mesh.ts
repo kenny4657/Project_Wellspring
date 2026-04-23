@@ -667,11 +667,14 @@ function computeHeightWithCliffErosion(
 	if (!Number.isFinite(cliff.dist)) return h;
 
 	// Noise-perturb distance so cliff contour follows noise, not hex edge
-	const cliffNoise = fbmNoise(ux * 40 + 500, uy * 40 + 500, uz * 40 + 500);
-	const perturbedDist = Math.max(0, cliff.dist + cliffNoise * hexRadius * 0.25);
+	// Two octaves: large-scale waviness + smaller detail
+	const n1 = fbmNoise(ux * 18 + 500, uy * 18 + 500, uz * 18 + 500);
+	const n2 = fbmNoise(ux * 50 + 700, uy * 50 + 700, uz * 50 + 700);
+	const cliffNoise = n1 * 0.7 + n2 * 0.3;
+	const perturbedDist = Math.max(0, cliff.dist + cliffNoise * hexRadius * 0.55);
 
-	// Steep cosine ramp over 30% of hexRadius
-	const rampWidth = hexRadius * 0.3;
+	// Steep cosine ramp over 35% of hexRadius
+	const rampWidth = hexRadius * 0.35;
 	const t = Math.min(perturbedDist / rampWidth, 1.0);
 	const mu = (1 - Math.cos(t * Math.PI)) / 2; // 0 at edge, 1 at interior
 
