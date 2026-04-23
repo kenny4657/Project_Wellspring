@@ -140,28 +140,25 @@ function smoothNormalsPass(
 	}
 }
 
-// ── Smooth Water Corner Positions ────────────────────────────
-/** Average positions of water vertices at shared hex corners.
+// ── Smooth Coincident Positions ─────────────────────────────
+/** Average positions of top-face vertices at shared hex corners/edges.
  *  Groups by ANGULAR position (unit sphere direction) so vertices at the
- *  same corner but different radii get averaged — eliminating corner gaps
- *  where adjacent water hexes compute different heights. */
-function smoothWaterCornerPositions(
+ *  same point but different radii get averaged — eliminating seam gaps
+ *  where adjacent hexes compute different heights (e.g. coastal ramp
+ *  leaking to land-land edges). Skips groups with large height spread
+ *  to preserve intentional height steps (walls handle those). */
+function smoothCoincidentPositions(
 	positions: Float32Array, colors: Float32Array, vertexCount: number
 ): void {
-	const step = 0.5; // angular quantization in km on unit sphere * radius
 	const map = new Map<string, number[]>();
 
 	for (let i = 0; i < vertexCount; i++) {
 		if (colors[i * 4 + 3] < 0.05) continue; // skip walls
-		// Detect water by blue-dominant vertex color
-		const r = colors[i * 4], b = colors[i * 4 + 2];
-		if (b <= r + 0.05) continue; // skip land
-
-		// Key by angular direction (normalize position to unit sphere)
 		const px = positions[i * 3];
 		const py = positions[i * 3 + 1];
 		const pz = positions[i * 3 + 2];
 		const len = Math.sqrt(px * px + py * py + pz * pz) || 1;
+		// Key by angular direction on unit sphere
 		const key = `${Math.round(px / len / 0.0001)},${Math.round(py / len / 0.0001)},${Math.round(pz / len / 0.0001)}`;
 		let list = map.get(key);
 		if (!list) { list = []; map.set(key, list); }
@@ -170,22 +167,29 @@ function smoothWaterCornerPositions(
 
 	for (const indices of map.values()) {
 		if (indices.length <= 1) continue;
-		// Average the radii — keep direction the same
-		let avgR = 0;
+
+		// Compute radii and check height spread
+		let minR = Infinity, maxR = -Infinity, sumR = 0;
+		for (const i of indices) {
+			const px = positions[i * 3];
+			const py = positions[i * 3 + 1];
+			const pz = positions[i * 3 + 2];
+			const r = Math.sqrt(px * px + py * py + pz * pz);
+			if (r < minR) minR = r;
+			if (r > maxR) maxR = r;
+			sumR += r;
+		}
+
+		// Skip if height spread is large — intentional level difference (walls handle it)
+		if (maxR - minR > 30) continue;
+
+		const avgR = sumR / indices.length;
 		const i0 = indices[0];
 		const dx = positions[i0 * 3];
 		const dy = positions[i0 * 3 + 1];
 		const dz = positions[i0 * 3 + 2];
 		const dirLen = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
 		const ux = dx / dirLen, uy = dy / dirLen, uz = dz / dirLen;
-
-		for (const i of indices) {
-			const px = positions[i * 3];
-			const py = positions[i * 3 + 1];
-			const pz = positions[i * 3 + 2];
-			avgR += Math.sqrt(px * px + py * py + pz * pz);
-		}
-		avgR /= indices.length;
 
 		for (const i of indices) {
 			positions[i * 3] = ux * avgR;
@@ -828,7 +832,7 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 	// This makes terrain look continuous across triangle/hex boundaries.
 	// Wall vertices (alpha=0) are excluded to keep cliff faces sharp.
 	smoothNormalsPass(positionsF32, normalsF32, colorsF32, vOff);
-	smoothWaterCornerPositions(positionsF32, colorsF32, vOff);
+	smoothCoincidentPositions(positionsF32, colorsF32, vOff);
 
 	const mesh = new Mesh('globeHex', scene);
 	const vertexData = new VertexData();
