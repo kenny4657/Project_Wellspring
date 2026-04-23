@@ -185,9 +185,9 @@ function smoothWaterCornerPositions(
 }
 
 /** Snap coincident land vertices to the same height.
- *  Closes seam gaps from asymmetric height computation (e.g. two coastal
- *  land hexes measuring distance to different coast edges). Uses max-spread
- *  threshold of 20km to skip intentional height steps (min 51km). */
+ *  Groups by angular direction, then clusters by radius — vertices within
+ *  50km of each other (consecutive after sorting) are averaged together.
+ *  Intentional height level steps (127km) are preserved as separate clusters. */
 function smoothLandSeamPositions(
 	positions: Float32Array, colors: Float32Array, vertexCount: number
 ): void {
@@ -209,24 +209,35 @@ function smoothLandSeamPositions(
 
 	for (const indices of map.values()) {
 		if (indices.length <= 1) continue;
-		let minR = Infinity, maxR = -Infinity, sumR = 0;
+
+		// Get shared direction
 		const i0 = indices[0];
 		const dx = positions[i0 * 3], dy = positions[i0 * 3 + 1], dz = positions[i0 * 3 + 2];
 		const dirLen = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
 		const ux = dx / dirLen, uy = dy / dirLen, uz = dz / dirLen;
-		for (const i of indices) {
+
+		// Sort by radius, cluster at gaps > 50km
+		const entries = indices.map(i => {
 			const px = positions[i * 3], py = positions[i * 3 + 1], pz = positions[i * 3 + 2];
-			const r = Math.sqrt(px * px + py * py + pz * pz);
-			if (r < minR) minR = r;
-			if (r > maxR) maxR = r;
-			sumR += r;
-		}
-		if (maxR - minR > 20) continue;
-		const avgR = sumR / indices.length;
-		for (const i of indices) {
-			positions[i * 3] = ux * avgR;
-			positions[i * 3 + 1] = uy * avgR;
-			positions[i * 3 + 2] = uz * avgR;
+			return { i, r: Math.sqrt(px * px + py * py + pz * pz) };
+		});
+		entries.sort((a, b) => a.r - b.r);
+
+		let cs = 0;
+		for (let j = 1; j <= entries.length; j++) {
+			if (j < entries.length && entries[j].r - entries[j - 1].r < 50) continue;
+			// Average cluster [cs, j)
+			if (j - cs > 1) {
+				let sumR = 0;
+				for (let k = cs; k < j; k++) sumR += entries[k].r;
+				const avgR = sumR / (j - cs);
+				for (let k = cs; k < j; k++) {
+					positions[entries[k].i * 3] = ux * avgR;
+					positions[entries[k].i * 3 + 1] = uy * avgR;
+					positions[entries[k].i * 3 + 2] = uz * avgR;
+				}
+			}
+			cs = j;
 		}
 	}
 }
@@ -865,6 +876,7 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 	// Wall vertices (alpha=0) are excluded to keep cliff faces sharp.
 	smoothNormalsPass(positionsF32, normalsF32, colorsF32, vOff);
 	smoothWaterCornerPositions(positionsF32, colorsF32, vOff);
+	smoothLandSeamPositions(positionsF32, colorsF32, vOff);
 
 	// ── Diagnostic: find height mismatches at coincident land vertices ──
 	{
