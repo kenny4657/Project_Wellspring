@@ -30,7 +30,7 @@ const LEVEL_HEIGHTS = [
 	-0.020,  // level 0: deep water
 	-0.008,  // level 1: shallow water
 	 0.000,  // level 2: lowland
-	 0.020,  // level 3: midland
+	 0.005,  // level 3: midland
 ];
 
 /** Walls extend down to this floor */
@@ -385,9 +385,20 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 					excludedCount++;
 				}
 			} else {
-				// Land → land: excluded (walls handle height transitions)
-				excludedEdges[i] = true;
-				excludedCount++;
+				// Land → land
+				const heightDiff = Math.abs(cell.heightLevel - nb.heightLevel);
+				if (heightDiff === 0) {
+					// Same height: excluded (no transition needed)
+					excludedEdges[i] = true;
+					excludedCount++;
+				} else if (heightDiff === 1) {
+					// 1-level difference: smooth slope
+					edgeTargets[i] = getLevelHeight(nb.heightLevel);
+				} else {
+					// 2+ level difference: cliff/wall
+					excludedEdges[i] = true;
+					excludedCount++;
+				}
 			}
 		}
 	}
@@ -814,6 +825,9 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 
 			// Skip coastline edges for low land — ramp handles the transition
 			if (nb.heightLevel <= 1 && cell.heightLevel <= 2) continue;
+
+			// Skip land-land edges with 1-level diff — slope handles them
+			if (nb.heightLevel > 1 && Math.abs(cell.heightLevel - nb.heightLevel) <= 1) continue;
 
 			// Only emit wall from the HIGHER hex.
 			if (nb.heightLevel >= cell.heightLevel) continue;
