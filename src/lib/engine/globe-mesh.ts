@@ -288,7 +288,6 @@ interface HexBorderInfo {
 	hasCliff: boolean;         // any edge is a cliff
 	steepCliffEdges: boolean[];  // true = edge has 2+ level height difference
 	hasSteepCliff: boolean;      // any edge is a steep cliff
-	steepCliffTerrain: number;   // terrain ID to use for cliff texture (-1 = use own)
 }
 
 function cornerKey(x: number, y: number, z: number): string {
@@ -341,7 +340,6 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 	let hasCoast = false;
 	let hasCliff = false;
 	let hasSteepCliff = false;
-	let steepCliffTerrain = -1;
 	const isWater = cell.heightLevel <= 1;
 
 	for (let i = 0; i < n; i++) {
@@ -406,9 +404,6 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 					if (Math.abs(nb.heightLevel - cell.heightLevel) >= 2) {
 						steepCliffEdges[i] = true;
 						hasSteepCliff = true;
-						// Use the upper (higher heightLevel) terrain for cliff texture
-						const upperTerrain = nb.heightLevel > cell.heightLevel ? nb.terrain : cell.terrain;
-						if (steepCliffTerrain < 0) steepCliffTerrain = upperTerrain;
 					}
 				}
 				excludedEdges[i] = true;
@@ -430,7 +425,6 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 		hasCliff,
 		steepCliffEdges,
 		hasSteepCliff,
-		steepCliffTerrain,
 	};
 }
 
@@ -913,11 +907,6 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 					const topColor = getTopFaceColor(cell.terrain, tierH, chosenNId, triBFs[k], triSteepCliff);
 					positions.push(displaced[k * 3], displaced[k * 3 + 1], displaced[k * 3 + 2]);
 					normals.push(nx, ny, nz);
-					// For steep cliff triangles, encode upper cliff terrain in alpha
-					// (shader decodes alpha differently when nearSteepCliff is set)
-					if (triSteepCliff && borderInfo.steepCliffTerrain >= 0) {
-						alpha = borderInfo.steepCliffTerrain / 9.0;
-					}
 					colors.push(topColor[0], topColor[1], topColor[2], alpha);
 					indices.push(vOff++);
 				}
