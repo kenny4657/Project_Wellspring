@@ -281,6 +281,8 @@ interface HexBorderInfo {
 	hasTerrainBorder: boolean;      // any edge borders a different terrain type
 	coastEdges: boolean[];     // true = edge borders water↔land transition
 	hasCoast: boolean;         // any edge is a coastline
+	cliffEdges: boolean[];     // true = edge has land-land height difference
+	hasCliff: boolean;         // any edge is a cliff
 }
 
 function cornerKey(x: number, y: number, z: number): string {
@@ -325,10 +327,12 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 	const edgeTargets: number[] = new Array(n).fill(0);
 	const edgeNeighborTerrains: number[] = new Array(n).fill(-1);
 	const coastEdges: boolean[] = new Array(n).fill(false);
+	const cliffEdges: boolean[] = new Array(n).fill(false);
 	let excludedCount = 0;
 	let exactSameCount = 0;
 	let hasTerrainBorder = false;
 	let hasCoast = false;
+	let hasCliff = false;
 	const isWater = cell.heightLevel <= 1;
 
 	for (let i = 0; i < n; i++) {
@@ -387,6 +391,10 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 				}
 			} else {
 				// Land → land: walls handle all height transitions
+				if (nb.heightLevel !== cell.heightLevel) {
+					cliffEdges[i] = true;
+					hasCliff = true;
+				}
 				excludedEdges[i] = true;
 				excludedCount++;
 			}
@@ -402,6 +410,8 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 		hasTerrainBorder,
 		coastEdges,
 		hasCoast,
+		cliffEdges,
+		hasCliff,
 	};
 }
 
@@ -524,6 +534,28 @@ function distToCoast(
 		if (d < minDist) minDist = d;
 	}
 	return minDist;
+}
+
+/** Distance from a vertex to the nearest cliff edge and the neighbor's height level. */
+function distToCliffWithTarget(
+	vx: number, vy: number, vz: number,
+	cell: HexCell, borderInfo: HexBorderInfo, cellById: Map<number, HexCell>
+): { dist: number; neighborHeight: number } {
+	const n = cell.corners.length;
+	let minDist = Infinity;
+	let neighborHeight = 0;
+	for (let i = 0; i < n; i++) {
+		if (!borderInfo.cliffEdges[i]) continue;
+		const a = cell.corners[i];
+		const b = cell.corners[(i + 1) % n];
+		const d = distToSegment(vx, vy, vz, a.x, a.y, a.z, b.x, b.y, b.z);
+		if (d < minDist) {
+			minDist = d;
+			const nb = findNeighborAcrossEdge(cell, i, cellById);
+			neighborHeight = nb ? getLevelHeight(nb.heightLevel) : 0;
+		}
+	}
+	return { dist: minDist, neighborHeight };
 }
 
 function smoothMin(a: number, b: number, k: number): number {
@@ -729,7 +761,18 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 					const ux = triVerts[j + k * 3];
 					const uy = triVerts[j + k * 3 + 1];
 					const uz = triVerts[j + k * 3 + 2];
-					const h = computeSurfaceHeight(ux, uy, uz, cell, borderInfo, hexRadius, tierH, isWaterHex);
+					let h = computeSurfaceHeight(ux, uy, uz, cell, borderInfo, hexRadius, tierH, isWaterHex);
+
+					// Near cliff edges, noise pulls terrain down toward neighbor
+					// height, creating an irregular cliff lip
+					if (borderInfo.hasCliff) {
+						const cliff = distToCliffWithTarget(ux, uy, uz, cell, borderInfo, cellById);
+						const cliffT = Math.min(cliff.dist / (hexRadius * 0.4), 1.0);
+						// Noise determines how far the cliff erosion extends
+						const cliffNoise = fbmNoise(ux * 45 + 500, uy * 45 + 500, uz * 45 + 500);
+						const erosion = (1 - cliffT) * Math.max(cliffNoise + 0.2, 0);
+						h = h - erosion * (h - cliff.neighborHeight);
+					}
 
 					const r = radius * (1 + h);
 					displaced.push(ux * r, uy * r, uz * r);
@@ -871,52 +914,27 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 				const wnLen = Math.sqrt(wnx * wnx + wny * wny + wnz * wnz) || 1;
 				wnx /= wnLen; wny /= wnLen; wnz /= wnLen;
 
-				// Subdivide wall vertically into strips with noise displacement
-				const WALL_VDIVS = 4;
-				const noiseScale = 80.0;
-				const bumpAmt = hexRadius * 0.12;
+				const wallOff = vOff;
 
-				for (let vi = 0; vi < WALL_VDIVS; vi++) {
-					const t0 = vi / WALL_VDIVS;
-					const t1 = (vi + 1) / WALL_VDIVS;
+				positions.push(ux0 * topR0, uy0 * topR0, uz0 * topR0);
+				normals.push(wnx, wny, wnz);
+				colors.push(color[0], color[1], color[2], 0.0);
 
-					// Interpolate radius at this vertical strip
-					const r0a = topR0 + (wallBotR0 - topR0) * t0;
-					const r0b = topR0 + (wallBotR0 - topR0) * t1;
-					const r1a = topR1 + (wallBotR1 - topR1) * t0;
-					const r1b = topR1 + (wallBotR1 - topR1) * t1;
+				positions.push(ux1 * topR1, uy1 * topR1, uz1 * topR1);
+				normals.push(wnx, wny, wnz);
+				colors.push(color[0], color[1], color[2], 0.0);
 
-					// Noise displacement along wall normal (not at top/bottom edges)
-					const edgeFade0 = 4 * t0 * (1 - t0); // 0 at top/bottom, 1 in middle
-					const edgeFade1 = 4 * t1 * (1 - t1);
-					const bump0a = fbmNoise(ux0 * noiseScale, uy0 * noiseScale + t0 * 10, uz0 * noiseScale) * bumpAmt * edgeFade0;
-					const bump0b = fbmNoise(ux0 * noiseScale, uy0 * noiseScale + t1 * 10, uz0 * noiseScale) * bumpAmt * edgeFade1;
-					const bump1a = fbmNoise(ux1 * noiseScale, uy1 * noiseScale + t0 * 10, uz1 * noiseScale) * bumpAmt * edgeFade1;
-					const bump1b = fbmNoise(ux1 * noiseScale, uy1 * noiseScale + t1 * 10, uz1 * noiseScale) * bumpAmt * edgeFade1;
+				positions.push(ux0 * wallBotR0, uy0 * wallBotR0, uz0 * wallBotR0);
+				normals.push(wnx, wny, wnz);
+				colors.push(color[0], color[1], color[2], 0.0);
 
-					const wallOff = vOff;
+				positions.push(ux1 * wallBotR1, uy1 * wallBotR1, uz1 * wallBotR1);
+				normals.push(wnx, wny, wnz);
+				colors.push(color[0], color[1], color[2], 0.0);
 
-					// 4 vertices per strip quad, displaced along wall normal
-					positions.push(ux0 * r0a + wnx * bump0a, uy0 * r0a + wny * bump0a, uz0 * r0a + wnz * bump0a);
-					normals.push(wnx, wny, wnz);
-					colors.push(color[0], color[1], color[2], 0.0);
-
-					positions.push(ux1 * r1a + wnx * bump1a, uy1 * r1a + wny * bump1a, uz1 * r1a + wnz * bump1a);
-					normals.push(wnx, wny, wnz);
-					colors.push(color[0], color[1], color[2], 0.0);
-
-					positions.push(ux0 * r0b + wnx * bump0b, uy0 * r0b + wny * bump0b, uz0 * r0b + wnz * bump0b);
-					normals.push(wnx, wny, wnz);
-					colors.push(color[0], color[1], color[2], 0.0);
-
-					positions.push(ux1 * r1b + wnx * bump1b, uy1 * r1b + wny * bump1b, uz1 * r1b + wnz * bump1b);
-					normals.push(wnx, wny, wnz);
-					colors.push(color[0], color[1], color[2], 0.0);
-
-					indices.push(wallOff + 0, wallOff + 1, wallOff + 2);
-					indices.push(wallOff + 1, wallOff + 3, wallOff + 2);
-					vOff += 4;
-				}
+				indices.push(wallOff + 0, wallOff + 1, wallOff + 2);
+				indices.push(wallOff + 1, wallOff + 3, wallOff + 2);
+				vOff += 4;
 			}
 		}
 
