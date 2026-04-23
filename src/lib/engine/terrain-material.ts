@@ -108,39 +108,28 @@ float snoise(vec3 v) {
     return 42.0 * dot(m*m, vec4(dot(p0,x0), dot(p1,x1), dot(p2,x2), dot(p3,x3)));
 }
 
-// ── Voronoi / cell noise for angular rock patterns ─────────────
-// Returns vec2(dist_to_nearest_edge, cell_id)
-vec3 hash3(vec3 p) {
-    p = vec3(dot(p, vec3(127.1, 311.7, 74.7)),
-             dot(p, vec3(269.5, 183.3, 246.1)),
-             dot(p, vec3(113.5, 271.9, 124.6)));
-    return fract(sin(p) * 43758.5453123);
+// ── Hash functions for procedural rock textures ────────────────
+float hash1(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+vec2 hash2(vec2 p) {
+    p = vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)));
+    return fract(sin(p) * 43758.5453);
 }
 
-vec2 voronoi3D(vec3 p) {
-    vec3 ip = floor(p);
-    vec3 fp = fract(p);
-    float d1 = 8.0; // nearest
-    float d2 = 8.0; // second nearest
-    float cellId = 0.0;
-    for (int x = -1; x <= 1; x++)
-    for (int y = -1; y <= 1; y++)
-    for (int z = -1; z <= 1; z++) {
-        vec3 offset = vec3(float(x), float(y), float(z));
-        vec3 h = hash3(ip + offset);
-        vec3 diff = offset + h - fp;
-        float d = dot(diff, diff);
-        if (d < d1) {
-            d2 = d1;
-            d1 = d;
-            cellId = dot(ip + offset, vec3(7.0, 157.0, 113.0));
-        } else if (d < d2) {
-            d2 = d;
-        }
-    }
-    // edge distance = difference between 2nd and 1st nearest
-    float edge = sqrt(d2) - sqrt(d1);
-    return vec2(edge, fract(sin(cellId) * 43758.5453));
+// Slab map: warped rectangular grid with per-cell height and edge distance.
+// Returns vec3(edge_distance, cell_value, cell_value_2)
+vec3 slabMap(vec2 uv, float warp) {
+    // Warp the UV to break up the rectangular grid
+    uv += vec2(snoise(vec3(uv * 0.7, 0.0)), snoise(vec3(uv * 0.7, 5.0))) * warp;
+    vec2 cellId = floor(uv);
+    vec2 cellUV = fract(uv);
+    // Edge distance: how close to any cell boundary
+    float edgeDist = min(min(cellUV.x, 1.0 - cellUV.x), min(cellUV.y, 1.0 - cellUV.y));
+    // Per-cell random values for color/height variation
+    float cv1 = hash1(cellId);
+    float cv2 = hash1(cellId + 100.0);
+    return vec3(edgeDist, cv1, cv2);
 }
 
 // ── Scratchy organic texture (matches Sota's tileable textures) ──
@@ -298,9 +287,11 @@ void main() {
             procColor = ownColor;
         }
 
-        // Cliff texture — layered Voronoi approach inspired by LightBulbBox
-        // Vertically stretched cells create water-runoff crack patterns
-        // Fine detail masked into crevices only; flat faces stay planar
+        // Cliff texture — LightBulbBox layered slab approach
+        // Step 1: Warped rectangular slabs at different "depths"
+        // Step 2: Voronoi vertical cracks between slabs
+        // Step 3: Fine detail ONLY in crevices (masked)
+        // Step 4: Horizontal strata cracks overlaid
         float steepness = 1.0 - dot(N, normalize(vWorldPos));
         if (nearSteepCliff && steepness > 0.005) {
             vec3 ochreRock   = vec3(0.55, 0.38, 0.22);
@@ -310,58 +301,66 @@ void main() {
             vec3 deepBrown   = vec3(0.35, 0.22, 0.12);
             vec3 mossPatch   = vec3(0.28, 0.36, 0.16);
 
-            // Build stretched coordinate: compress radial axis to elongate
-            // cells vertically (like water runoff grooves on real cliffs)
-            vec3 radial = normalize(vWorldPos);
-            float radialComp = dot(vWorldPos, radial);
-            vec3 tangentialPart = vWorldPos - radial * radialComp;
-            // Stretch: keep tangential scale, shrink radial by 0.35x
-            vec3 stretched = tangentialPart + radial * radialComp * 0.35;
+            // ── Triplanar UV for the slab map ──
+            // Project world pos onto 2D planes, blend by normal
+            vec3 triW = abs(N);
+            triW /= (triW.x + triW.y + triW.z + 0.001);
+            // Stretch Y (radial) to create tall narrow rectangles
+            vec2 uvX = vec2(vWorldPos.y * 0.4, vWorldPos.z) * 0.008;
+            vec2 uvY = vec2(vWorldPos.x, vWorldPos.z) * 0.008;
+            vec2 uvZ = vec2(vWorldPos.x, vWorldPos.y * 0.4) * 0.008;
 
-            // ── Layer 1: Large slab blocks (main structure) ──
-            vec2 v1 = voronoi3D(stretched * 0.010);
-            float edge1 = v1.x;
-            float cell1 = v1.y;
+            // ── Step 1: Large rectangular slabs ──
+            vec3 slab1X = slabMap(uvX * 1.0, 0.4);
+            vec3 slab1Y = slabMap(uvY * 1.0, 0.4);
+            vec3 slab1Z = slabMap(uvZ * 1.0, 0.4);
+            float slabEdge1 = slab1X.x * triW.x + slab1Y.x * triW.y + slab1Z.x * triW.z;
+            float slabCell1 = slab1X.y * triW.x + slab1Y.y * triW.y + slab1Z.y * triW.z;
+            float slabCell1b = slab1X.z * triW.x + slab1Y.z * triW.y + slab1Z.z * triW.z;
 
-            // ── Layer 2: Medium chunks (stretched more for vertical cracks) ──
-            vec3 stretched2 = tangentialPart + radial * radialComp * 0.25;
-            vec2 v2 = voronoi3D(stretched2 * 0.028 + 50.0);
-            float edge2 = v2.x;
-            float cell2 = v2.y;
+            // ── Step 2: Medium slabs (higher freq, more warp) ──
+            vec3 slab2X = slabMap(uvX * 2.8 + 10.0, 0.5);
+            vec3 slab2Y = slabMap(uvY * 2.8 + 10.0, 0.5);
+            vec3 slab2Z = slabMap(uvZ * 2.8 + 10.0, 0.5);
+            float slabEdge2 = slab2X.x * triW.x + slab2Y.x * triW.y + slab2Z.x * triW.z;
+            float slabCell2 = slab2X.y * triW.x + slab2Y.y * triW.y + slab2Z.y * triW.z;
 
-            // ── Layer 3: Fine crevice detail — ONLY in deep cracks ──
-            // Masked by layer 1 edge proximity (detail in crevices, not on faces)
-            float creviceMask = 1.0 - smoothstep(0.0, 0.20, edge1);
-            vec2 v3 = voronoi3D(stretched * 0.065 + 120.0);
-            float edge3 = v3.x;
+            // ── Step 3: Fine detail — masked into crevices only ──
+            float creviceMask = 1.0 - smoothstep(0.0, 0.12, slabEdge1);
+            vec3 slab3X = slabMap(uvX * 6.0 + 30.0, 0.3);
+            vec3 slab3Y = slabMap(uvY * 6.0 + 30.0, 0.3);
+            vec3 slab3Z = slabMap(uvZ * 6.0 + 30.0, 0.3);
+            float slabEdge3 = slab3X.x * triW.x + slab3Y.x * triW.y + slab3Z.x * triW.z;
 
-            // ── Horizontal crack lines (strata / bedding planes) ──
-            float strataCoord = radialComp * 0.06;
-            strataCoord += snoise(vWorldPos * 0.005) * 3.0; // warp so not perfectly horizontal
-            float strata = 1.0 - smoothstep(0.0, 0.08, abs(fract(strataCoord) - 0.5) * 2.0);
+            // ── Step 4: Horizontal strata cracks ──
+            float radialH = length(vWorldPos);
+            float strataCoord = radialH * 0.05;
+            strataCoord += snoise(vWorldPos * 0.004) * 2.5;
+            float strata = 1.0 - smoothstep(0.0, 0.06, abs(fract(strataCoord) - 0.5) * 2.0);
 
             // ── Compose crack network ──
-            float crack1 = 1.0 - smoothstep(0.0, 0.05, edge1);
-            float crack2 = 1.0 - smoothstep(0.0, 0.04, edge2);
-            float crack3 = (1.0 - smoothstep(0.0, 0.04, edge3)) * creviceMask; // detail only in crevices
-            float crackMask = max(crack1 * 0.80, max(crack2 * 0.50, crack3 * 0.35));
-            crackMask = max(crackMask, strata * 0.45); // horizontal cracks overlay
+            float crack1 = 1.0 - smoothstep(0.0, 0.04, slabEdge1);
+            float crack2 = 1.0 - smoothstep(0.0, 0.03, slabEdge2);
+            float crack3 = (1.0 - smoothstep(0.0, 0.03, slabEdge3)) * creviceMask;
+            float crackMask = max(crack1 * 0.80, max(crack2 * 0.45, crack3 * 0.30));
+            crackMask = max(crackMask, strata * 0.40);
 
-            // ── Per-cell flat color — each slab gets a unique rock tone ──
-            vec3 rockColor = mix(ochreRock, rustyBrown, cell1);
-            rockColor = mix(rockColor, paleFace, step(0.7, cell1) * 0.4);
-            rockColor = mix(rockColor, deepBrown, step(0.3, cell1) * (1.0 - step(0.5, cell1)) * 0.5);
-            // Sub-block tonal variation
-            rockColor = mix(rockColor, rockColor * 0.82, step(0.6, cell2) * 0.35);
-            rockColor = mix(rockColor, rockColor * 1.15, step(0.35, cell2) * (1.0 - step(0.55, cell2)) * 0.25);
-            // Faces stay flat/planar; roughness only in crevices
-            float roughness = snoise(vWorldPos * 0.05) * 0.03 * creviceMask;
-            rockColor += roughness;
+            // ── Per-slab flat color ──
+            vec3 rockColor = mix(ochreRock, rustyBrown, slabCell1);
+            rockColor = mix(rockColor, paleFace, step(0.65, slabCell1) * 0.45);
+            rockColor = mix(rockColor, deepBrown, step(0.25, slabCell1) * (1.0 - step(0.45, slabCell1)) * 0.5);
+            // Medium slab tonal shift
+            rockColor = mix(rockColor, rockColor * 0.80, step(0.55, slabCell2) * 0.35);
+            rockColor = mix(rockColor, rockColor * 1.15, (1.0 - step(0.45, slabCell2)) * 0.20);
+            // Perlin roughness only in crevices (step 6-7 from article)
+            float roughFine = snoise(vWorldPos * 0.06) * 0.04 * creviceMask;
+            float roughFlat = snoise(vWorldPos * 0.03) * 0.015 * (1.0 - creviceMask);
+            rockColor += roughFine + roughFlat;
 
             // Dark cracks
             rockColor = mix(rockColor, darkCrevice, crackMask);
 
-            // Sparse moss in sheltered gentler spots
+            // Sparse moss
             float mossNoise = snoise(vWorldPos * 0.02 + 200.0) * 0.5 + 0.5;
             float mossMask = mossNoise * (1.0 - crackMask) * smoothstep(0.06, 0.02, steepness);
             rockColor = mix(rockColor, mossPatch, mossMask * 0.25);
