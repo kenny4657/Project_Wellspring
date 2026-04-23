@@ -242,10 +242,19 @@ void main() {
     } else {
         // ── Per-terrain height blending + cross-terrain border blend ────
         int terrainId = int(vColor.r * 9.0 + 0.5);
-        float rawB = vColor.b;
-        bool nearSteepCliff = rawB >= 0.5;
-        float bDecoded = nearSteepCliff ? rawB - 0.5 : rawB;
-        float tierH = (bDecoded * 0.110 - 0.030) * planetRadius;
+        // B channel packs heightLevel (0-4) and cliff proximity (0-1):
+        //   B = heightLevel * 0.1 + cliffProximity * 0.09
+        float rawB = vColor.b * 10.0;
+        int heightLevel = int(floor(rawB + 0.001));
+        float cliffProximity = fract(rawB + 0.001) / 0.9;
+        cliffProximity = clamp(cliffProximity, 0.0, 1.0);
+        // Reconstruct tierH from height level
+        float tierH;
+        if (heightLevel == 0) tierH = -0.020 * planetRadius;
+        else if (heightLevel == 1) tierH = -0.008 * planetRadius;
+        else if (heightLevel == 2) tierH = 0.0;
+        else if (heightLevel == 3) tierH = 0.005 * planetRadius;
+        else tierH = 0.010 * planetRadius;
         float scratchy = triplanarScratchy(vWorldPos, N, 0.004);
 
         // Decode cross-terrain blend from G channel
@@ -288,16 +297,10 @@ void main() {
             procColor = ownColor;
         }
 
-        // Cliff texture — per-terrain rock colors with slab pattern
+        // Cliff texture — per-terrain rock with continuous proximity blending
         float steepness = 1.0 - dot(N, normalize(vWorldPos));
-        // Height displacement: how far vertex has moved from expected tier height.
-        // A 2-level cliff displaces vertices ~16-48km from tierH at midpoint.
-        // noiseAmp alone is ~51km, so we normalize by 0.8x for strong signal.
-        float cliffNoiseAmp = 0.008 * planetRadius;
-        float expectedH = tierH + 0.3 * cliffNoiseAmp;
-        float cliffDisp = clamp(abs(heightAboveR - expectedH) / (cliffNoiseAmp * 0.8), 0.0, 1.0);
 
-        if (nearSteepCliff && (steepness > 0.005 || cliffDisp > 0.15)) {
+        if (cliffProximity > 0.01 && steepness > 0.003) {
             // Per-terrain cliff palette from uniform
             vec3 cliffLight = cliffPalette[terrainId * 3];
             vec3 cliffDark  = cliffPalette[terrainId * 3 + 1];
@@ -325,28 +328,21 @@ void main() {
             // ── Per-slab color from terrain cliff palette ──
             vec3 rockColor = mix(cliffLight, cliffDark, slabCell1);
             rockColor = mix(rockColor, cliffPale, step(0.65, slabCell1) * 0.45);
-            // Medium slab tonal shift
             rockColor = mix(rockColor, rockColor * 0.80, step(0.55, slabCell2) * 0.35);
             rockColor = mix(rockColor, rockColor * 1.15, (1.0 - step(0.45, slabCell2)) * 0.20);
-            // Subtle surface roughness
             float roughness = snoise(vWorldPos * 0.04) * 0.025;
             rockColor += roughness;
 
-            // Darken toward the midpoint — where displacement is highest,
-            // both sides get darker, masking the palette transition naturally
-            rockColor *= mix(1.0, 0.72, cliffDisp * 0.6);
+            // Darken near cliff edge (high proximity) to mask palette seam
+            rockColor *= mix(1.0, 0.75, smoothstep(0.6, 1.0, cliffProximity));
 
-            vec3 erosionColor = rockColor;
-
-            // Blend using BOTH steepness and displacement for full coverage
-            float erosionNoise = snoise(vWorldPos * 0.006) * 0.025
-                               + snoise(vWorldPos * 0.018) * 0.012;
-            float steepBlend = smoothstep(0.005 + erosionNoise, 0.08, steepness);
-            // Displacement only fills the gap where there's SOME steepness
-            // (midpoint has ~0.003-0.01, flat terrain has ~0)
-            float dispBlend = smoothstep(0.15, 0.45, cliffDisp) * smoothstep(0.001, 0.008, steepness);
-            float erosionBlend = max(steepBlend, dispBlend);
-            procColor = mix(procColor, erosionColor, erosionBlend);
+            // Blend: steepness controls cliff texture, proximity controls fade
+            float erosionNoise = snoise(vWorldPos * 0.006) * 0.02;
+            float steepBlend = smoothstep(0.003 + erosionNoise, 0.06, steepness);
+            // Proximity provides smooth outer fade (no hard triangle edges)
+            float proxFade = smoothstep(0.0, 0.4, cliffProximity);
+            float erosionBlend = steepBlend * proxFade;
+            procColor = mix(procColor, rockColor, erosionBlend);
         }
 
         // Then: if coastal, blend the result toward beach

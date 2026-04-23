@@ -57,10 +57,16 @@ function getTerrainColor(idx: number): [number, number, number] { return TERRAIN
 /** Top-face vertex color: R = terrainId/9, G = packed blend data, B = encoded tier height.
  *  G encodes: (neighborTerrainId + blendFactor) / 10.0
  *  Shader decodes: neighborId = int(floor(G*10)), blend = fract(G*10) */
-function getTopFaceColor(terrainIdx: number, tierH: number, neighborTerrainId: number, blendFactor: number, steepCliff: boolean = false): [number, number, number] {
+/**
+ * B channel packs heightLevel (0-4) and cliff proximity (0-1):
+ *   B = heightLevel * 0.1 + cliffProximity * 0.09
+ * Shader decodes: level = floor(B * 10), proximity = fract(B * 10) / 0.9
+ */
+function getTopFaceColor(terrainIdx: number, heightLevel: number, neighborTerrainId: number, blendFactor: number, cliffProximity: number = 0): [number, number, number] {
 	const r = terrainIdx / 9.0;
-	let b = (tierH + 0.030) / 0.110;
-	if (steepCliff) b += 0.5; // flag: B >= 0.5 means near 2+ level cliff
+	const level = Math.min(heightLevel, 4);
+	const prox = Math.max(0, Math.min(cliffProximity, 1.0));
+	const b = level * 0.1 + prox * 0.09;
 	const nId = neighborTerrainId >= 0 ? neighborTerrainId : terrainIdx;
 	const g = (nId + Math.min(blendFactor, 0.99)) / 10.0;
 	return [r, g, b];
@@ -154,9 +160,9 @@ function smoothWaterCornerPositions(
 
 	for (let i = 0; i < vertexCount; i++) {
 		if (colors[i * 4 + 3] < 0.05) continue; // skip walls
-		const r = colors[i * 4], b = colors[i * 4 + 2];
-		const bw = b >= 0.5 ? b - 0.5 : b; // strip steep cliff flag
-		if (bw <= r + 0.05) continue; // water only (blue-dominant)
+		const b = colors[i * 4 + 2];
+		const heightLvl = Math.floor(b * 10 + 0.001);
+		if (heightLvl >= 2) continue; // water only (level 0-1)
 		const px = positions[i * 3];
 		const py = positions[i * 3 + 1];
 		const pz = positions[i * 3 + 2];
@@ -198,9 +204,9 @@ function smoothLandSeamPositions(
 
 	for (let i = 0; i < vertexCount; i++) {
 		if (colors[i * 4 + 3] < 0.05) continue;
-		const r = colors[i * 4], b = colors[i * 4 + 2];
-		const bStripped = b >= 0.5 ? b - 0.5 : b; // strip steep cliff flag
-		if (bStripped > r + 0.05) continue; // skip water
+		const b = colors[i * 4 + 2];
+		const heightLvl = Math.floor(b * 10 + 0.001);
+		if (heightLvl < 2) continue; // skip water (level 0-1)
 		const px = positions[i * 3];
 		const py = positions[i * 3 + 1];
 		const pz = positions[i * 3 + 2];
@@ -879,32 +885,25 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 					}
 				}
 
-				// Per-triangle steep cliff flag — must be same for all 3 vertices
-				// to prevent GPU interpolation from corrupting the B channel
-				let triSteepCliff = false;
-				if (borderInfo.hasSteepCliff) {
-					for (let k = 0; k < 3; k++) {
-						const sd = distToSteepCliff(
-							triVerts[j + k * 3], triVerts[j + k * 3 + 1], triVerts[j + k * 3 + 2],
-							cell, borderInfo);
-						if (sd < hexRadius * 0.3) { triSteepCliff = true; break; }
-					}
-				}
-
 				for (let k = 0; k < 3; k++) {
-					// Encode coast proximity in alpha:
-					// 1.0 = not coastal, 0.5 = at water edge
-					// Walls use 0.0, shader checks < 0.05 for walls
+					const vx = triVerts[j + k * 3];
+					const vy = triVerts[j + k * 3 + 1];
+					const vz = triVerts[j + k * 3 + 2];
+
+					// Per-vertex cliff proximity: continuous 0-1 (smooth falloff)
+					let cliffProx = 0;
+					if (borderInfo.hasSteepCliff) {
+						const sd = distToSteepCliff(vx, vy, vz, cell, borderInfo);
+						cliffProx = Math.max(0, 1.0 - sd / (hexRadius * 0.45));
+					}
+
+					// Coast proximity in alpha
 					let alpha = 1.0;
 					if (borderInfo.hasCoast) {
-						const vx = triVerts[j + k * 3];
-						const vy = triVerts[j + k * 3 + 1];
-						const vz = triVerts[j + k * 3 + 2];
 						const cd = distToCoast(vx, vy, vz, cell, borderInfo);
-						// 0 at coast edge → alpha=0.5, hexRadius away → alpha=1.0
 						alpha = 0.5 + 0.5 * Math.min(cd / hexRadius, 1.0);
 					}
-					const topColor = getTopFaceColor(cell.terrain, tierH, chosenNId, triBFs[k], triSteepCliff);
+					const topColor = getTopFaceColor(cell.terrain, cell.heightLevel, chosenNId, triBFs[k], cliffProx);
 					positions.push(displaced[k * 3], displaced[k * 3 + 1], displaced[k * 3 + 2]);
 					normals.push(nx, ny, nz);
 					colors.push(topColor[0], topColor[1], topColor[2], alpha);
@@ -1120,7 +1119,7 @@ export function buildCornerGapPatchMesh(cells: HexCell[], radius: number, scene:
 		hexRadius /= n;
 
 		const tierH = getLevelHeight(cell.heightLevel);
-		const topColor = getTopFaceColor(cell.terrain, tierH, -1, 0);
+		const topColor = getTopFaceColor(cell.terrain, cell.heightLevel, -1, 0);
 
 		for (let i = 0; i < n; i++) {
 			const corner = cell.corners[i];
@@ -1282,7 +1281,7 @@ export function updateCellTerrain(
 						const cd = distToCoast(triUVs[k][0], triUVs[k][1], triUVs[k][2], c, borderInfo);
 						alpha = 0.5 + 0.5 * Math.min(cd / hexRadius, 1.0);
 					}
-					const topColor = getTopFaceColor(c.terrain, tierH, chosenNId, triBFs[k]);
+					const topColor = getTopFaceColor(c.terrain, c.heightLevel, chosenNId, triBFs[k]);
 					colorsBuffer[vi] = topColor[0];
 					colorsBuffer[vi + 1] = topColor[1];
 					colorsBuffer[vi + 2] = topColor[2];
