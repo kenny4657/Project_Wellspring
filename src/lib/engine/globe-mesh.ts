@@ -887,7 +887,7 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 						const sd = distToSteepCliff(
 							triVerts[j + k * 3], triVerts[j + k * 3 + 1], triVerts[j + k * 3 + 2],
 							cell, borderInfo);
-						if (sd < hexRadius * 0.5) { triSteepCliff = true; break; }
+						if (sd < hexRadius * 0.3) { triSteepCliff = true; break; }
 					}
 				}
 
