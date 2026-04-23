@@ -871,27 +871,52 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 				const wnLen = Math.sqrt(wnx * wnx + wny * wny + wnz * wnz) || 1;
 				wnx /= wnLen; wny /= wnLen; wnz /= wnLen;
 
-				const wallOff = vOff;
+				// Subdivide wall vertically into strips with noise displacement
+				const WALL_VDIVS = 4;
+				const noiseScale = 80.0;
+				const bumpAmt = hexRadius * 0.12;
 
-				positions.push(ux0 * topR0, uy0 * topR0, uz0 * topR0);
-				normals.push(wnx, wny, wnz);
-				colors.push(color[0], color[1], color[2], 0.0);
+				for (let vi = 0; vi < WALL_VDIVS; vi++) {
+					const t0 = vi / WALL_VDIVS;
+					const t1 = (vi + 1) / WALL_VDIVS;
 
-				positions.push(ux1 * topR1, uy1 * topR1, uz1 * topR1);
-				normals.push(wnx, wny, wnz);
-				colors.push(color[0], color[1], color[2], 0.0);
+					// Interpolate radius at this vertical strip
+					const r0a = topR0 + (wallBotR0 - topR0) * t0;
+					const r0b = topR0 + (wallBotR0 - topR0) * t1;
+					const r1a = topR1 + (wallBotR1 - topR1) * t0;
+					const r1b = topR1 + (wallBotR1 - topR1) * t1;
 
-				positions.push(ux0 * wallBotR0, uy0 * wallBotR0, uz0 * wallBotR0);
-				normals.push(wnx, wny, wnz);
-				colors.push(color[0], color[1], color[2], 0.0);
+					// Noise displacement along wall normal (not at top/bottom edges)
+					const edgeFade0 = 4 * t0 * (1 - t0); // 0 at top/bottom, 1 in middle
+					const edgeFade1 = 4 * t1 * (1 - t1);
+					const bump0a = fbmNoise(ux0 * noiseScale, uy0 * noiseScale + t0 * 10, uz0 * noiseScale) * bumpAmt * edgeFade0;
+					const bump0b = fbmNoise(ux0 * noiseScale, uy0 * noiseScale + t1 * 10, uz0 * noiseScale) * bumpAmt * edgeFade1;
+					const bump1a = fbmNoise(ux1 * noiseScale, uy1 * noiseScale + t0 * 10, uz1 * noiseScale) * bumpAmt * edgeFade1;
+					const bump1b = fbmNoise(ux1 * noiseScale, uy1 * noiseScale + t1 * 10, uz1 * noiseScale) * bumpAmt * edgeFade1;
 
-				positions.push(ux1 * wallBotR1, uy1 * wallBotR1, uz1 * wallBotR1);
-				normals.push(wnx, wny, wnz);
-				colors.push(color[0], color[1], color[2], 0.0);
+					const wallOff = vOff;
 
-				indices.push(wallOff + 0, wallOff + 1, wallOff + 2);
-				indices.push(wallOff + 1, wallOff + 3, wallOff + 2);
-				vOff += 4;
+					// 4 vertices per strip quad, displaced along wall normal
+					positions.push(ux0 * r0a + wnx * bump0a, uy0 * r0a + wny * bump0a, uz0 * r0a + wnz * bump0a);
+					normals.push(wnx, wny, wnz);
+					colors.push(color[0], color[1], color[2], 0.0);
+
+					positions.push(ux1 * r1a + wnx * bump1a, uy1 * r1a + wny * bump1a, uz1 * r1a + wnz * bump1a);
+					normals.push(wnx, wny, wnz);
+					colors.push(color[0], color[1], color[2], 0.0);
+
+					positions.push(ux0 * r0b + wnx * bump0b, uy0 * r0b + wny * bump0b, uz0 * r0b + wnz * bump0b);
+					normals.push(wnx, wny, wnz);
+					colors.push(color[0], color[1], color[2], 0.0);
+
+					positions.push(ux1 * r1b + wnx * bump1b, uy1 * r1b + wny * bump1b, uz1 * r1b + wnz * bump1b);
+					normals.push(wnx, wny, wnz);
+					colors.push(color[0], color[1], color[2], 0.0);
+
+					indices.push(wallOff + 0, wallOff + 1, wallOff + 2);
+					indices.push(wallOff + 1, wallOff + 3, wallOff + 2);
+					vOff += 4;
+				}
 			}
 		}
 
