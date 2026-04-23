@@ -235,8 +235,10 @@ void main() {
         float inlandH = tierH + noiseBias;
         vec3 inlandColor = computeTerrainColor(terrainId, inlandH, tierH, scratchy);
 
-        // Own terrain color (normal height-based)
-        vec3 ownColor = computeTerrainColor(terrainId, heightAboveR, tierH, scratchy);
+        // Own terrain color — clamp height above shore band for non-coastal
+        // vertices so land-land ramps don't show sandy shore color
+        float colorH = (coastProximity > 0.01) ? heightAboveR : max(heightAboveR, inlandH);
+        vec3 ownColor = computeTerrainColor(terrainId, colorH, tierH, scratchy);
 
         // Beach color — warm sand
         vec3 beachColor = vec3(0.68, 0.60, 0.42) * (1.0 + scratchy * 0.10);
@@ -248,7 +250,7 @@ void main() {
             float noiseOffset = n1 + n2;
             float threshold = max(0.35 + noiseOffset, 0.08);
             float blend = (1.0 - smoothstep(0.0, threshold, distToBorder)) * 0.45;
-            vec3 neighborColor = computeTerrainColor(neighborId, heightAboveR, tierH, scratchy);
+            vec3 neighborColor = computeTerrainColor(neighborId, colorH, tierH, scratchy);
             procColor = mix(ownColor, neighborColor, blend);
             // Also blend inlandColor for coastal use
             vec3 neighborInland = computeTerrainColor(neighborId, inlandH, tierH, scratchy);
