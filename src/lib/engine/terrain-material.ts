@@ -257,13 +257,14 @@ void main() {
             procColor = ownColor;
         }
 
-        // Blend toward beach based on coast proximity
-        // No hard threshold — smoothstep handles gradual transition
-        float coastNoise = snoise(vWorldPos * 0.005) * 0.12
-                         + snoise(vWorldPos * 0.015) * 0.06;
-        float beachStart = 0.35 + coastNoise;
-        float beachBlend = smoothstep(beachStart, 1.0, coastProximity);
-        procColor = mix(procColor, beachColor, beachBlend);
+        // Then: if coastal, blend the result toward beach
+        if (coastProximity > 0.01) {
+            float coastNoise = snoise(vWorldPos * 0.005) * 0.12
+                             + snoise(vWorldPos * 0.015) * 0.06;
+            float beachStart = 0.35 + coastNoise;
+            float beachBlend = smoothstep(beachStart, 1.0, coastProximity);
+            procColor = mix(procColor, beachColor, beachBlend);
+        }
     }
 
     // ── Lighting ──
