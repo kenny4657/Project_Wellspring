@@ -104,7 +104,9 @@ function subdivTriangle(
 function smoothNormalsPass(
 	positions: Float32Array, normals: Float32Array, colors: Float32Array, vertexCount: number
 ): void {
-	const step = 1.0; // quantization step in km — groups vertices within 1km
+	// Use finer quantization (0.1 km) to avoid splitting coincident vertices
+	// into different buckets at rounding boundaries
+	const step = 0.1;
 	const map = new Map<string, number[]>();
 
 	// Build spatial hash of top-face vertices only
