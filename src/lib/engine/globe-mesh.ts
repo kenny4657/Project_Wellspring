@@ -894,7 +894,7 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 					let cliffProx = 0;
 					if (borderInfo.hasSteepCliff) {
 						const sd = distToSteepCliff(vx, vy, vz, cell, borderInfo);
-						cliffProx = Math.max(0, 1.0 - sd / (hexRadius * 0.45));
+						cliffProx = Math.max(0, 1.0 - sd / (hexRadius * 0.75));
 					}
 
 					// Coast proximity in alpha
