@@ -291,17 +291,10 @@ void main() {
         // Cliff texture — per-terrain rock colors with slab pattern
         float steepness = 1.0 - dot(N, normalize(vWorldPos));
         if (nearSteepCliff && steepness > 0.005) {
-            // Always use the UPPER terrain's cliff palette so both sides match.
-            // Lower hex vertices ramp UP above their tierH on the cliff face;
-            // upper hex vertices ramp DOWN below theirs. So heightAboveR > tierH
-            // identifies the lower hex → switch to neighbor's (upper) palette.
-            int cliffId = terrainId;
-            if (hasCrossBlend && heightAboveR > tierH) {
-                cliffId = neighborId;
-            }
-            vec3 cliffLight = cliffPalette[cliffId * 3];
-            vec3 cliffDark  = cliffPalette[cliffId * 3 + 1];
-            vec3 cliffPale  = cliffPalette[cliffId * 3 + 2];
+            // Per-terrain cliff palette from uniform
+            vec3 cliffLight = cliffPalette[terrainId * 3];
+            vec3 cliffDark  = cliffPalette[terrainId * 3 + 1];
+            vec3 cliffPale  = cliffPalette[terrainId * 3 + 2];
 
             // ── Triplanar UV for the slab map ──
             vec3 triW = abs(N);
@@ -338,7 +331,7 @@ void main() {
             float erosionNoise = snoise(vWorldPos * 0.006) * 0.025
                                + snoise(vWorldPos * 0.018) * 0.012;
             float erosionBlend = smoothstep(0.005 + erosionNoise, 0.08, steepness);
-            procColor = mix(procColor, erosionColor, erosionBlend);
+            procColor = mix(procColor, erosionColor, erosionBlend * 0.85);
         }
 
         // Then: if coastal, blend the result toward beach
