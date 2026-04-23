@@ -651,9 +651,9 @@ function computeSurfaceHeight(
 }
 
 /** Compute height with cliff erosion applied.
- *  Near cliff edges, noise perturbs the distance field so the cliff
- *  contour follows noise instead of hex edges. Uses a steep cosine
- *  ramp (compressed to 30% of hexRadius) for a sharp cliff feel. */
+ *  Near cliff edges, both hexes blend toward a shared midpoint height
+ *  computed deterministically from world-space position. Noise perturbs
+ *  the distance field so the cliff contour is irregular. */
 function computeHeightWithCliffErosion(
 	ux: number, uy: number, uz: number,
 	cell: HexCell, borderInfo: HexBorderInfo,
@@ -675,13 +675,13 @@ function computeHeightWithCliffErosion(
 	const t = Math.min(perturbedDist / rampWidth, 1.0);
 	const mu = (1 - Math.cos(t * Math.PI)) / 2; // 0 at edge, 1 at interior
 
-	// Blend from neighbor height at edge to own height in interior
-	const nbH = cliff.neighborHeight;
-	const interiorNoise = fbmNoise(ux * NOISE_SCALE, uy * NOISE_SCALE, uz * NOISE_SCALE);
-	const nbNoiseH = (Math.abs(interiorNoise) + 0.15) * NOISE_AMP * 0.3;
-	const edgeH = nbH + nbNoiseH; // height at cliff base (matches neighbor's border noise)
+	// Shared midpoint height — deterministic from world position, same for both hexes.
+	// Average of this cell's and neighbor's tier height, plus world-space noise.
+	const midTierH = (tierH + cliff.neighborHeight) / 2;
+	const midNoise = fbmNoise(ux * NOISE_SCALE, uy * NOISE_SCALE, uz * NOISE_SCALE);
+	const midH = midTierH + (Math.abs(midNoise) + 0.15) * NOISE_AMP * 0.3;
 
-	return edgeH * (1 - mu) + h * mu;
+	return midH * (1 - mu) + h * mu;
 }
 
 function cornerPatchHeight(
