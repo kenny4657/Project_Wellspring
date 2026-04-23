@@ -38,7 +38,7 @@ export function assignTerrain(cells: HexCell[]): void {
 		if (continent < 0.38) heightLevel = 0;       // deep water
 		else if (continent < 0.44) heightLevel = 1;   // shallow water
 		else if (continent < 0.58) heightLevel = 2;   // lowland
-		else if (continent < 0.68 || mountain < 0.62) heightLevel = 3; // midland
+		else if (continent < 0.68 && mountain < 0.62) heightLevel = 3; // midland
 		else heightLevel = 4;                          // highland
 
 		// ── Terrain type (independent of height) ────────────

@@ -35,7 +35,7 @@ const LEVEL_HEIGHTS = [
 ];
 
 /** Walls extend down to this floor */
-const BASE_HEIGHT = -0.030;
+const BASE_HEIGHT = -0.050;
 
 /** Global noise amplitude (fraction of radius). Continuous across all hexes. */
 const NOISE_AMP = 0.008;
