@@ -543,19 +543,40 @@ function distToTerrainBorder(
 	return { dist: minDist, neighborTerrainId: neighborTerrain };
 }
 
-/** Distance from a vertex to the nearest steep cliff edge (2+ levels). */
+/** Distance from a vertex to the nearest steep cliff edge (2+ levels).
+ *  Checks BOTH the current cell's edges AND neighbor cells' edges,
+ *  so cliff proximity propagates across hex boundaries. */
 function distToSteepCliff(
 	vx: number, vy: number, vz: number,
-	cell: HexCell, borderInfo: HexBorderInfo
+	cell: HexCell, borderInfo: HexBorderInfo,
+	cellById?: Map<number, HexCell>,
+	borderInfoById?: Map<number, HexBorderInfo>
 ): number {
 	const n = cell.corners.length;
 	let minDist = Infinity;
+	// Check own edges
 	for (let i = 0; i < n; i++) {
 		if (!borderInfo.steepCliffEdges[i]) continue;
 		const a = cell.corners[i];
 		const b = cell.corners[(i + 1) % n];
 		const d = distToSegment(vx, vy, vz, a.x, a.y, a.z, b.x, b.y, b.z);
 		if (d < minDist) minDist = d;
+	}
+	// Check neighbor cells' cliff edges (propagate across hex boundaries)
+	if (cellById && borderInfoById) {
+		for (const nId of cell.neighbors) {
+			const nb = cellById.get(nId);
+			const nbInfo = borderInfoById?.get(nId);
+			if (!nb || !nbInfo?.hasSteepCliff) continue;
+			const nn = nb.corners.length;
+			for (let i = 0; i < nn; i++) {
+				if (!nbInfo.steepCliffEdges[i]) continue;
+				const a = nb.corners[i];
+				const b = nb.corners[(i + 1) % nn];
+				const d = distToSegment(vx, vy, vz, a.x, a.y, a.z, b.x, b.y, b.z);
+				if (d < minDist) minDist = d;
+			}
+		}
 	}
 	return minDist;
 }
@@ -891,10 +912,13 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 					const vz = triVerts[j + k * 3 + 2];
 
 					// Per-vertex cliff proximity: continuous 0-1 (smooth falloff)
+					// Check cliff proximity: own edges + neighbor edges
 					let cliffProx = 0;
-					if (borderInfo.hasSteepCliff) {
-						const sd = distToSteepCliff(vx, vy, vz, cell, borderInfo);
-						cliffProx = Math.max(0, 1.0 - sd / (hexRadius * 0.75));
+					{
+						const sd = distToSteepCliff(vx, vy, vz, cell, borderInfo, cellById, borderInfoById);
+						if (Number.isFinite(sd)) {
+							cliffProx = Math.max(0, 1.0 - sd / (hexRadius * 0.45));
+						}
 					}
 
 					// Coast proximity in alpha
