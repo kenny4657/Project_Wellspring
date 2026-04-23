@@ -493,6 +493,23 @@ function smoothDistanceToTargetEdges(
 	return result;
 }
 
+/** Distance to the nearest excluded (land-land) edge. */
+function distToNearestExcludedEdge(
+	vx: number, vy: number, vz: number,
+	cell: HexCell, borderInfo: HexBorderInfo
+): number {
+	const n = cell.corners.length;
+	let minDist = Infinity;
+	for (let i = 0; i < n; i++) {
+		if (!borderInfo.excludedEdges[i]) continue;
+		const a = cell.corners[i];
+		const b = cell.corners[(i + 1) % n];
+		const d = distToSegment(vx, vy, vz, a.x, a.y, a.z, b.x, b.y, b.z);
+		if (d < minDist) minDist = d;
+	}
+	return minDist;
+}
+
 /** Compute the top-surface height at a point using the same logic as the subdivided top face. */
 function computeSurfaceHeight(
 	ux: number, uy: number, uz: number,
@@ -526,11 +543,17 @@ function computeSurfaceHeight(
 			dist = Math.min(dist, smoothDistanceToTargetEdges(ux, uy, uz, cell, borderInfo, 0, hexRadius));
 		}
 
-		// Ramp reaches full interior at 75% of hexRadius so the border
-		// influence can't leak to adjacent land-land edges (~87% away),
-		// preventing height mismatches that show as seam gaps.
-		const t = Math.min(dist / (hexRadius * 0.75), 1.0);
-		const mu = (1 - Math.cos(t * Math.PI)) / 2;
+		const t = Math.min(dist / hexRadius, 1.0);
+		let mu = (1 - Math.cos(t * Math.PI)) / 2;
+
+		// Fade border influence near excluded (land-land) edges so both
+		// hexes converge to interior height at their shared edge — prevents
+		// seam gaps from asymmetric coast distances.
+		if (!isWaterHex && borderInfo.excludedEdges.some(Boolean)) {
+			const distExcl = distToNearestExcludedEdge(ux, uy, uz, cell, borderInfo);
+			const fade = Math.min(distExcl / (hexRadius * 0.3), 1.0);
+			mu = 1.0 - (1.0 - mu) * fade;
+		}
 
 		// Noise coefficient must MATCH at shared borders:
 		// - Water↔water: border noise = NOISE_AMP (flat neighbor uses full noise)
