@@ -184,53 +184,6 @@ function smoothWaterCornerPositions(
 	}
 }
 
-// ── Smooth Land Seam Positions ──────────────────────────────
-/** Average land vertex positions at shared hex edges to close seams
- *  from asymmetric height computation (e.g. coastal ramp leakage).
- *  Only averages when height spread is small (< 10km). */
-function smoothLandSeamPositions(
-	positions: Float32Array, colors: Float32Array, vertexCount: number
-): void {
-	const map = new Map<string, number[]>();
-
-	for (let i = 0; i < vertexCount; i++) {
-		if (colors[i * 4 + 3] < 0.05) continue; // skip walls
-		const r = colors[i * 4], b = colors[i * 4 + 2];
-		if (b > r + 0.05) continue; // skip water
-		const px = positions[i * 3];
-		const py = positions[i * 3 + 1];
-		const pz = positions[i * 3 + 2];
-		const len = Math.sqrt(px * px + py * py + pz * pz) || 1;
-		const key = `${Math.round(px / len / 0.0001)},${Math.round(py / len / 0.0001)},${Math.round(pz / len / 0.0001)}`;
-		let list = map.get(key);
-		if (!list) { list = []; map.set(key, list); }
-		list.push(i);
-	}
-
-	for (const indices of map.values()) {
-		if (indices.length <= 1) continue;
-		let minR = Infinity, maxR = -Infinity, sumR = 0;
-		const i0 = indices[0];
-		const dx = positions[i0 * 3], dy = positions[i0 * 3 + 1], dz = positions[i0 * 3 + 2];
-		const dirLen = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
-		const ux = dx / dirLen, uy = dy / dirLen, uz = dz / dirLen;
-		for (const i of indices) {
-			const px = positions[i * 3], py = positions[i * 3 + 1], pz = positions[i * 3 + 2];
-			const r = Math.sqrt(px * px + py * py + pz * pz);
-			if (r < minR) minR = r;
-			if (r > maxR) maxR = r;
-			sumR += r;
-		}
-		// Only average small mismatches; large gaps are intentional (walls)
-		if (maxR - minR > 10) continue;
-		const avgR = sumR / indices.length;
-		for (const i of indices) {
-			positions[i * 3] = ux * avgR;
-			positions[i * 3 + 1] = uy * avgR;
-			positions[i * 3 + 2] = uz * avgR;
-		}
-	}
-}
 
 // ── Coastline Edge Detection (Sota's exclude_border_set) ────
 
@@ -573,7 +526,10 @@ function computeSurfaceHeight(
 			dist = Math.min(dist, smoothDistanceToTargetEdges(ux, uy, uz, cell, borderInfo, 0, hexRadius));
 		}
 
-		const t = Math.min(dist / hexRadius, 1.0);
+		// Ramp reaches full interior at 75% of hexRadius so the border
+		// influence can't leak to adjacent land-land edges (~87% away),
+		// preventing height mismatches that show as seam gaps.
+		const t = Math.min(dist / (hexRadius * 0.75), 1.0);
 		const mu = (1 - Math.cos(t * Math.PI)) / 2;
 
 		// Noise coefficient must MATCH at shared borders:
@@ -866,7 +822,6 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 	// Wall vertices (alpha=0) are excluded to keep cliff faces sharp.
 	smoothNormalsPass(positionsF32, normalsF32, colorsF32, vOff);
 	smoothWaterCornerPositions(positionsF32, colorsF32, vOff);
-	smoothLandSeamPositions(positionsF32, colorsF32, vOff);
 
 	const mesh = new Mesh('globeHex', scene);
 	const vertexData = new VertexData();
