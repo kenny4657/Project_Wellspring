@@ -184,6 +184,52 @@ function smoothWaterCornerPositions(
 	}
 }
 
+/** Snap coincident land vertices to the same height.
+ *  Closes seam gaps from asymmetric height computation (e.g. two coastal
+ *  land hexes measuring distance to different coast edges). Uses max-spread
+ *  threshold of 20km to skip intentional height steps (min 51km). */
+function smoothLandSeamPositions(
+	positions: Float32Array, colors: Float32Array, vertexCount: number
+): void {
+	const map = new Map<string, number[]>();
+
+	for (let i = 0; i < vertexCount; i++) {
+		if (colors[i * 4 + 3] < 0.05) continue;
+		const r = colors[i * 4], b = colors[i * 4 + 2];
+		if (b > r + 0.05) continue; // skip water
+		const px = positions[i * 3];
+		const py = positions[i * 3 + 1];
+		const pz = positions[i * 3 + 2];
+		const len = Math.sqrt(px * px + py * py + pz * pz) || 1;
+		const key = `${Math.round(px / len / 0.0001)},${Math.round(py / len / 0.0001)},${Math.round(pz / len / 0.0001)}`;
+		let list = map.get(key);
+		if (!list) { list = []; map.set(key, list); }
+		list.push(i);
+	}
+
+	for (const indices of map.values()) {
+		if (indices.length <= 1) continue;
+		let minR = Infinity, maxR = -Infinity, sumR = 0;
+		const i0 = indices[0];
+		const dx = positions[i0 * 3], dy = positions[i0 * 3 + 1], dz = positions[i0 * 3 + 2];
+		const dirLen = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
+		const ux = dx / dirLen, uy = dy / dirLen, uz = dz / dirLen;
+		for (const i of indices) {
+			const px = positions[i * 3], py = positions[i * 3 + 1], pz = positions[i * 3 + 2];
+			const r = Math.sqrt(px * px + py * py + pz * pz);
+			if (r < minR) minR = r;
+			if (r > maxR) maxR = r;
+			sumR += r;
+		}
+		if (maxR - minR > 20) continue;
+		const avgR = sumR / indices.length;
+		for (const i of indices) {
+			positions[i * 3] = ux * avgR;
+			positions[i * 3 + 1] = uy * avgR;
+			positions[i * 3 + 2] = uz * avgR;
+		}
+	}
+}
 
 // ── Coastline Edge Detection (Sota's exclude_border_set) ────
 
@@ -493,23 +539,6 @@ function smoothDistanceToTargetEdges(
 	return result;
 }
 
-/** Distance to the nearest excluded (land-land) edge. */
-function distToNearestExcludedEdge(
-	vx: number, vy: number, vz: number,
-	cell: HexCell, borderInfo: HexBorderInfo
-): number {
-	const n = cell.corners.length;
-	let minDist = Infinity;
-	for (let i = 0; i < n; i++) {
-		if (!borderInfo.excludedEdges[i]) continue;
-		const a = cell.corners[i];
-		const b = cell.corners[(i + 1) % n];
-		const d = distToSegment(vx, vy, vz, a.x, a.y, a.z, b.x, b.y, b.z);
-		if (d < minDist) minDist = d;
-	}
-	return minDist;
-}
-
 /** Compute the top-surface height at a point using the same logic as the subdivided top face. */
 function computeSurfaceHeight(
 	ux: number, uy: number, uz: number,
@@ -544,16 +573,7 @@ function computeSurfaceHeight(
 		}
 
 		const t = Math.min(dist / hexRadius, 1.0);
-		let mu = (1 - Math.cos(t * Math.PI)) / 2;
-
-		// Fade border influence near excluded (land-land) edges so both
-		// hexes converge to interior height at their shared edge — prevents
-		// seam gaps from asymmetric coast distances.
-		if (!isWaterHex && borderInfo.excludedEdges.some(Boolean)) {
-			const distExcl = distToNearestExcludedEdge(ux, uy, uz, cell, borderInfo);
-			const fade = Math.min(distExcl / (hexRadius * 0.3), 1.0);
-			mu = 1.0 - (1.0 - mu) * fade;
-		}
+		const mu = (1 - Math.cos(t * Math.PI)) / 2;
 
 		// Noise coefficient must MATCH at shared borders:
 		// - Water↔water: border noise = NOISE_AMP (flat neighbor uses full noise)
@@ -845,6 +865,7 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 	// Wall vertices (alpha=0) are excluded to keep cliff faces sharp.
 	smoothNormalsPass(positionsF32, normalsF32, colorsF32, vOff);
 	smoothWaterCornerPositions(positionsF32, colorsF32, vOff);
+	smoothLandSeamPositions(positionsF32, colorsF32, vOff);
 
 	const mesh = new Mesh('globeHex', scene);
 	const vertexData = new VertexData();
