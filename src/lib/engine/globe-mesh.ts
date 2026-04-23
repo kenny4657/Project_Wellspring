@@ -31,6 +31,7 @@ const LEVEL_HEIGHTS = [
 	-0.008,  // level 1: shallow water
 	 0.000,  // level 2: lowland
 	 0.005,  // level 3: midland
+	 0.010,  // level 4: highland
 ];
 
 /** Walls extend down to this floor */

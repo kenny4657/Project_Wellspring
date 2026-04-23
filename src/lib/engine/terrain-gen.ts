@@ -15,11 +15,12 @@ import { fbm } from './noise';
  * separate detail noise, so the same height level can have different terrain types.
  *
  * Height levels:
- *   0 = deep water, 1 = shallow water, 2 = lowland, 3 = midland
+ *   0 = deep water, 1 = shallow water, 2 = lowland, 3 = midland, 4 = highland
  */
 export function assignTerrain(cells: HexCell[]): void {
 	const CS = 2.8;  // continent noise scale
 	const DS = 7.0;  // detail noise scale
+	const MS = 4.5;  // mountain noise scale (separate from continent)
 
 	for (const cell of cells) {
 		const { x, y, z } = cell.center;
@@ -27,14 +28,18 @@ export function assignTerrain(cells: HexCell[]): void {
 		// Continent noise determines height level (elevation)
 		const continent = fbm(x * CS, y * CS, z * CS, 5);
 		const detail = fbm(x * DS + 100, y * DS + 100, z * DS + 100, 3);
+		// Separate mountain noise — can push land directly to level 4,
+		// creating cliffs where highlands meet ocean
+		const mountain = fbm(x * MS + 200, y * MS + 200, z * MS + 200, 4);
 		const latitude = Math.abs(y);
 
-		// ── Height level (0-3) from continent noise ─────────
+		// ── Height level (0-4) from continent + mountain noise ──
 		let heightLevel: number;
 		if (continent < 0.38) heightLevel = 0;       // deep water
 		else if (continent < 0.44) heightLevel = 1;   // shallow water
 		else if (continent < 0.58) heightLevel = 2;   // lowland
-		else heightLevel = 3;                          // midland
+		else if (continent < 0.68 || mountain < 0.62) heightLevel = 3; // midland
+		else heightLevel = 4;                          // highland
 
 		// ── Terrain type (independent of height) ────────────
 		let t: number;
