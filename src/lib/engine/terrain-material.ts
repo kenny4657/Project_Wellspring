@@ -342,7 +342,9 @@ void main() {
             float erosionNoise = snoise(vWorldPos * 0.006) * 0.025
                                + snoise(vWorldPos * 0.018) * 0.012;
             float steepBlend = smoothstep(0.005 + erosionNoise, 0.08, steepness);
-            float dispBlend = smoothstep(0.15, 0.45, cliffDisp);
+            // Displacement only fills the gap where there's SOME steepness
+            // (midpoint has ~0.003-0.01, flat terrain has ~0)
+            float dispBlend = smoothstep(0.15, 0.45, cliffDisp) * smoothstep(0.001, 0.008, steepness);
             float erosionBlend = max(steepBlend, dispBlend);
             procColor = mix(procColor, erosionColor, erosionBlend);
         }
