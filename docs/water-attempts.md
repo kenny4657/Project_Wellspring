@@ -190,9 +190,64 @@ Commit `4aaf0db` — land-land terrain blending works correctly. Coastline is th
 
 ---
 
+## What the coastline actually IS (step-by-step trace)
+
+The sandy strip has TWO halves that meet at the hex edge between water and land:
+
+### Water side (shallow_ocean hex, id=1):
+1. `terrain-gen.ts`: hex gets `terrain=1` (shallow_ocean), `heightLevel=1`
+2. `getHexBorderInfo`: water→land edge gets `edgeTargets[i] = 0` (sea level). Edge is NOT excluded.
+3. `computeSurfaceHeight`: cosine ramp interpolates from `tierH=-0.008` (shallow water depth) at center to `borderTarget=0` (sea level) at edge. Near the edge, `h ≈ 0`.
+4. Vertex position: `r = R * (1 + 0) = R`, which is ABOVE the water sphere at `R * 0.9995`.
+5. Vertex color: `getTopFaceColor(1, tierH, -1, 0)` → R=1/9=0.111, no blend data (water excluded from terrain blend)
+6. Shader: `terrainId=1`, `hasCrossBlend=false` → `computeTerrainColor(1, heightAboveR, tierH, scratchy)`
+7. `computeTerrainColor`: id=1 ≤ 3, so `tierBase = seaLevel = -12.74km`. Height ≈ 0 km. Falls in shore-grass blend zone. But shallow_ocean palette is ALL sandy → sandy color regardless of band.
+
+### Land side (e.g. grassland hex, id=5):
+1. `terrain-gen.ts`: hex gets `terrain=5` (grassland), `heightLevel=2`
+2. `getHexBorderInfo`: land→water edge gets `edgeTargets[i] = 0` (sea level). Edge is NOT excluded. `edgeNeighborTerrains[i] = -1` (water neighbors SKIPPED for blend).
+3. `computeSurfaceHeight`: cosine ramp interpolates from `tierH=0.0` at center to `borderTarget=0` at edge. But noiseCoeff drops from `NOISE_AMP` to `NOISE_AMP*0.3` near edge. So height drops from ~20km (interior) to ~2km (near coast).
+4. Vertex position: `r = R * (1 + ~0.0003)` — still above water sphere.
+5. Vertex color: `getTopFaceColor(5, tierH, neighborTerrainId, blendFactor)` — BUT `edgeNeighborTerrains` for this edge is -1 (water excluded), so `neighborTerrainId = -1` → falls back to own terrain → `hasCrossBlend=false` in shader.
+6. Shader: `terrainId=5`, `hasCrossBlend=false` → `computeTerrainColor(5, heightAboveR=~2km, tierH, scratchy)`
+7. `computeTerrainColor`: id=5 > 3, so `tierBase = tierH + noiseBias = 0 + 15.29 = 15.29km`. `boundary1=15.29`, `sw=38.23`. Height 2km < boundary1-sw = -22.94? No. Height 2km < boundary1+sw = 53.52? Yes. → shore-grass BLEND with t=(2-(-22.94))/76.46 = 0.33 → 67% shore, 33% grass → SANDY.
+
+### Why it's hex-shaped:
+The height drop follows the hex distance field exactly. `computeSurfaceHeight` uses `distToBorderWithTarget` which measures distance to hex edges. The cosine ramp `mu = (1-cos(t*π))/2` maps this to height. The height contour at any given level traces hex edges — so the shore-grass color boundary is hex-shaped.
+
+### Why it's hard to fix:
+The vertex color only has 3 channels (R=terrainId, G=neighborBlend, B=tierH). Alpha is used for wall detection. There's NO channel that tells the shader "this vertex is near water." The shader doesn't know a vertex is coastal — it only knows height and terrain type.
+
+---
+
+## Why every attempt failed — the fundamental misunderstanding
+
+Every attempt tried to fix the symptom from the wrong end:
+
+1. **Height perturbation (C1, C3, C10, C11)**: Can't escape a 76km-wide band with noise. Even ±60km noise just shifts within the band where palShore and palGrass are nearly identical colors.
+
+2. **Blend encoding (C2, C4, C9, C12)**: Tried to put water neighbor info into the G channel. But: (a) land hexes at the coast have their blend pointing to other LAND neighbors, not water, (b) corner patches broke because they share geometry between hexes, (c) even when water vertices got blend data, the land-side strip remained because land vertices have NO water info.
+
+3. **Color override (C6, C7, C8)**: Tried to force palGrass or a fake height. But the actual terrain uses the shore-grass blend for its natural two-tone look — overriding it produces visually wrong colors that don't match the interior.
+
+4. **Submersion (C5)**: Hides water-side strip but land-side strip is entirely produced by height → color on land hex vertices.
+
+### The REAL problem:
+**The shader has no way to distinguish "this vertex is near water" from "this vertex is just at a low height inland."** Both produce the same palShore color. The vertex encoding uses all available channels for other data. The height-based color system was designed for a world without a separate water sphere — it was meant to render water AS the shore color below sea level.
+
+---
+
 ## Approaches NOT yet tried
-1. **Steeper cosine ramp** — Make the cosine ramp drop faster at coast so land vertices stay above the shore band until right at the water edge
-2. **Separate coast-proximity vertex attribute** — Encode distance-to-nearest-water in vertex data so shader can suppress/narrow shore band near coast
-3. **Reduce shore band width (sw) globally** — Make sw near-zero. Removes two-tone from ALL terrain (would need alternative for interior variation)
-4. **Modify computeTerrainColor to accept coast-proximity** — Pass a parameter that shrinks sw near the coast, preserving it inland
-5. **Replace cosine ramp with cliff-drop at coast** — Instead of smooth cosine interpolation, use a sharp step so land stays at full height until the shared edge, then drops vertically (wall handles visual)
+
+### A. Encode coast proximity in vertex data (new info to shader)
+1. **Repurpose alpha for top faces** — Currently alpha=1.0 for all top faces (only 0.0 for walls). Could encode coast proximity as alpha=0.5–1.0 range (shader checks `< 0.05` for walls). This gives the shader a continuous "distance to water" signal WITHOUT adding a new vertex attribute.
+2. **Add a 5th vertex attribute** — Custom float attribute `coastDist` per vertex. Most flexible but requires vertex format changes.
+3. **Encode in unused bits of existing channels** — B channel currently encodes tierH as `(tierH+0.030)/0.110`. Only uses range ~0.0 to ~0.45 (4 height levels). Upper bits could encode coast info.
+
+### B. Change the height field so shore band is avoided (CPU-side)
+4. **Steeper cosine ramp at coast** — Replace `mu = (1-cos(t*π))/2` with a steeper function near the edge so land vertices keep interior height until right at the water boundary. The shore band would only appear in the last few meters, hidden under water.
+5. **Cliff drop + wall at coast** — Instead of smooth cosine ramp, land hexes at water borders get a vertical wall down to sea level (like land→land height transitions). No gradual height drop = no shore band.
+
+### C. Change the color system (shader-side)
+6. **Height-relative coloring** — Instead of absolute height for color bands, use height relative to the vertex's own `tierBase`. Coastal vertices at height 2km with tierBase=15km would compute a relative height of -13km, putting them deeper in the shore band — but if we flip this to use `max(heightAboveR, tierBase)` for color, coastal vertices would use tierBase and get grass color.
+7. **Make sw depend on height proximity to sea level** — If `heightAboveR < someThreshold`, shrink `sw` to near-zero so the shore band vanishes. The shore-grass two-tone only appears well above sea level.
