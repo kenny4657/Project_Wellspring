@@ -386,19 +386,9 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 					excludedCount++;
 				}
 			} else {
-				// Land → land
-				const heightDiff = Math.abs(cell.heightLevel - nb.heightLevel);
-				if (heightDiff === 0) {
-					excludedEdges[i] = true;
-					excludedCount++;
-				} else if (heightDiff === 1) {
-					// 1-level difference: smooth slope
-					edgeTargets[i] = getLevelHeight(nb.heightLevel);
-				} else {
-					// 2+ level difference: cliff/wall
-					excludedEdges[i] = true;
-					excludedCount++;
-				}
+				// Land → land: walls handle all height transitions
+				excludedEdges[i] = true;
+				excludedCount++;
 			}
 		}
 	}
@@ -826,11 +816,23 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 			// Skip coastline edges for low land — ramp handles the transition
 			if (nb.heightLevel <= 1 && cell.heightLevel <= 2) continue;
 
-			// Skip land-land edges with 1-level diff — slope handles them
-			if (nb.heightLevel > 1 && Math.abs(cell.heightLevel - nb.heightLevel) <= 1) continue;
-
 			// Only emit wall from the HIGHER hex.
 			if (nb.heightLevel >= cell.heightLevel) continue;
+
+			// For 1-level diffs, wall bottom matches neighbor's surface (gentle step).
+			// For 2+ level diffs, wall goes to BASE_HEIGHT (full cliff).
+			const heightDiff = Math.abs(cell.heightLevel - nb.heightLevel);
+			const nbBorderInfo = borderInfoById.get(nb.id)!;
+			let nbHexRadius = 0;
+			for (let ci2 = 0; ci2 < nb.corners.length; ci2++) {
+				const dx2 = nb.corners[ci2].x - nb.center.x;
+				const dy2 = nb.corners[ci2].y - nb.center.y;
+				const dz2 = nb.corners[ci2].z - nb.center.z;
+				nbHexRadius += Math.sqrt(dx2 * dx2 + dy2 * dy2 + dz2 * dz2);
+			}
+			nbHexRadius /= nb.corners.length;
+			const nbTierH = getLevelHeight(nb.heightLevel);
+			const nbIsWater = nb.heightLevel <= 1;
 
 			const edgePoints: number[] = [];
 			subdivideEdge(c0.x, c0.y, c0.z, c1.x, c1.y, c1.z, SUBDIVISIONS, edgePoints);
@@ -847,6 +849,18 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 				const h1 = computeSurfaceHeight(ux1, uy1, uz1, cell, borderInfo, hexRadius, tierH, isWaterHex);
 				const topR0 = radius * (1 + h0);
 				const topR1 = radius * (1 + h1);
+
+				// Wall bottom: neighbor's surface for gentle steps, BASE_HEIGHT for cliffs
+				let wallBotR0: number, wallBotR1: number;
+				if (heightDiff <= 1) {
+					const nbH0 = computeSurfaceHeight(ux0, uy0, uz0, nb, nbBorderInfo, nbHexRadius, nbTierH, nbIsWater);
+					const nbH1 = computeSurfaceHeight(ux1, uy1, uz1, nb, nbBorderInfo, nbHexRadius, nbTierH, nbIsWater);
+					wallBotR0 = radius * (1 + nbH0);
+					wallBotR1 = radius * (1 + nbH1);
+				} else {
+					wallBotR0 = botR;
+					wallBotR1 = botR;
+				}
 
 				const midX = (ux0 + ux1) * 0.5;
 				const midY = (uy0 + uy1) * 0.5;
@@ -867,11 +881,11 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 				normals.push(wnx, wny, wnz);
 				colors.push(color[0], color[1], color[2], 0.0);
 
-				positions.push(ux0 * botR, uy0 * botR, uz0 * botR);
+				positions.push(ux0 * wallBotR0, uy0 * wallBotR0, uz0 * wallBotR0);
 				normals.push(wnx, wny, wnz);
 				colors.push(color[0], color[1], color[2], 0.0);
 
-				positions.push(ux1 * botR, uy1 * botR, uz1 * botR);
+				positions.push(ux1 * wallBotR1, uy1 * wallBotR1, uz1 * wallBotR1);
 				normals.push(wnx, wny, wnz);
 				colors.push(color[0], color[1], color[2], 0.0);
 
