@@ -241,16 +241,8 @@ void main() {
         // Beach color — warm sand
         vec3 beachColor = vec3(0.68, 0.60, 0.42) * (1.0 + scratchy * 0.10);
 
-        if (coastProximity > 0.01) {
-            // Coastal vertex: blend from inland terrain → beach as we approach water
-            // Use noise to make the beach edge organic instead of hex-shaped
-            float coastNoise = snoise(vWorldPos * 0.005) * 0.12
-                             + snoise(vWorldPos * 0.015) * 0.06;
-            float beachStart = 0.25 + coastNoise; // where beach begins (noise-shifted)
-            float beachBlend = smoothstep(beachStart, 1.0, coastProximity);
-            procColor = mix(inlandColor, beachColor, beachBlend);
-        } else if (hasCrossBlend) {
-            // Land↔land terrain blend: noise-modulated boundary
+        // First: compute base terrain color (with land-land blend if applicable)
+        if (hasCrossBlend) {
             float n1 = snoise(vWorldPos * 0.004) * 0.22;
             float n2 = snoise(vWorldPos * 0.012) * 0.10;
             float noiseOffset = n1 + n2;
@@ -258,8 +250,20 @@ void main() {
             float blend = (1.0 - smoothstep(0.0, threshold, distToBorder)) * 0.45;
             vec3 neighborColor = computeTerrainColor(neighborId, heightAboveR, tierH, scratchy);
             procColor = mix(ownColor, neighborColor, blend);
+            // Also blend inlandColor for coastal use
+            vec3 neighborInland = computeTerrainColor(neighborId, inlandH, tierH, scratchy);
+            inlandColor = mix(inlandColor, neighborInland, blend);
         } else {
             procColor = ownColor;
+        }
+
+        // Then: if coastal, blend the result toward beach
+        if (coastProximity > 0.01) {
+            float coastNoise = snoise(vWorldPos * 0.005) * 0.12
+                             + snoise(vWorldPos * 0.015) * 0.06;
+            float beachStart = 0.35 + coastNoise;
+            float beachBlend = smoothstep(beachStart, 1.0, coastProximity);
+            procColor = mix(procColor, beachColor, beachBlend);
         }
     }
 
