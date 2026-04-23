@@ -260,6 +260,53 @@ void main() {
             procColor = ownColor;
         }
 
+        // Cliff erosion texture on steep slopes between height levels
+        // Detect steepness: dot(N, radial) = 1 for flat, < 1 for slopes
+        vec3 radialDir = normalize(vWorldPos);
+        float flatness = dot(N, radialDir);
+        float steepness = 1.0 - flatness;
+        if (steepness > 0.015) {
+            // Erosion pattern: layered dirt/rock with drainage channels
+            vec3 ep = vWorldPos * 0.004;
+
+            // Exposed soil layers — horizontal strata following the terrain
+            float strata = sin(distFromCenter * 1.2) * 0.5 + 0.5;
+            strata = strata * strata; // sharpen bands
+
+            // Drainage channels — vertical grooves cut by water runoff
+            // Use triplanar to avoid seams, emphasize vertical direction
+            vec3 triBlend = abs(N);
+            triBlend /= (triBlend.x + triBlend.y + triBlend.z + 0.001);
+            float channelX = snoise(vec3(vWorldPos.yz * 0.015, 0.0));
+            float channelY = snoise(vec3(vWorldPos.xz * 0.015, 2.0));
+            float channelZ = snoise(vec3(vWorldPos.xy * 0.015, 4.0));
+            float channels = channelX * triBlend.x + channelY * triBlend.y + channelZ * triBlend.z;
+            channels = pow(abs(channels), 0.6); // sharpen into grooves
+
+            // Fine gravel/rubble detail
+            float gravel = snoise(vWorldPos * 0.03) * 0.3
+                         + snoise(vWorldPos * 0.08) * 0.2;
+
+            // Color palette: exposed earth tones
+            vec3 dryDirt = vec3(0.45, 0.36, 0.24);
+            vec3 wetDirt = vec3(0.30, 0.24, 0.16);
+            vec3 looseSoil = vec3(0.52, 0.44, 0.32);
+            vec3 pebbles = vec3(0.55, 0.50, 0.42);
+
+            // Compose erosion color
+            vec3 erosionColor = mix(dryDirt, looseSoil, strata * 0.6 + gravel * 0.3);
+            erosionColor = mix(erosionColor, wetDirt, channels * 0.4);
+            erosionColor = mix(erosionColor, pebbles, gravel * 0.25 + 0.1);
+
+            // Darken drainage channels for depth
+            erosionColor *= (1.0 - channels * 0.2);
+
+            // Blend based on steepness with noise-modulated boundary
+            float erosionNoise = snoise(vWorldPos * 0.01) * 0.01;
+            float erosionBlend = smoothstep(0.015 + erosionNoise, 0.06, steepness);
+            procColor = mix(procColor, erosionColor, erosionBlend * 0.85);
+        }
+
         // Then: if coastal, blend the result toward beach
         if (coastProximity > 0.01) {
             float coastNoise = snoise(vWorldPos * 0.005) * 0.12
