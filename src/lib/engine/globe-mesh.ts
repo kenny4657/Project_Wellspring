@@ -141,69 +141,63 @@ function smoothNormalsPass(
 }
 
 // ── Smooth Coincident Positions ─────────────────────────────
-/** Average positions at coincident vertices, separated by surface type.
- *  Water and land vertices are smoothed independently so coastal edges
- *  don't pull water vertices to wrong heights (causing triangular gaps).
- *  Land pass skips groups with large height spread to preserve intentional
- *  height steps (walls handle those). */
+/** Snap coincident top-face vertices to matching heights.
+ *  Groups ALL top-face vertices by angular direction, then clusters
+ *  by radius so vertices at similar heights get averaged together while
+ *  intentional height steps (handled by walls) are preserved. */
 function smoothCoincidentPositions(
 	positions: Float32Array, colors: Float32Array, vertexCount: number
 ): void {
-	// Two independent passes: water vertices, then land vertices
-	for (const isWaterPass of [true, false]) {
-		const map = new Map<string, number[]>();
+	const map = new Map<string, number[]>();
 
-		for (let i = 0; i < vertexCount; i++) {
-			const alpha = colors[i * 4 + 3];
-			if (alpha < 0.05) continue; // skip walls
-			// Classify water vs land by blue-dominant vertex color
-			const r = colors[i * 4], b = colors[i * 4 + 2];
-			const isWater = b > r + 0.05;
-			if (isWater !== isWaterPass) continue;
-			// Skip coastal land vertices — they're already height-matched
-			// to water by the cosine ramp; smoothing them creates coast gaps
-			if (!isWater && alpha < 0.99) continue;
+	for (let i = 0; i < vertexCount; i++) {
+		if (colors[i * 4 + 3] < 0.05) continue; // skip walls
+		const px = positions[i * 3];
+		const py = positions[i * 3 + 1];
+		const pz = positions[i * 3 + 2];
+		const len = Math.sqrt(px * px + py * py + pz * pz) || 1;
+		const key = `${Math.round(px / len / 0.0001)},${Math.round(py / len / 0.0001)},${Math.round(pz / len / 0.0001)}`;
+		let list = map.get(key);
+		if (!list) { list = []; map.set(key, list); }
+		list.push(i);
+	}
 
-			const px = positions[i * 3];
-			const py = positions[i * 3 + 1];
-			const pz = positions[i * 3 + 2];
-			const len = Math.sqrt(px * px + py * py + pz * pz) || 1;
-			const key = `${Math.round(px / len / 0.0001)},${Math.round(py / len / 0.0001)},${Math.round(pz / len / 0.0001)}`;
-			let list = map.get(key);
-			if (!list) { list = []; map.set(key, list); }
-			list.push(i);
-		}
+	// Height gap threshold: vertices within 30km are the same "level".
+	// Smallest intentional level step is ~50km (levels 1→2).
+	const GAP = 30;
 
-		for (const indices of map.values()) {
-			if (indices.length <= 1) continue;
+	for (const indices of map.values()) {
+		if (indices.length <= 1) continue;
 
-			let minR = Infinity, maxR = -Infinity, sumR = 0;
-			for (const i of indices) {
-				const px = positions[i * 3];
-				const py = positions[i * 3 + 1];
-				const pz = positions[i * 3 + 2];
-				const r = Math.sqrt(px * px + py * py + pz * pz);
-				if (r < minR) minR = r;
-				if (r > maxR) maxR = r;
-				sumR += r;
+		// Sort by radius, then cluster at gaps > GAP
+		const entries = indices.map(i => {
+			const px = positions[i * 3], py = positions[i * 3 + 1], pz = positions[i * 3 + 2];
+			return { i, r: Math.sqrt(px * px + py * py + pz * pz) };
+		});
+		entries.sort((a, b) => a.r - b.r);
+
+		// Get shared direction from first vertex
+		const i0 = entries[0].i;
+		const dx = positions[i0 * 3], dy = positions[i0 * 3 + 1], dz = positions[i0 * 3 + 2];
+		const dirLen = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
+		const ux = dx / dirLen, uy = dy / dirLen, uz = dz / dirLen;
+
+		let clusterStart = 0;
+		for (let j = 1; j <= entries.length; j++) {
+			if (j < entries.length && entries[j].r - entries[j - 1].r < GAP) continue;
+			// Cluster [clusterStart, j) — average if more than one
+			if (j - clusterStart > 1) {
+				let sumR = 0;
+				for (let k = clusterStart; k < j; k++) sumR += entries[k].r;
+				const avgR = sumR / (j - clusterStart);
+				for (let k = clusterStart; k < j; k++) {
+					const vi = entries[k].i;
+					positions[vi * 3] = ux * avgR;
+					positions[vi * 3 + 1] = uy * avgR;
+					positions[vi * 3 + 2] = uz * avgR;
+				}
 			}
-
-			// Skip land groups with large height spread (intentional level steps)
-			if (!isWaterPass && maxR - minR > 30) continue;
-
-			const avgR = sumR / indices.length;
-			const i0 = indices[0];
-			const dx = positions[i0 * 3];
-			const dy = positions[i0 * 3 + 1];
-			const dz = positions[i0 * 3 + 2];
-			const dirLen = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
-			const ux = dx / dirLen, uy = dy / dirLen, uz = dz / dirLen;
-
-			for (const i of indices) {
-				positions[i * 3] = ux * avgR;
-				positions[i * 3 + 1] = uy * avgR;
-				positions[i * 3 + 2] = uz * avgR;
-			}
+			clusterStart = j;
 		}
 	}
 }
