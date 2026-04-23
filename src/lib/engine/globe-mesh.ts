@@ -444,44 +444,6 @@ function distToTerrainBorder(
 	return { dist: minDist, neighborTerrainId: neighborTerrain };
 }
 
-/** Find distance to the nearest terrain border edge across the current hex
- *  AND all same-terrain neighbors. This makes the blend position-dependent
- *  rather than hex-dependent, eliminating seams at hex boundaries. */
-function globalDistToTerrainBorder(
-	vx: number, vy: number, vz: number,
-	cell: HexCell,
-	cellById: Map<number, HexCell>,
-	borderInfoById: Map<number, HexBorderInfo>
-): { dist: number; neighborTerrainId: number } {
-	let minDist = Infinity;
-	let neighborTerrain = -1;
-
-	// Check own hex
-	const ownBorder = borderInfoById.get(cell.id);
-	if (ownBorder?.hasTerrainBorder) {
-		const tb = distToTerrainBorder(vx, vy, vz, cell, ownBorder);
-		if (tb.neighborTerrainId >= 0 && tb.dist < minDist) {
-			minDist = tb.dist;
-			neighborTerrain = tb.neighborTerrainId;
-		}
-	}
-
-	// Check same-terrain neighbors' border edges
-	for (const nId of cell.neighbors) {
-		const nb = cellById.get(nId);
-		if (!nb || nb.terrain !== cell.terrain) continue;
-		const nbBorder = borderInfoById.get(nId);
-		if (!nbBorder?.hasTerrainBorder) continue;
-		const tb = distToTerrainBorder(vx, vy, vz, nb, nbBorder);
-		if (tb.neighborTerrainId >= 0 && tb.dist < minDist) {
-			minDist = tb.dist;
-			neighborTerrain = tb.neighborTerrainId;
-		}
-	}
-
-	return { dist: minDist, neighborTerrainId: neighborTerrain };
-}
-
 function smoothMin(a: number, b: number, k: number): number {
 	if (k <= 0) return Math.min(a, b);
 	const h = Math.max(k - Math.abs(a - b), 0) / k;
@@ -853,7 +815,6 @@ export function buildCornerGapPatchMesh(cells: HexCell[], radius: number, scene:
 		}
 		hexRadius /= n;
 
-		const color = getTerrainColor(cell.terrain);
 		const tierH = getLevelHeight(cell.heightLevel);
 		const topColor = getTopFaceColor(cell.terrain, tierH, -1, 0);
 
