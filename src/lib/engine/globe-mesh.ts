@@ -386,9 +386,19 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 					excludedCount++;
 				}
 			} else {
-				// Land → land: all height transitions use walls
-				excludedEdges[i] = true;
-				excludedCount++;
+				// Land → land
+				const heightDiff = Math.abs(cell.heightLevel - nb.heightLevel);
+				if (heightDiff === 0) {
+					excludedEdges[i] = true;
+					excludedCount++;
+				} else if (heightDiff === 1) {
+					// 1-level difference: smooth slope
+					edgeTargets[i] = getLevelHeight(nb.heightLevel);
+				} else {
+					// 2+ level difference: cliff/wall
+					excludedEdges[i] = true;
+					excludedCount++;
+				}
 			}
 		}
 	}
@@ -815,6 +825,9 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 
 			// Skip coastline edges for low land — ramp handles the transition
 			if (nb.heightLevel <= 1 && cell.heightLevel <= 2) continue;
+
+			// Skip land-land edges with 1-level diff — slope handles them
+			if (nb.heightLevel > 1 && Math.abs(cell.heightLevel - nb.heightLevel) <= 1) continue;
 
 			// Only emit wall from the HIGHER hex.
 			if (nb.heightLevel >= cell.heightLevel) continue;
