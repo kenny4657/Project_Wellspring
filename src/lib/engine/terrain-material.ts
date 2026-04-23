@@ -266,41 +266,49 @@ void main() {
         // Cliff erosion texture — only on 2+ level transitions (flagged in B channel)
         float steepness = 1.0 - dot(N, normalize(vWorldPos));
         if (nearSteepCliff && steepness > 0.005) {
-            // Exposed soil layers — horizontal strata following the terrain
-            float strata = sin(distFromCenter * 1.2) * 0.5 + 0.5;
-            strata = strata * strata;
+            // Rock/dirt cliff face colors — real exposed earth
+            vec3 warmRock  = vec3(0.52, 0.44, 0.36);  // warm sandstone
+            vec3 coolRock  = vec3(0.42, 0.40, 0.38);  // grey-brown rock
+            vec3 darkEarth = vec3(0.28, 0.22, 0.16);  // deep shadow dirt
+            vec3 dryDirt   = vec3(0.48, 0.38, 0.26);  // exposed dry soil
+            vec3 paleRock  = vec3(0.58, 0.54, 0.48);  // lighter outcrop
 
-            // Drainage channels — triplanar vertical grooves
-            vec3 triBlend = abs(N);
-            triBlend /= (triBlend.x + triBlend.y + triBlend.z + 0.001);
-            float channelX = snoise(vec3(vWorldPos.yz * 0.015, 0.0));
-            float channelY = snoise(vec3(vWorldPos.xz * 0.015, 2.0));
-            float channelZ = snoise(vec3(vWorldPos.xy * 0.015, 4.0));
-            float channels = channelX * triBlend.x + channelY * triBlend.y + channelZ * triBlend.z;
-            channels = pow(abs(channels), 0.6);
+            // Rock strata — thick horizontal bands at cliff scale
+            float strataH = distFromCenter * 0.8;
+            float strata1 = sin(strataH) * 0.5 + 0.5;
+            float strata2 = sin(strataH * 2.7 + 1.5) * 0.5 + 0.5;
+            float strataBlend = strata1 * 0.6 + strata2 * 0.4;
 
-            // Fine gravel detail
-            float gravel = snoise(vWorldPos * 0.03) * 0.3
-                         + snoise(vWorldPos * 0.08) * 0.2;
+            // Cracking / fracture pattern — irregular breaks in the rock
+            float crack1 = abs(snoise(vWorldPos * 0.012));
+            float crack2 = abs(snoise(vWorldPos * 0.025 + 50.0));
+            float cracks = min(crack1, crack2);
+            cracks = smoothstep(0.0, 0.15, cracks); // sharp crevices
 
-            // Derive erosion color FROM the surrounding terrain color
-            // Darken + desaturate + add strata variation — blends naturally
-            float lum = dot(procColor, vec3(0.299, 0.587, 0.114));
-            vec3 desaturated = mix(procColor, vec3(lum), 0.55); // pull toward grey
-            vec3 darkened = desaturated * 0.65;                  // darken
-            vec3 lighter = desaturated * 0.85;                   // lighter variant
+            // Rubble / granular detail at fine scale
+            float rubble = snoise(vWorldPos * 0.04) * 0.35
+                         + snoise(vWorldPos * 0.10 + 30.0) * 0.25;
 
-            // Compose erosion from terrain-derived tones
-            vec3 erosionColor = mix(darkened, lighter, strata * 0.6 + gravel * 0.3);
-            erosionColor = mix(erosionColor, darkened * 0.8, channels * 0.35);
-            erosionColor = mix(erosionColor, lighter * 1.1, gravel * 0.2 + 0.05);
-            erosionColor *= (1.0 - channels * 0.15);
+            // Compose: base rock varies between warm and cool
+            vec3 baseRock = mix(warmRock, coolRock, strataBlend);
+            // Add pale outcrop patches
+            baseRock = mix(baseRock, paleRock, rubble * 0.3 + 0.1);
+            // Layer in dry dirt where strata dips
+            baseRock = mix(baseRock, dryDirt, (1.0 - strataBlend) * 0.35);
+            // Darken cracks and crevices
+            baseRock = mix(baseRock, darkEarth, (1.0 - cracks) * 0.5);
+            // Subtle rubble variation
+            baseRock += rubble * 0.04;
 
-            // Wide, noise-modulated blend for soft boundary
+            // Tint the rock slightly toward the surrounding terrain color
+            // so it doesn't look completely disconnected from its environment
+            vec3 erosionColor = mix(baseRock, procColor * 0.7, 0.15);
+
+            // Wide, noise-modulated blend for soft edges
             float erosionNoise = snoise(vWorldPos * 0.006) * 0.025
                                + snoise(vWorldPos * 0.018) * 0.012;
             float erosionBlend = smoothstep(0.005 + erosionNoise, 0.08, steepness);
-            procColor = mix(procColor, erosionColor, erosionBlend * 0.80);
+            procColor = mix(procColor, erosionColor, erosionBlend * 0.85);
         }
 
         // Then: if coastal, blend the result toward beach
