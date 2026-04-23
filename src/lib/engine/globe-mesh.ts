@@ -561,7 +561,7 @@ function computeSurfaceHeight(
 		return h;
 	}
 
-	return tierH + noiseH * NOISE_AMP;
+	return tierH + interiorNoiseH * NOISE_AMP;
 }
 
 function cornerPatchHeight(
