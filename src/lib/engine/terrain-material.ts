@@ -346,8 +346,8 @@ void main() {
             float proxCover = smoothstep(0.3, 0.8, cliffProximity);
             // Outer fade — smooth falloff at low proximity
             float proxFade = smoothstep(0.0, 0.3, cliffProximity);
-            // Use whichever gives more coverage, masked by outer fade
-            float erosionBlend = max(steepBlend, proxCover) * proxFade;
+            // Steep faces: full coverage always. Proximity fill: faded at edges.
+            float erosionBlend = max(steepBlend, proxCover * proxFade);
             procColor = mix(procColor, rockColor, erosionBlend);
         }
 
