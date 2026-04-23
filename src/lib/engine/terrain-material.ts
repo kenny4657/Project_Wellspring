@@ -108,6 +108,41 @@ float snoise(vec3 v) {
     return 42.0 * dot(m*m, vec4(dot(p0,x0), dot(p1,x1), dot(p2,x2), dot(p3,x3)));
 }
 
+// ── Voronoi / cell noise for angular rock patterns ─────────────
+// Returns vec2(dist_to_nearest_edge, cell_id)
+vec3 hash3(vec3 p) {
+    p = vec3(dot(p, vec3(127.1, 311.7, 74.7)),
+             dot(p, vec3(269.5, 183.3, 246.1)),
+             dot(p, vec3(113.5, 271.9, 124.6)));
+    return fract(sin(p) * 43758.5453123);
+}
+
+vec2 voronoi3D(vec3 p) {
+    vec3 ip = floor(p);
+    vec3 fp = fract(p);
+    float d1 = 8.0; // nearest
+    float d2 = 8.0; // second nearest
+    float cellId = 0.0;
+    for (int x = -1; x <= 1; x++)
+    for (int y = -1; y <= 1; y++)
+    for (int z = -1; z <= 1; z++) {
+        vec3 offset = vec3(float(x), float(y), float(z));
+        vec3 h = hash3(ip + offset);
+        vec3 diff = offset + h - fp;
+        float d = dot(diff, diff);
+        if (d < d1) {
+            d2 = d1;
+            d1 = d;
+            cellId = dot(ip + offset, vec3(7.0, 157.0, 113.0));
+        } else if (d < d2) {
+            d2 = d;
+        }
+    }
+    // edge distance = difference between 2nd and 1st nearest
+    float edge = sqrt(d2) - sqrt(d1);
+    return vec2(edge, fract(sin(cellId) * 43758.5453));
+}
+
 // ── Scratchy organic texture (matches Sota's tileable textures) ──
 
 float scratchyPattern(vec2 uv) {
@@ -271,49 +306,41 @@ void main() {
             vec3 rustyBrown  = vec3(0.45, 0.28, 0.15);
             vec3 darkCrevice = vec3(0.12, 0.08, 0.05);
             vec3 paleFace    = vec3(0.62, 0.52, 0.38);
+            vec3 deepBrown   = vec3(0.35, 0.22, 0.12);
             vec3 mossPatch   = vec3(0.28, 0.36, 0.16);
 
-            // ── Blocky rock faces: quantize noise into flat plateaus ──
-            // floor() creates hard edges between discrete color levels
-            float blockNoise = snoise(vWorldPos * 0.010);
-            float blockLevel = floor(blockNoise * 5.0) / 5.0; // 5 discrete levels
-            // Second scale for smaller sub-blocks
-            float subBlock = snoise(vWorldPos * 0.025 + 60.0);
-            float subLevel = floor(subBlock * 4.0) / 4.0;
+            // ── Voronoi rock blocks — angular cells with sharp cracks ──
+            // Large blocks: main rock face structure
+            vec2 v1 = voronoi3D(vWorldPos * 0.012);
+            float edge1 = v1.x;  // distance to cell boundary
+            float cell1 = v1.y;  // unique cell ID [0,1]
+            // Medium blocks: sub-fractures within large blocks
+            vec2 v2 = voronoi3D(vWorldPos * 0.030 + 50.0);
+            float edge2 = v2.x;
+            float cell2 = v2.y;
+            // Fine detail
+            vec2 v3 = voronoi3D(vWorldPos * 0.065 + 120.0);
+            float edge3 = v3.x;
 
-            // ── Sharp linear cracks: threshold noise into binary lines ──
-            // Use high-frequency noise, hard step to get thin dark lines
-            float n1 = snoise(vWorldPos * 0.04);
-            float n2 = snoise(vWorldPos * 0.07 + 90.0);
-            float n3 = snoise(vWorldPos * 0.13 + 180.0);
-            // step() at near-zero creates thin sharp lines where noise crosses zero
-            float crack1 = 1.0 - step(0.06, abs(n1));  // ~12% coverage
-            float crack2 = 1.0 - step(0.04, abs(n2));  // thinner lines
-            float crack3 = 1.0 - step(0.03, abs(n3));  // finest cracks
-            float crackMask = max(crack1 * 0.9, max(crack2 * 0.7, crack3 * 0.5));
+            // Crack lines: dark where near cell edges (small edge distance)
+            float crack1 = 1.0 - smoothstep(0.0, 0.06, edge1); // major cracks
+            float crack2 = 1.0 - smoothstep(0.0, 0.05, edge2); // medium cracks
+            float crack3 = 1.0 - smoothstep(0.0, 0.04, edge3); // fine cracks
+            float crackMask = max(crack1 * 0.85, max(crack2 * 0.55, crack3 * 0.35));
 
-            // ── Angled strata with hard edges ──
-            vec3 sNorm = normalize(vWorldPos);
-            vec3 tangent = normalize(cross(sNorm, vec3(0.0, 1.0, 0.0)));
-            vec3 bitangent = cross(sNorm, tangent);
-            float angledCoord = dot(vWorldPos, normalize(sNorm * 0.3 + tangent * 0.8 + bitangent * 0.2));
-            // Warp with noise so layers aren't perfectly parallel
-            angledCoord += snoise(vWorldPos * 0.006) * 80.0;
-            // Quantize into hard bands
-            float strataRaw = sin(angledCoord * 0.04);
-            float strata = step(0.0, strataRaw); // binary: upper vs lower layer
+            // ── Per-cell color — each block gets a distinct rock tone ──
+            // cell ID selects from the palette; each face is flat-colored
+            vec3 rockColor = mix(ochreRock, rustyBrown, cell1);
+            rockColor = mix(rockColor, paleFace, step(0.7, cell1) * 0.4);
+            rockColor = mix(rockColor, deepBrown, step(0.3, cell1) * (1.0 - step(0.5, cell1)) * 0.5);
+            // Sub-block variation within each major block
+            rockColor = mix(rockColor, rockColor * 0.85, step(0.6, cell2) * 0.3);
+            rockColor = mix(rockColor, rockColor * 1.12, step(0.4, cell2) * (1.0 - step(0.6, cell2)) * 0.2);
 
-            // ── Compose rock color ──
-            // Base: pick between ochre and rusty based on block level
-            vec3 rockColor = mix(ochreRock, rustyBrown, blockLevel * 0.5 + 0.25);
-            // Strata shifts between warm and pale in hard bands
-            rockColor = mix(rockColor, paleFace, strata * 0.3);
-            // Sub-block variation
-            rockColor = mix(rockColor, rustyBrown * 0.85, subLevel * 0.2);
-            // Hard dark cracks
+            // Dark cracks cut through
             rockColor = mix(rockColor, darkCrevice, crackMask);
 
-            // Sparse moss in gentler spots
+            // Sparse moss clinging to ledges (gentler slopes only)
             float mossNoise = snoise(vWorldPos * 0.02 + 200.0) * 0.5 + 0.5;
             float mossMask = mossNoise * (1.0 - crackMask) * smoothstep(0.06, 0.02, steepness);
             rockColor = mix(rockColor, mossPatch, mossMask * 0.25);
