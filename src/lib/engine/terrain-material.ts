@@ -338,7 +338,7 @@ void main() {
             float erosionNoise = snoise(vWorldPos * 0.006) * 0.025
                                + snoise(vWorldPos * 0.018) * 0.012;
             float erosionBlend = smoothstep(0.005 + erosionNoise, 0.08, steepness);
-            procColor = mix(procColor, erosionColor, erosionBlend * 0.85);
+            procColor = mix(procColor, erosionColor, erosionBlend);
         }
 
         // Then: if coastal, blend the result toward beach
