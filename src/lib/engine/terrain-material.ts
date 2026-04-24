@@ -300,14 +300,6 @@ void main() {
         // Cliff texture — per-terrain rock with continuous proximity blending
         float steepness = 1.0 - dot(N, normalize(vWorldPos));
 
-        // Water hex cliff: blend toward dark rock at high proximity.
-        // NO if-gate — computed unconditionally to avoid code-path
-        // discontinuities that cause hairlines. At low proximity the
-        // blend factor is ~0 so there's no visible effect.
-        vec3 wRock = mix(cliffPalette[terrainId * 3], cliffPalette[terrainId * 3 + 1], 0.5);
-        float waterCliffBlend = cliffProximity * cliffProximity * cliffProximity;
-        procColor = mix(procColor, wRock, waterCliffBlend * 0.7);
-
         if (cliffProximity > 0.01 && steepness > 0.003) {
             // Per-terrain cliff palette from uniform
             vec3 cliffLight = cliffPalette[terrainId * 3];
@@ -353,17 +345,14 @@ void main() {
             float proxFade = smoothstep(0.0, 0.3, cliffProximity);
             erosionBlend *= proxFade;
             procColor = mix(procColor, rockColor, erosionBlend);
-            waterCliffBlend = max(waterCliffBlend, erosionBlend);
         }
 
         // Then: if coastal, blend the result toward beach
-        // Suppress beach where cliff rock is drawn
         if (coastProximity > 0.01) {
             float coastNoise = snoise(vWorldPos * 0.005) * 0.12
                              + snoise(vWorldPos * 0.015) * 0.06;
             float beachStart = 0.35 + coastNoise;
             float beachBlend = smoothstep(beachStart, 1.0, coastProximity);
-            beachBlend *= (1.0 - waterCliffBlend);
             procColor = mix(procColor, beachColor, beachBlend);
         }
     }
