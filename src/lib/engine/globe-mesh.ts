@@ -278,34 +278,28 @@ function smoothCoastalSeamPositions(
 ): void {
 	const map = new Map<string, number[]>();
 	for (let i = 0; i < vertexCount; i++) {
-		if (colors[i * 4 + 3] < 0.05) continue; // skip walls
-		const px = positions[i * 3];
-		const py = positions[i * 3 + 1];
-		const pz = positions[i * 3 + 2];
+		if (colors[i * 4 + 3] < 0.05) continue;
+		const px = positions[i * 3], py = positions[i * 3 + 1], pz = positions[i * 3 + 2];
 		const len = Math.sqrt(px * px + py * py + pz * pz) || 1;
 		const key = `${Math.round(px / len / 0.0001)},${Math.round(py / len / 0.0001)},${Math.round(pz / len / 0.0001)}`;
 		let list = map.get(key);
 		if (!list) { list = []; map.set(key, list); }
 		list.push(i);
 	}
-
 	for (const indices of map.values()) {
 		if (indices.length <= 1) continue;
-		// Check if this group has BOTH water and land vertices
 		let hasWater = false, hasLand = false;
 		for (const i of indices) {
 			const b = colors[i * 4 + 2];
-			const heightLvl = Math.floor(b * 10 + 0.001);
-			if (heightLvl < 2) hasWater = true;
+			if (Math.floor(b * 10 + 0.001) < 2) hasWater = true;
 			else hasLand = true;
 		}
 		if (!hasWater || !hasLand) continue;
-
-		// Average position at this shared corner
 		const i0 = indices[0];
 		const dx = positions[i0 * 3], dy = positions[i0 * 3 + 1], dz = positions[i0 * 3 + 2];
 		const dirLen = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
 		const ux = dx / dirLen, uy = dy / dirLen, uz = dz / dirLen;
+		// Average radius so both sides converge
 		let avgR = 0;
 		for (const i of indices) {
 			const px = positions[i * 3], py = positions[i * 3 + 1], pz = positions[i * 3 + 2];
@@ -456,11 +450,15 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 					}
 				}
 			} else {
-				// Water → land: ramp up to sea level
-				edgeTargets[i] = 0;
+				// Water → high land: raise this exact coast edge to the same
+				// cliff-foot target used by the high land edge. Low shores stay at sea level.
+				edgeTargets[i] = nb.heightLevel > 2
+					? (getLevelHeight(cell.heightLevel) + getLevelHeight(nb.heightLevel)) / 2
+					: 0;
 				coastEdges[i] = true;
 				hasCoast = true;
-				// Mark as steep cliff for shader proximity (no geometry change)
+				// Also mark as steep cliff so water hex gets cliff proximity
+				// and the shader draws cliff rock texture on the ramped surface
 				if (nb.heightLevel > 2) {
 					steepCliffEdges[i] = true;
 					hasSteepCliff = true;
@@ -831,19 +829,8 @@ function computeHeightWithCliffErosion(
 		let mu: number;
 
 		if (isSteep) {
-			// Steep cliff (2+ level): narrow parabolic ramp → creates steep faces.
-			// Near a corner where the cliff meets a coast/gentle edge, widen the
-			// ramp locally so the corner blends instead of cutting a triangular gap.
-			const prev = (i + n - 1) % n;
-			const next = (i + 1) % n;
-			const softAtStart = borderInfo.coastEdges[prev] || borderInfo.gentleLandEdges[prev] || !borderInfo.steepCliffEdges[prev];
-			const softAtEnd = borderInfo.coastEdges[next] || borderInfo.gentleLandEdges[next] || !borderInfo.steepCliffEdges[next];
-			const along = distToSegmentWithT(ux, uy, uz, a.x, a.y, a.z, b.x, b.y, b.z).t;
-			const startBlend = softAtStart ? Math.max(0, 1 - along / 0.3) : 0;
-			const endBlend = softAtEnd ? Math.max(0, 1 - (1 - along) / 0.3) : 0;
-			const cornerBlendRaw = Math.max(startBlend, endBlend);
-			const cornerBlend = cornerBlendRaw * cornerBlendRaw * (3 - 2 * cornerBlendRaw);
-			const rampWidth = hexRadius * (0.2 + 0.45 * cornerBlend);
+			// Steep cliff (2+ level): narrow parabolic ramp → creates steep faces
+			const rampWidth = hexRadius * 0.2;
 			const perturbedDist = Math.max(0, dist + cliffNoise * hexRadius * 0.25);
 			const t = Math.min(perturbedDist / rampWidth, 1.0);
 			mu = t * (2 - t);
@@ -1030,8 +1017,7 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 					const vy = triVerts[j + k * 3 + 1];
 					const vz = triVerts[j + k * 3 + 2];
 
-					// Per-vertex cliff proximity: from this hex's own steep edges
-					// For water hexes, also track the cliff neighbor's terrain
+					// Per-vertex cliff proximity + cliff neighbor terrain for water hexes
 					let cliffProx = 0;
 					let cliffNbTerrain = -1;
 					if (borderInfo.hasSteepCliff) {
@@ -1096,7 +1082,7 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 			const nb = findNeighborAcrossEdge(cell, i, cellById);
 			if (!nb) continue;
 
-			// Skip coastline edges — ramp/cliff erosion handles land→water
+			// Skip coastline edges — ramp handles the transition
 			if (nb.heightLevel <= 1) continue;
 
 			// No walls for land-land edges — cliff erosion handles those
@@ -1136,9 +1122,10 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 				const topR0 = radius * (1 + h0);
 				const topR1 = radius * (1 + h1);
 
-				// Wall bottom: neighbor's surface for gentle steps, BASE_HEIGHT for cliffs
+				// Wall bottom: neighbor's surface for gentle steps and coastal cliffs,
+				// BASE_HEIGHT only for land-land cliffs.
 				let wallBotR0: number, wallBotR1: number;
-				if (heightDiff <= 1) {
+				if (heightDiff <= 1 || nbIsWater) {
 					const nbH0 = computeHeightWithCliffErosion(ux0, uy0, uz0, nb, nbBorderInfo, nbHexRadius, nbTierH, nbIsWater, cellById);
 					const nbH1 = computeHeightWithCliffErosion(ux1, uy1, uz1, nb, nbBorderInfo, nbHexRadius, nbTierH, nbIsWater, cellById);
 					wallBotR0 = radius * (1 + nbH0);
@@ -1198,7 +1185,8 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 	smoothWaterCornerPositions(positionsF32, colorsF32, vOff);
 	smoothLandSeamPositions(positionsF32, colorsF32, vOff);
 	smoothCoastalSeamPositions(positionsF32, colorsF32, vOff);
-	// Smooth normals AFTER all position adjustments
+	// Smooth normals AFTER all position adjustments so normals
+	// reflect the final vertex positions (not pre-adjustment positions)
 	smoothNormalsPass(positionsF32, normalsF32, colorsF32, vOff);
 
 	// ── Diagnostic: find height mismatches at coincident land vertices ──
