@@ -351,14 +351,11 @@ void main() {
             float midBlend = smoothstep(0.5, 1.0, cliffProximity);
             rockColor = mix(rockColor, midRock, midBlend * 0.75);
 
-            // Blend: steepness ONLY — no proximity in blend.
-            // proxFade was the root cause of hairlines: GPU interpolation
-            // of the B channel + fract() decode produces incorrect proximity
-            // at triangle boundaries. Using that in the blend creates
-            // visible discontinuities. The gate (cliffProximity > 0.01)
-            // already prevents cliff rock on zero-proximity fragments.
+            // Blend: steepness only — no proximity in the blend = no hairline
             float erosionNoise = snoise(vWorldPos * 0.006) * 0.02;
             float erosionBlend = smoothstep(0.003 + erosionNoise, 0.06, steepness);
+            float proxFade = smoothstep(0.0, 0.3, cliffProximity);
+            erosionBlend *= proxFade;
             procColor = mix(procColor, rockColor, erosionBlend);
             // Track for beach suppression
             waterCliffBlend = max(waterCliffBlend, erosionBlend);
