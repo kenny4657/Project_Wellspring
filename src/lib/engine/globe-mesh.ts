@@ -311,6 +311,8 @@ interface HexBorderInfo {
 	hasCliff: boolean;         // any edge is a cliff
 	steepCliffEdges: boolean[];  // true = edge has 2+ level height difference
 	hasSteepCliff: boolean;      // any edge is a steep cliff
+	gentleLandEdges: boolean[];  // true = land-land edge with 0-1 level diff (no cliff)
+	hasGentleLandEdge: boolean;  // any edge is a gentle land transition
 }
 
 function cornerKey(x: number, y: number, z: number): string {
@@ -357,12 +359,14 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 	const coastEdges: boolean[] = new Array(n).fill(false);
 	const cliffEdges: boolean[] = new Array(n).fill(false);
 	const steepCliffEdges: boolean[] = new Array(n).fill(false);
+	const gentleLandEdges: boolean[] = new Array(n).fill(false);
 	let excludedCount = 0;
 	let exactSameCount = 0;
 	let hasTerrainBorder = false;
 	let hasCoast = false;
 	let hasCliff = false;
 	let hasSteepCliff = false;
+	let hasGentleLandEdge = false;
 	const isWater = cell.heightLevel <= 1;
 
 	for (let i = 0; i < n; i++) {
@@ -421,13 +425,18 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 				}
 			} else {
 				// Land → land: all excluded (cliff erosion handles transitions)
-				if (nb.heightLevel !== cell.heightLevel) {
+				const heightDiff = Math.abs(nb.heightLevel - cell.heightLevel);
+				if (heightDiff > 0) {
 					cliffEdges[i] = true;
 					hasCliff = true;
-					if (Math.abs(nb.heightLevel - cell.heightLevel) >= 2) {
+					if (heightDiff >= 2) {
 						steepCliffEdges[i] = true;
 						hasSteepCliff = true;
 					}
+				}
+				if (heightDiff <= 1) {
+					gentleLandEdges[i] = true;
+					hasGentleLandEdge = true;
 				}
 				excludedEdges[i] = true;
 				excludedCount++;
@@ -448,6 +457,8 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 		hasCliff,
 		steepCliffEdges,
 		hasSteepCliff,
+		gentleLandEdges,
+		hasGentleLandEdge,
 	};
 }
 
@@ -594,6 +605,25 @@ function distToSteepCliff(
 				if (d < minDist) minDist = d;
 			}
 		}
+	}
+	return minDist;
+}
+
+/** Distance from a vertex to the nearest gentle land edge (0-1 level diff).
+ *  Used by computeHeightWithCliffErosion to suppress the cliff RAMP
+ *  (steep geometry) near gentle-slope edges, making the cliff curve. */
+function distToGentleLandEdge(
+	vx: number, vy: number, vz: number,
+	cell: HexCell, borderInfo: HexBorderInfo
+): number {
+	const n = cell.corners.length;
+	let minDist = Infinity;
+	for (let i = 0; i < n; i++) {
+		if (!borderInfo.gentleLandEdges[i]) continue;
+		const a = cell.corners[i];
+		const b = cell.corners[(i + 1) % n];
+		const d = distToSegment(vx, vy, vz, a.x, a.y, a.z, b.x, b.y, b.z);
+		if (d < minDist) minDist = d;
 	}
 	return minDist;
 }
@@ -770,6 +800,21 @@ function computeHeightWithCliffErosion(
 			const midTierH = (tierH + neighborHeight) / 2;
 			bestMidH = midTierH + (Math.abs(midNoise) + 0.15) * NOISE_AMP * 0.3;
 		}
+	}
+
+	if (bestMu >= 1.0) return h;
+
+	// Near gentle-slope edges (0-1 level diff), suppress the cliff ramp
+	// so the geometry stays smooth → shader sees no steepness → no cliff texture.
+	// This makes the cliff curve away from gentle-slope edges in geometry space.
+	if (borderInfo.hasGentleLandEdge) {
+		const gd = distToGentleLandEdge(ux, uy, uz, cell, borderInfo);
+		// smoothstep: at gentle edge (gd=0) → gentleFade=0 (no cliff ramp)
+		// at hexRadius*0.4 from gentle edge → gentleFade=1 (full cliff ramp)
+		const gt = Math.min(gd / (hexRadius * 0.4), 1.0);
+		const gentleFade = gt * gt * (3 - 2 * gt);
+		// Push bestMu toward 1.0 (no cliff) near gentle edges
+		bestMu = bestMu + (1.0 - bestMu) * (1.0 - gentleFade);
 	}
 
 	if (bestMu >= 1.0) return h;
