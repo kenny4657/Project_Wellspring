@@ -301,23 +301,21 @@ function smoothCoastalSeamPositions(
 		}
 		if (!hasWater || !hasLand) continue;
 
-		// Bridge cliff corners: take MAX radius across all vertices at this
-		// corner. This pulls water up to meet cliff corners, closing V-gaps,
-		// instead of averaging (which pulls cliffs DOWN toward sea level).
+		// Average position at this shared corner
 		const i0 = indices[0];
 		const dx = positions[i0 * 3], dy = positions[i0 * 3 + 1], dz = positions[i0 * 3 + 2];
 		const dirLen = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
 		const ux = dx / dirLen, uy = dy / dirLen, uz = dz / dirLen;
-		let maxR = 0;
+		let avgR = 0;
 		for (const i of indices) {
 			const px = positions[i * 3], py = positions[i * 3 + 1], pz = positions[i * 3 + 2];
-			const r = Math.sqrt(px * px + py * py + pz * pz);
-			if (r > maxR) maxR = r;
+			avgR += Math.sqrt(px * px + py * py + pz * pz);
 		}
+		avgR /= indices.length;
 		for (const i of indices) {
-			positions[i * 3] = ux * maxR;
-			positions[i * 3 + 1] = uy * maxR;
-			positions[i * 3 + 2] = uz * maxR;
+			positions[i * 3] = ux * avgR;
+			positions[i * 3 + 1] = uy * avgR;
+			positions[i * 3 + 2] = uz * avgR;
 		}
 	}
 }
