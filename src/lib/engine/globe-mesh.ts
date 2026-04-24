@@ -1182,10 +1182,12 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 	// Average normals at coincident vertex positions for top-face vertices.
 	// This makes terrain look continuous across triangle/hex boundaries.
 	// Wall vertices (alpha=0) are excluded to keep cliff faces sharp.
-	smoothNormalsPass(positionsF32, normalsF32, colorsF32, vOff);
 	smoothWaterCornerPositions(positionsF32, colorsF32, vOff);
 	smoothLandSeamPositions(positionsF32, colorsF32, vOff);
 	smoothCoastalSeamPositions(positionsF32, colorsF32, vOff);
+	// Smooth normals AFTER all position adjustments so normals
+	// reflect the final vertex positions (not pre-adjustment positions)
+	smoothNormalsPass(positionsF32, normalsF32, colorsF32, vOff);
 
 	// ── Diagnostic: find height mismatches at coincident land vertices ──
 	{
