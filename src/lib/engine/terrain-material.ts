@@ -342,9 +342,13 @@ void main() {
             // Blend: steepness drives cliff texture, proximity provides fade
             float erosionNoise = snoise(vWorldPos * 0.006) * 0.02;
             float steepBlend = smoothstep(0.003 + erosionNoise, 0.06, steepness);
+            // Proximity fill for midpoint gap — only where steepness > ~0.002
+            // (midpoint ~0.003-0.01, flat terrain ~0-0.001)
+            float proxCover = smoothstep(0.3, 0.8, cliffProximity)
+                            * smoothstep(0.001, 0.003, steepness);
             // Proximity fade for smooth outer edges
             float proxFade = smoothstep(0.0, 0.4, cliffProximity);
-            float erosionBlend = steepBlend * proxFade;
+            float erosionBlend = max(steepBlend, proxCover) * proxFade;
             procColor = mix(procColor, rockColor, erosionBlend);
         }
 
