@@ -457,11 +457,9 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 					: 0;
 				coastEdges[i] = true;
 				hasCoast = true;
-				// Also mark as cliff so cliff erosion creates steep faces
-				// near the edge (steepness-based shader draws cliff rock)
+				// Also mark as steep cliff so water hex gets cliff proximity
+				// and the shader draws cliff rock texture on the ramped surface
 				if (nb.heightLevel > 2) {
-					cliffEdges[i] = true;
-					hasCliff = true;
 					steepCliffEdges[i] = true;
 					hasSteepCliff = true;
 				}
