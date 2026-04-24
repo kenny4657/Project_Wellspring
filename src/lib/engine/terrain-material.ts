@@ -300,7 +300,7 @@ void main() {
         // Cliff texture — per-terrain rock with continuous proximity blending
         float steepness = 1.0 - dot(N, normalize(vWorldPos));
 
-        if (cliffProximity > 0.01) {
+        if (cliffProximity > 0.01 && steepness > 0.003) {
             // Per-terrain cliff palette from uniform
             vec3 cliffLight = cliffPalette[terrainId * 3];
             vec3 cliffDark  = cliffPalette[terrainId * 3 + 1];
@@ -339,15 +339,12 @@ void main() {
             float midBlend = smoothstep(0.5, 1.0, cliffProximity);
             rockColor = mix(rockColor, midRock, midBlend * 0.75);
 
-            // Blend: combine steepness and proximity for full coverage
+            // Blend: steepness drives cliff texture, proximity provides fade
             float erosionNoise = snoise(vWorldPos * 0.006) * 0.02;
             float steepBlend = smoothstep(0.003 + erosionNoise, 0.06, steepness);
-            // Proximity-only coverage for the midpoint gap (even if steepness is low)
-            float proxCover = smoothstep(0.3, 0.8, cliffProximity);
-            // Outer fade — smooth falloff at low proximity
-            float proxFade = smoothstep(0.0, 0.3, cliffProximity);
-            // Use whichever gives more coverage, masked by outer fade
-            float erosionBlend = max(steepBlend, proxCover) * proxFade;
+            // Proximity fade for smooth outer edges
+            float proxFade = smoothstep(0.0, 0.4, cliffProximity);
+            float erosionBlend = steepBlend * proxFade;
             procColor = mix(procColor, rockColor, erosionBlend);
         }
 
