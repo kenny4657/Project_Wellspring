@@ -831,8 +831,19 @@ function computeHeightWithCliffErosion(
 		let mu: number;
 
 		if (isSteep) {
-			// Steep cliff (2+ level): narrow parabolic ramp → creates steep faces
-			const rampWidth = hexRadius * 0.2;
+			// Steep cliff (2+ level): narrow parabolic ramp → creates steep faces.
+			// Near a corner where the cliff meets a coast/gentle edge, widen the
+			// ramp locally so the corner blends instead of cutting a triangular gap.
+			const prev = (i + n - 1) % n;
+			const next = (i + 1) % n;
+			const softAtStart = borderInfo.coastEdges[prev] || borderInfo.gentleLandEdges[prev] || !borderInfo.steepCliffEdges[prev];
+			const softAtEnd = borderInfo.coastEdges[next] || borderInfo.gentleLandEdges[next] || !borderInfo.steepCliffEdges[next];
+			const along = distToSegmentWithT(ux, uy, uz, a.x, a.y, a.z, b.x, b.y, b.z).t;
+			const startBlend = softAtStart ? Math.max(0, 1 - along / 0.3) : 0;
+			const endBlend = softAtEnd ? Math.max(0, 1 - (1 - along) / 0.3) : 0;
+			const cornerBlendRaw = Math.max(startBlend, endBlend);
+			const cornerBlend = cornerBlendRaw * cornerBlendRaw * (3 - 2 * cornerBlendRaw);
+			const rampWidth = hexRadius * (0.2 + 0.45 * cornerBlend);
 			const perturbedDist = Math.max(0, dist + cliffNoise * hexRadius * 0.25);
 			const t = Math.min(perturbedDist / rampWidth, 1.0);
 			mu = t * (2 - t);
