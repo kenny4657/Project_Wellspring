@@ -359,13 +359,11 @@ void main() {
         }
 
         // Then: if coastal, blend the result toward beach
-        // Suppress beach where cliff rock is actually drawn
         if (coastProximity > 0.01) {
             float coastNoise = snoise(vWorldPos * 0.005) * 0.12
                              + snoise(vWorldPos * 0.015) * 0.06;
             float beachStart = 0.35 + coastNoise;
             float beachBlend = smoothstep(beachStart, 1.0, coastProximity);
-            beachBlend *= (1.0 - cliffRockDrawn);
             procColor = mix(procColor, beachColor, beachBlend);
         }
     }
