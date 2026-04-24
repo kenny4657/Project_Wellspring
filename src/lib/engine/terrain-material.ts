@@ -339,10 +339,14 @@ void main() {
             float midBlend = smoothstep(0.5, 1.0, cliffProximity);
             rockColor = mix(rockColor, midRock, midBlend * 0.75);
 
-            // Blend: low fixed steepness threshold. The cliffProximity gate
-            // already limits this to cliff-adjacent vertices only.
-            float erosionNoise = snoise(vWorldPos * 0.006) * 0.005;
-            float erosionBlend = smoothstep(0.002 + erosionNoise, 0.015, steepness);
+            // Blend: proximity lowers the steepness threshold — near the cliff
+            // edge, even tiny steepness triggers cliff texture. Far from cliff,
+            // only real slopes do. No separate coverage = no hairline.
+            float erosionNoise = snoise(vWorldPos * 0.006) * 0.02;
+            float loThresh = 0.001 + erosionNoise;  // at cliff edge (high prox)
+            float hiThresh = 0.06 + erosionNoise;   // at outer boundary (low prox)
+            float thresh = mix(hiThresh, loThresh, cliffProximity);
+            float erosionBlend = smoothstep(thresh * 0.5, thresh, steepness);
             procColor = mix(procColor, rockColor, erosionBlend);
         }
 
