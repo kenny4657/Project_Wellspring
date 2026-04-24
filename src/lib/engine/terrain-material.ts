@@ -339,16 +339,10 @@ void main() {
             float midBlend = smoothstep(0.5, 1.0, cliffProximity);
             rockColor = mix(rockColor, midRock, midBlend * 0.75);
 
-            // Blend: steepness drives cliff texture, proximity provides fade
+            // Blend: steepness alone — steep faces get cliff, flat terrain doesn't.
+            // No proximity in the blend = no hairline possible.
             float erosionNoise = snoise(vWorldPos * 0.006) * 0.02;
-            float steepBlend = smoothstep(0.003 + erosionNoise, 0.06, steepness);
-            // Proximity fade for smooth outer edges
-            float proxFade = smoothstep(0.0, 0.4, cliffProximity);
-            // Proximity fill ONLY at very high proximity (right at cliff edge)
-            // to cover flat terrain at the midpoint. Stays zero below 0.6 —
-            // the hairline was at 0.3-0.4 so this can't reach it.
-            float proxCover = smoothstep(0.6, 0.9, cliffProximity);
-            float erosionBlend = max(steepBlend * proxFade, proxCover);
+            float erosionBlend = smoothstep(0.003 + erosionNoise, 0.06, steepness);
             procColor = mix(procColor, rockColor, erosionBlend);
         }
 
