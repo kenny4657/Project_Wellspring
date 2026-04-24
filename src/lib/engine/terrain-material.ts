@@ -354,11 +354,6 @@ void main() {
             }
 
             procColor = mix(procColor, rockColor, cliffRockDrawn);
-
-            // Gradual base blend at cliff foot: proximity-based color
-            // gradient where steepness has dropped but we're still near cliff
-            float baseBlend = cliffProximity * 0.35 * (1.0 - cliffRockDrawn);
-            procColor = mix(procColor, rockColor, baseBlend);
         }
 
         // Then: if coastal, blend the result toward beach
