@@ -344,7 +344,11 @@ void main() {
             float steepBlend = smoothstep(0.003 + erosionNoise, 0.06, steepness);
             // Proximity fade for smooth outer edges
             float proxFade = smoothstep(0.0, 0.4, cliffProximity);
-            float erosionBlend = steepBlend * proxFade;
+            // Proximity fill ONLY at very high proximity (right at cliff edge)
+            // to cover flat terrain at the midpoint. Stays zero below 0.6 —
+            // the hairline was at 0.3-0.4 so this can't reach it.
+            float proxCover = smoothstep(0.6, 0.9, cliffProximity);
+            float erosionBlend = max(steepBlend * proxFade, proxCover);
             procColor = mix(procColor, rockColor, erosionBlend);
         }
 
