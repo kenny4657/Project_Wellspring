@@ -784,6 +784,24 @@ function computeSurfaceHeight(
 		const noiseH = interiorNoiseH * mu + borderNoiseH * (1 - mu);
 		let h = tierH * mu + borderTarget * (1 - mu) + noiseH * noiseCoeff;
 
+		// Smooth the Voronoi boundary between cliff-coast edges (target=midTierH)
+		// and normal coast edges (target=0). Without this, height jumps where the
+		// nearest-edge selection switches between different targets → visible line.
+		if (borderTarget !== 0 && isWaterHex) {
+			const dist0 = smoothDistanceToTargetEdges(ux, uy, uz, cell, borderInfo, 0, hexRadius);
+			if (Number.isFinite(dist0)) {
+				const t0 = Math.min(dist0 / hexRadius, 1.0);
+				const mu0 = (1 - Math.cos(t0 * Math.PI)) / 2;
+				const noiseCoeff0 = NOISE_AMP * mu0 + (NOISE_AMP * 0.3) * (1 - mu0);
+				const noiseH0 = interiorNoiseH * mu0 + borderNoiseH * (1 - mu0);
+				const h0 = tierH * mu0 + 0 * (1 - mu0) + noiseH0 * noiseCoeff0;
+				// Inverse-distance blend: cliff target vs sea-level target
+				const wCliff = 1 / (dist + hexRadius * 0.02);
+				const wCoast = 1 / (dist0 + hexRadius * 0.02);
+				h = (wCliff * h + wCoast * h0) / (wCliff + wCoast);
+			}
+		}
+
 		// Keep coastline continuity exact at the shared edge, but hold the terrain
 		// slightly lower around the middle of each coastal edge so the visible
 		// shoreline contour reads rounder and less like a straight hex cut.
