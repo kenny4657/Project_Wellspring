@@ -300,16 +300,15 @@ void main() {
         // Cliff texture — per-terrain rock with continuous proximity blending
         float steepness = 1.0 - dot(N, normalize(vWorldPos));
 
-        // Water hex cliff: continuous blend toward cliff rock color based
-        // on proximity. Done OUTSIDE the cliff block to avoid gate/branch
-        // issues that cause hairlines. Uses a simple dark rock tone that
-        // blends with the sandy coast color underneath.
+        // Water hex cliff blend computed here, applied AFTER beach overlay
+        // so the bottom edge fades into the neighbor's actual sand color
+        // (not a washed-out transition band).
         float waterCliffBlend = 0.0;
-        if (cliffProximity > 0.3) {
+        vec3 wRock = vec3(0.0);
+        if (heightLevel < 2 && cliffProximity > 0.3) {
             int wCliffPalId = hasCrossBlend ? neighborId : terrainId;
-            vec3 wRock = mix(cliffPalette[wCliffPalId * 3], cliffPalette[wCliffPalId * 3 + 1], 0.5);
+            wRock = mix(cliffPalette[wCliffPalId * 3], cliffPalette[wCliffPalId * 3 + 1], 0.5);
             waterCliffBlend = smoothstep(0.3, 0.8, cliffProximity);
-            procColor = mix(procColor, wRock, waterCliffBlend);
         }
 
         if (cliffProximity > 0.01 && steepness > 0.003) {
@@ -361,15 +360,19 @@ void main() {
             waterCliffBlend = max(waterCliffBlend, erosionBlend);
         }
 
-        // Then: if coastal, blend the result toward beach
-        // Suppress beach where cliff rock is drawn
+        // Then: if coastal, blend the result toward beach (not suppressed)
         if (coastProximity > 0.01) {
             float coastNoise = snoise(vWorldPos * 0.005) * 0.12
                              + snoise(vWorldPos * 0.015) * 0.06;
             float beachStart = 0.35 + coastNoise;
             float beachBlend = smoothstep(beachStart, 1.0, coastProximity);
-            beachBlend *= (1.0 - waterCliffBlend);
             procColor = mix(procColor, beachColor, beachBlend);
+        }
+
+        // Apply water-hex cliff rock LAST so its edge fades into the
+        // already-applied beach color (matches neighbor sand exactly)
+        if (waterCliffBlend > 0.0) {
+            procColor = mix(procColor, wRock, waterCliffBlend);
         }
     }
 
