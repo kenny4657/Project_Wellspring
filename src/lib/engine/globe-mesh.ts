@@ -964,7 +964,7 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 					if (borderInfo.hasSteepCliff) {
 						const sd = distToSteepCliff(vx, vy, vz, cell, borderInfo);
 						if (Number.isFinite(sd)) {
-							cliffProx = Math.max(0, 1.0 - sd / (hexRadius * 0.45));
+							cliffProx = Math.max(0, 1.0 - sd / (hexRadius * 0.3));
 						}
 						// In mixed hexes (both steep + gentle edges), suppress
 						// cliff proximity near gentle edges so the shader doesn't
