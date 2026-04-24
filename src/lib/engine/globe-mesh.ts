@@ -1019,52 +1019,31 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 					const vy = triVerts[j + k * 3 + 1];
 					const vz = triVerts[j + k * 3 + 2];
 
-					// Per-vertex cliff proximity: own steep edges + neighbor hexes'
-					// steep edges (water hexes) so corners bridge across hex boundaries
+					// Per-vertex cliff proximity: from this hex's own steep edges
+					// For water hexes, also track the cliff neighbor's terrain
 					let cliffProx = 0;
 					let cliffNbTerrain = -1;
-					{
+					if (borderInfo.hasSteepCliff) {
 						let minCliffDist = Infinity;
-						if (borderInfo.hasSteepCliff) {
-							for (let ei = 0; ei < n; ei++) {
-								if (!borderInfo.steepCliffEdges[ei]) continue;
-								const ea = cell.corners[ei];
-								const eb = cell.corners[(ei + 1) % n];
-								const d = distToSegment(vx, vy, vz, ea.x, ea.y, ea.z, eb.x, eb.y, eb.z);
-								if (d < minCliffDist) {
-									minCliffDist = d;
-									if (isWaterHex) {
-										const cliffNb = findNeighborAcrossEdge(cell, ei, cellById);
-										if (cliffNb) cliffNbTerrain = cliffNb.terrain;
-									}
-								}
-							}
-						}
-						// Water hex: also check NEIGHBOR hexes' steep cliff edges
-						// so proximity bridges sharp V-corners at hex boundaries
-						if (isWaterHex) {
-							for (const nbId of cell.neighbors) {
-								const nbCell = cellById.get(nbId);
-								if (!nbCell) continue;
-								const nbBI = borderInfoById.get(nbCell.id);
-								if (!nbBI || !nbBI.hasSteepCliff) continue;
-								const nbN = nbCell.corners.length;
-								for (let ei = 0; ei < nbN; ei++) {
-									if (!nbBI.steepCliffEdges[ei]) continue;
-									const ea = nbCell.corners[ei];
-									const eb = nbCell.corners[(ei + 1) % nbN];
-									const d = distToSegment(vx, vy, vz, ea.x, ea.y, ea.z, eb.x, eb.y, eb.z);
-									if (d < minCliffDist) {
-										minCliffDist = d;
-										const cliffNb = findNeighborAcrossEdge(nbCell, ei, cellById);
-										if (cliffNb) cliffNbTerrain = cliffNb.terrain;
-									}
+						for (let ei = 0; ei < n; ei++) {
+							if (!borderInfo.steepCliffEdges[ei]) continue;
+							const ea = cell.corners[ei];
+							const eb = cell.corners[(ei + 1) % n];
+							const d = distToSegment(vx, vy, vz, ea.x, ea.y, ea.z, eb.x, eb.y, eb.z);
+							if (d < minCliffDist) {
+								minCliffDist = d;
+								if (isWaterHex) {
+									const cliffNb = findNeighborAcrossEdge(cell, ei, cellById);
+									if (cliffNb) cliffNbTerrain = cliffNb.terrain;
 								}
 							}
 						}
 						if (Number.isFinite(minCliffDist)) {
 							cliffProx = Math.max(0, 1.0 - minCliffDist / (hexRadius * 0.3));
 						}
+						// In mixed hexes (both steep + gentle edges), suppress
+						// cliff proximity near gentle edges so the shader doesn't
+						// draw cliff texture on the gentle-slope faces
 						if (cliffProx > 0 && borderInfo.hasGentleLandEdge) {
 							const gd = distToGentleLandEdge(vx, vy, vz, cell, borderInfo);
 							const gt = Math.min(gd / (hexRadius * 0.35), 1.0);
