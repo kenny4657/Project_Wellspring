@@ -349,6 +349,10 @@ void main() {
                 cliffRockDrawn = smoothstep(0.003 + erosionNoise, 0.06, steepness);
                 float proxFade = smoothstep(0.0, 0.3, cliffProximity);
                 cliffRockDrawn *= proxFade;
+                // Kill tiny blend values that create a visible dark line
+                // at the cliff base where low-opacity dark rock over
+                // light sand is perceptible
+                cliffRockDrawn = smoothstep(0.0, 0.08, cliffRockDrawn) * cliffRockDrawn;
             }
 
             procColor = mix(procColor, rockColor, cliffRockDrawn);
