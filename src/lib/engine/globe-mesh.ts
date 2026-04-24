@@ -1039,9 +1039,7 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 							}
 						}
 						if (Number.isFinite(minCliffDist)) {
-							// Wider radius for water hexes so cliff→beach fades gradually
-							const proxRadius = isWaterHex ? hexRadius * 0.55 : hexRadius * 0.3;
-							cliffProx = Math.max(0, 1.0 - minCliffDist / proxRadius);
+							cliffProx = Math.max(0, 1.0 - minCliffDist / (hexRadius * 0.3));
 						}
 						// In mixed hexes (both steep + gentle edges), suppress
 						// cliff proximity near gentle edges so the shader doesn't

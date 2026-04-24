@@ -346,11 +346,11 @@ void main() {
             float erosionNoise = snoise(vWorldPos * 0.006) * 0.02;
             if (heightLevel < 2) {
                 // Water hex: proximity-based blend with noise-perturbed boundary
-                // gentler smoothstep + wider range → gradual fade, no sharp edge
+                // so cliff-to-beach transition is organic, not a straight line
                 float cliffNoise = snoise(vWorldPos * 0.02) * 0.15
                                  + snoise(vWorldPos * 0.05) * 0.08;
                 float perturbedProx = clamp(cliffProximity + cliffNoise, 0.0, 1.0);
-                cliffRockDrawn = smoothstep(0.0, 0.7, perturbedProx);
+                cliffRockDrawn = smoothstep(0.1, 0.5, perturbedProx);
             } else if (steepness > 0.003) {
                 float erosionBlend = smoothstep(0.003 + erosionNoise, 0.06, steepness);
                 float proxFade = smoothstep(0.0, 0.3, cliffProximity);
