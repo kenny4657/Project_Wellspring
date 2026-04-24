@@ -454,6 +454,12 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 				edgeTargets[i] = 0;
 				coastEdges[i] = true;
 				hasCoast = true;
+				// Mark steep cliff so water hex gets cliff proximity for
+				// shader blending (cliff rock texture blends upward from edge)
+				if (nb.heightLevel > 2) {
+					steepCliffEdges[i] = true;
+					hasSteepCliff = true;
+				}
 			}
 		} else {
 			// ── Land hex edge logic ──
