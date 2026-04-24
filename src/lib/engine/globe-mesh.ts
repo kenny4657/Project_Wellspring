@@ -269,6 +269,51 @@ function smoothLandSeamPositions(
 	}
 }
 
+/** Smooth positions at coastal seams where water and land vertices meet.
+ *  The water/land smoothing passes operate independently, leaving gaps
+ *  at corners where cliff hexes meet water hexes. This averages ALL
+ *  non-wall vertices at shared directions to close those gaps. */
+function smoothCoastalSeamPositions(
+	positions: Float32Array, colors: Float32Array, vertexCount: number
+): void {
+	const map = new Map<string, number[]>();
+	for (let i = 0; i < vertexCount; i++) {
+		if (colors[i * 4 + 3] < 0.05) continue;
+		const px = positions[i * 3], py = positions[i * 3 + 1], pz = positions[i * 3 + 2];
+		const len = Math.sqrt(px * px + py * py + pz * pz) || 1;
+		const key = `${Math.round(px / len / 0.0001)},${Math.round(py / len / 0.0001)},${Math.round(pz / len / 0.0001)}`;
+		let list = map.get(key);
+		if (!list) { list = []; map.set(key, list); }
+		list.push(i);
+	}
+	for (const indices of map.values()) {
+		if (indices.length <= 1) continue;
+		let hasWater = false, hasLand = false;
+		for (const i of indices) {
+			const b = colors[i * 4 + 2];
+			if (Math.floor(b * 10 + 0.001) < 2) hasWater = true;
+			else hasLand = true;
+		}
+		if (!hasWater || !hasLand) continue;
+		const i0 = indices[0];
+		const dx = positions[i0 * 3], dy = positions[i0 * 3 + 1], dz = positions[i0 * 3 + 2];
+		const dirLen = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
+		const ux = dx / dirLen, uy = dy / dirLen, uz = dz / dirLen;
+		// Average radius so both sides converge
+		let avgR = 0;
+		for (const i of indices) {
+			const px = positions[i * 3], py = positions[i * 3 + 1], pz = positions[i * 3 + 2];
+			avgR += Math.sqrt(px * px + py * py + pz * pz);
+		}
+		avgR /= indices.length;
+		for (const i of indices) {
+			positions[i * 3] = ux * avgR;
+			positions[i * 3 + 1] = uy * avgR;
+			positions[i * 3 + 2] = uz * avgR;
+		}
+	}
+}
+
 // ── Coastline Edge Detection (Sota's exclude_border_set) ────
 
 /** Distance from point P to line segment AB (Euclidean approximation on unit sphere) */
@@ -405,8 +450,11 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 					}
 				}
 			} else {
-				// Water → land: ramp up to sea level
-				edgeTargets[i] = 0;
+				// Water → high land: raise this exact coast edge to the same
+				// cliff-foot target used by the high land edge. Low shores stay at sea level.
+				edgeTargets[i] = nb.heightLevel > 2
+					? (getLevelHeight(cell.heightLevel) + getLevelHeight(nb.heightLevel)) / 2
+					: 0;
 				coastEdges[i] = true;
 				hasCoast = true;
 			}
@@ -1010,8 +1058,8 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 			const nb = findNeighborAcrossEdge(cell, i, cellById);
 			if (!nb) continue;
 
-			// Skip coastline edges for low land — ramp handles the transition
-			if (nb.heightLevel <= 1 && cell.heightLevel <= 2) continue;
+			// Skip coastline edges — ramp handles the transition
+			if (nb.heightLevel <= 1) continue;
 
 			// No walls for land-land edges — cliff erosion handles those
 			if (nb.heightLevel > 1) continue;
@@ -1050,9 +1098,10 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 				const topR0 = radius * (1 + h0);
 				const topR1 = radius * (1 + h1);
 
-				// Wall bottom: neighbor's surface for gentle steps, BASE_HEIGHT for cliffs
+				// Wall bottom: neighbor's surface for gentle steps and coastal cliffs,
+				// BASE_HEIGHT only for land-land cliffs.
 				let wallBotR0: number, wallBotR1: number;
-				if (heightDiff <= 1) {
+				if (heightDiff <= 1 || nbIsWater) {
 					const nbH0 = computeHeightWithCliffErosion(ux0, uy0, uz0, nb, nbBorderInfo, nbHexRadius, nbTierH, nbIsWater, cellById);
 					const nbH1 = computeHeightWithCliffErosion(ux1, uy1, uz1, nb, nbBorderInfo, nbHexRadius, nbTierH, nbIsWater, cellById);
 					wallBotR0 = radius * (1 + nbH0);
@@ -1112,6 +1161,7 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 	smoothNormalsPass(positionsF32, normalsF32, colorsF32, vOff);
 	smoothWaterCornerPositions(positionsF32, colorsF32, vOff);
 	smoothLandSeamPositions(positionsF32, colorsF32, vOff);
+	smoothCoastalSeamPositions(positionsF32, colorsF32, vOff);
 
 	// ── Diagnostic: find height mismatches at coincident land vertices ──
 	{
