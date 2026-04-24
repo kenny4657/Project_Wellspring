@@ -105,7 +105,6 @@ export async function createGlobeEngine(
 
 	// ── FXAA Anti-Aliasing ──────────────────────────────────
 	// Smooths sub-pixel hairline artifacts at hex mesh boundaries
-	// caused by GPU interpolation of per-vertex color encoding.
 	new FxaaPostProcess('fxaa', 1.0, camera);
 
 	// ── Generate Icosahedral Hex Grid ────────────────────────
