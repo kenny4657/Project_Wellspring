@@ -579,8 +579,10 @@ function distToSteepCliff(
 		const d = distToSegment(vx, vy, vz, a.x, a.y, a.z, b.x, b.y, b.z);
 		if (d < minDist) minDist = d;
 	}
-	// Check neighbor cells' cliff edges (propagate across hex boundaries)
-	if (cellById && borderInfoById) {
+	// Check neighbor cells' cliff edges — but ONLY edges on the shared
+	// boundary (facing back toward this cell). This prevents cliff proximity
+	// from extending deep into non-cliff hexes via far-away neighbor edges.
+	if (cellById && borderInfoById && !borderInfo.hasSteepCliff) {
 		for (const nId of cell.neighbors) {
 			const nb = cellById.get(nId);
 			const nbInfo = borderInfoById?.get(nId);
@@ -588,6 +590,10 @@ function distToSteepCliff(
 			const nn = nb.corners.length;
 			for (let i = 0; i < nn; i++) {
 				if (!nbInfo.steepCliffEdges[i]) continue;
+				// Only include this edge if it faces toward our cell
+				// (i.e., the neighbor across this edge is us)
+				const edgeNb = findNeighborAcrossEdge(nb, i, cellById);
+				if (!edgeNb || edgeNb.id !== cell.id) continue;
 				const a = nb.corners[i];
 				const b = nb.corners[(i + 1) % nn];
 				const d = distToSegment(vx, vy, vz, a.x, a.y, a.z, b.x, b.y, b.z);
