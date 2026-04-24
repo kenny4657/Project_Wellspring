@@ -460,6 +460,11 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 				edgeTargets[i] = 0;
 				coastEdges[i] = true;
 				hasCoast = true;
+				// Mark as steep cliff for shader proximity (no geometry change)
+				if (nb.heightLevel > 2) {
+					steepCliffEdges[i] = true;
+					hasSteepCliff = true;
+				}
 			}
 		} else {
 			// ── Land hex edge logic ──
@@ -1014,12 +1019,27 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 					const vy = triVerts[j + k * 3 + 1];
 					const vz = triVerts[j + k * 3 + 2];
 
-					// Per-vertex cliff proximity: only from this hex's own steep edges
+					// Per-vertex cliff proximity: from this hex's own steep edges
+					// For water hexes, also track the cliff neighbor's terrain
 					let cliffProx = 0;
+					let cliffNbTerrain = -1;
 					if (borderInfo.hasSteepCliff) {
-						const sd = distToSteepCliff(vx, vy, vz, cell, borderInfo);
-						if (Number.isFinite(sd)) {
-							cliffProx = Math.max(0, 1.0 - sd / (hexRadius * 0.3));
+						let minCliffDist = Infinity;
+						for (let ei = 0; ei < n; ei++) {
+							if (!borderInfo.steepCliffEdges[ei]) continue;
+							const ea = cell.corners[ei];
+							const eb = cell.corners[(ei + 1) % n];
+							const d = distToSegment(vx, vy, vz, ea.x, ea.y, ea.z, eb.x, eb.y, eb.z);
+							if (d < minCliffDist) {
+								minCliffDist = d;
+								if (isWaterHex) {
+									const cliffNb = findNeighborAcrossEdge(cell, ei, cellById);
+									if (cliffNb) cliffNbTerrain = cliffNb.terrain;
+								}
+							}
+						}
+						if (Number.isFinite(minCliffDist)) {
+							cliffProx = Math.max(0, 1.0 - minCliffDist / (hexRadius * 0.3));
 						}
 						// In mixed hexes (both steep + gentle edges), suppress
 						// cliff proximity near gentle edges so the shader doesn't
@@ -1038,7 +1058,11 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 						const cd = distToCoast(vx, vy, vz, cell, borderInfo);
 						alpha = 0.5 + 0.5 * Math.min(cd / hexRadius, 1.0);
 					}
-					const topColor = getTopFaceColor(cell.terrain, cell.heightLevel, chosenNId, triBFs[k], cliffProx);
+					// For water hexes with cliff proximity, encode cliff neighbor's
+					// terrain in G channel so shader uses correct cliff palette
+					const effectiveNId = (isWaterHex && cliffProx > 0 && cliffNbTerrain >= 0) ? cliffNbTerrain : chosenNId;
+					const effectiveBF = (isWaterHex && cliffProx > 0 && cliffNbTerrain >= 0) ? 0.01 : triBFs[k];
+					const topColor = getTopFaceColor(cell.terrain, cell.heightLevel, effectiveNId, effectiveBF, cliffProx);
 					positions.push(displaced[k * 3], displaced[k * 3 + 1], displaced[k * 3 + 2]);
 					normals.push(nx, ny, nz);
 					colors.push(topColor[0], topColor[1], topColor[2], alpha);
