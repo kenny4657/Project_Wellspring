@@ -936,7 +936,7 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 					{
 						const sd = distToSteepCliff(vx, vy, vz, cell, borderInfo, cellById, borderInfoById);
 						if (Number.isFinite(sd)) {
-							cliffProx = Math.max(0, 1.0 - sd / (hexRadius * 0.85));
+							cliffProx = Math.max(0, 1.0 - sd / (hexRadius * 0.45));
 						}
 					}
 
