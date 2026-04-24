@@ -19,6 +19,7 @@ import { GeospatialCamera } from '@babylonjs/core/Cameras/geospatialCamera';
 import '@babylonjs/core/Shaders/default.vertex';
 import '@babylonjs/core/Shaders/default.fragment';
 import '@babylonjs/core/Animations/animatable';
+import { FxaaPostProcess } from '@babylonjs/core/PostProcesses/fxaaPostProcess';
 // Side-effect imports needed for camera pointer input system
 import '@babylonjs/core/Events/pointerEvents';
 import '@babylonjs/core/Culling/ray';
@@ -101,6 +102,11 @@ export async function createGlobeEngine(
 	camera.maxZ = EARTH_RADIUS_KM * 20;
 
 	camera.attachControl();
+
+	// ── FXAA Anti-Aliasing ──────────────────────────────────
+	// Smooths sub-pixel hairline artifacts at hex mesh boundaries
+	// caused by GPU interpolation of per-vertex color encoding.
+	new FxaaPostProcess('fxaa', 1.0, camera);
 
 	// ── Generate Icosahedral Hex Grid ────────────────────────
 	report('Generating icosahedral hex grid...');
