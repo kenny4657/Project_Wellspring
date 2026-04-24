@@ -344,8 +344,8 @@ void main() {
             float erosionNoise = snoise(vWorldPos * 0.006) * 0.02;
 
             if (heightLevel < 2) {
-                // Water hexes: proximity-based cliff rock blend
-                cliffRockDrawn = smoothstep(0.0, 0.7, cliffProximity) * 0.85;
+                // Water hexes: blend cliff rock from proximity directly
+                cliffRockDrawn = smoothstep(0.0, 0.5, cliffProximity);
             } else if (steepness > 0.003) {
                 // Land hexes: steepness-gated cliff rock
                 cliffRockDrawn = smoothstep(0.003 + erosionNoise, 0.06, steepness);
