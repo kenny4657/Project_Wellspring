@@ -346,11 +346,11 @@ void main() {
             if (heightLevel < 2) {
                 // Water hexes: blend cliff rock from proximity directly
                 cliffRockDrawn = smoothstep(0.0, 0.5, cliffProximity);
-            } else if (steepness > 0.003) {
-                // Land hexes: steepness-gated cliff rock
-                cliffRockDrawn = smoothstep(0.003 + erosionNoise, 0.06, steepness);
+            } else {
+                // Land hexes: steepness-gated cliff rock with gradual base fade
+                float steepBlend = smoothstep(0.001 + erosionNoise * 0.5, 0.08, steepness);
                 float proxFade = smoothstep(0.0, 0.3, cliffProximity);
-                cliffRockDrawn *= proxFade;
+                cliffRockDrawn = steepBlend * proxFade;
             }
 
             procColor = mix(procColor, rockColor, cliffRockDrawn);
