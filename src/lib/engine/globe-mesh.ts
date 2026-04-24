@@ -185,10 +185,23 @@ function smoothWaterCornerPositions(
 			avgR += Math.sqrt(px * px + py * py + pz * pz);
 		}
 		avgR /= indices.length;
+		// Harmonize cliff proximity at shared water vertices (take max)
+		let maxProx = 0;
+		for (const i of indices) {
+			const bVal = colors[i * 4 + 2];
+			const rawB10 = bVal * 10;
+			const prox = (rawB10 - Math.floor(rawB10 + 0.001)) / 0.9;
+			if (prox > maxProx) maxProx = prox;
+		}
 		for (const i of indices) {
 			positions[i * 3] = ux * avgR;
 			positions[i * 3 + 1] = uy * avgR;
 			positions[i * 3 + 2] = uz * avgR;
+			if (maxProx > 0) {
+				const bVal = colors[i * 4 + 2];
+				const level = Math.floor(bVal * 10 + 0.001);
+				colors[i * 4 + 2] = level * 0.1 + Math.min(maxProx, 1.0) * 0.09;
+			}
 		}
 	}
 }
@@ -450,15 +463,11 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 					}
 				}
 			} else {
-				// Water → high land: raise this exact coast edge to the same
-				// cliff-foot target used by the high land edge. Low shores stay at sea level.
-				edgeTargets[i] = nb.heightLevel > 2
-					? (getLevelHeight(cell.heightLevel) + getLevelHeight(nb.heightLevel)) / 2
-					: 0;
+				// Water → land: flat at sea level (no geometric ramp to cliff)
+				edgeTargets[i] = 0;
 				coastEdges[i] = true;
 				hasCoast = true;
-				// Also mark as steep cliff so water hex gets cliff proximity
-				// and the shader draws cliff rock texture on the ramped surface
+				// Cliff proximity for shader blend (no geometry change)
 				if (nb.heightLevel > 2) {
 					steepCliffEdges[i] = true;
 					hasSteepCliff = true;
@@ -1017,26 +1026,57 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 					const vy = triVerts[j + k * 3 + 1];
 					const vz = triVerts[j + k * 3 + 2];
 
-					// Per-vertex cliff proximity + cliff neighbor terrain for water hexes
+					// Per-vertex cliff proximity + cliff neighbor terrain
 					let cliffProx = 0;
 					let cliffNbTerrain = -1;
-					if (borderInfo.hasSteepCliff) {
+					{
 						let minCliffDist = Infinity;
-						for (let ei = 0; ei < n; ei++) {
-							if (!borderInfo.steepCliffEdges[ei]) continue;
-							const ea = cell.corners[ei];
-							const eb = cell.corners[(ei + 1) % n];
-							const d = distToSegment(vx, vy, vz, ea.x, ea.y, ea.z, eb.x, eb.y, eb.z);
-							if (d < minCliffDist) {
-								minCliffDist = d;
-								if (isWaterHex) {
-									const cliffNb = findNeighborAcrossEdge(cell, ei, cellById);
-									if (cliffNb) cliffNbTerrain = cliffNb.terrain;
+						// Check own steep cliff edges
+						if (borderInfo.hasSteepCliff) {
+							for (let ei = 0; ei < n; ei++) {
+								if (!borderInfo.steepCliffEdges[ei]) continue;
+								const ea = cell.corners[ei];
+								const eb = cell.corners[(ei + 1) % n];
+								const d = distToSegment(vx, vy, vz, ea.x, ea.y, ea.z, eb.x, eb.y, eb.z);
+								if (d < minCliffDist) {
+									minCliffDist = d;
+									if (isWaterHex) {
+										const cliffNb = findNeighborAcrossEdge(cell, ei, cellById);
+										if (cliffNb) cliffNbTerrain = cliffNb.terrain;
+									}
+								}
+							}
+						}
+						// Water hexes: also check neighbor hexes' cliff edges
+						// so blend propagates seamlessly across hex boundaries
+						if (isWaterHex) {
+							for (const nbId of cell.neighbors) {
+								const nbCell = cellById.get(nbId);
+								if (!nbCell) continue;
+								const nbBI = borderInfoById.get(nbCell.id);
+								if (!nbBI || !nbBI.hasSteepCliff) continue;
+								const nbN = nbCell.corners.length;
+								for (let ei = 0; ei < nbN; ei++) {
+									if (!nbBI.steepCliffEdges[ei]) continue;
+									const ea = nbCell.corners[ei];
+									const eb = nbCell.corners[(ei + 1) % nbN];
+									const d = distToSegment(vx, vy, vz, ea.x, ea.y, ea.z, eb.x, eb.y, eb.z);
+									if (d < minCliffDist) {
+										minCliffDist = d;
+										const cliffNb = findNeighborAcrossEdge(nbCell, ei, cellById);
+										if (cliffNb) cliffNbTerrain = cliffNb.terrain;
+									}
 								}
 							}
 						}
 						if (Number.isFinite(minCliffDist)) {
-							cliffProx = Math.max(0, 1.0 - minCliffDist / (hexRadius * 0.3));
+							// Noise-perturb for organic contour on water hexes
+							if (isWaterHex) {
+								const cn = fbmNoise(vx * 120 + 500, vy * 120 + 500, vz * 120 + 500);
+								minCliffDist = Math.max(0, minCliffDist + cn * hexRadius * 0.2);
+							}
+							const proxRadius = isWaterHex ? hexRadius * 1.0 : hexRadius * 0.3;
+							cliffProx = Math.max(0, 1.0 - minCliffDist / proxRadius);
 						}
 						// In mixed hexes (both steep + gentle edges), suppress
 						// cliff proximity near gentle edges so the shader doesn't
