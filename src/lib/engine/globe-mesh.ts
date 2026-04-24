@@ -751,9 +751,9 @@ function computeHeightWithCliffErosion(
 	const cliffNoise = fbmNoise(ux * 120 + 500, uy * 120 + 500, uz * 120 + 500);
 	const perturbedDist = Math.max(0, cliff.dist + cliffNoise * hexRadius * 0.25);
 
-	// Ramp over 30% of hexRadius — uses sqrt curve (nonzero slope at edge)
-	// instead of cosine (which has zero slope at t=0, creating flat midpoint)
-	const rampWidth = hexRadius * 0.3;
+	// Ramp over 20% of hexRadius — steep cliff with sqrt curve (nonzero slope
+	// at edge) instead of cosine (which has zero slope at t=0, creating flat midpoint)
+	const rampWidth = hexRadius * 0.2;
 	const t = Math.min(perturbedDist / rampWidth, 1.0);
 	// sqrt gives steep slope at t=0 (cliff edge), smooth at t=1 (interior)
 	const mu = Math.sqrt(t);
