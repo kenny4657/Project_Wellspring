@@ -339,11 +339,9 @@ void main() {
             float midBlend = smoothstep(0.5, 1.0, cliffProximity);
             rockColor = mix(rockColor, midRock, midBlend * 0.75);
 
-            // Blend: steepness controls cliff texture, proximity tapers edges
+            // Blend: steepness only — no proximity in the blend = no hairline
             float erosionNoise = snoise(vWorldPos * 0.006) * 0.02;
-            float steepBlend = smoothstep(0.003 + erosionNoise, 0.06, steepness);
-            float proxFade = smoothstep(0.0, 0.4, cliffProximity);
-            float erosionBlend = steepBlend * proxFade;
+            float erosionBlend = smoothstep(0.003 + erosionNoise, 0.06, steepness);
             procColor = mix(procColor, rockColor, erosionBlend);
         }
 
