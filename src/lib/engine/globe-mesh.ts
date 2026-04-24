@@ -198,7 +198,8 @@ function smoothWaterCornerPositions(
  *  50km of each other (consecutive after sorting) are averaged together.
  *  Intentional height level steps (127km) are preserved as separate clusters. */
 function smoothLandSeamPositions(
-	positions: Float32Array, colors: Float32Array, vertexCount: number
+	positions: Float32Array, colors: Float32Array, vertexCount: number,
+	harmonizeCliffProximity: boolean = true
 ): void {
 	const map = new Map<string, number[]>();
 
@@ -241,10 +242,26 @@ function smoothLandSeamPositions(
 				let sumR = 0;
 				for (let k = cs; k < j; k++) sumR += entries[k].r;
 				const avgR = sumR / (j - cs);
+				// Find max cliff proximity in cluster so shared-edge vertices match
+				let maxProx = 0;
+				if (harmonizeCliffProximity) {
+					for (let k = cs; k < j; k++) {
+						const bVal = colors[entries[k].i * 4 + 2];
+						const rawB10 = bVal * 10;
+						const prox = (rawB10 - Math.floor(rawB10 + 0.001)) / 0.9;
+						if (prox > maxProx) maxProx = prox;
+					}
+				}
 				for (let k = cs; k < j; k++) {
 					positions[entries[k].i * 3] = ux * avgR;
 					positions[entries[k].i * 3 + 1] = uy * avgR;
 					positions[entries[k].i * 3 + 2] = uz * avgR;
+					// Harmonize cliff proximity across shared-edge vertices
+					if (harmonizeCliffProximity && maxProx > 0) {
+						const bVal = colors[entries[k].i * 4 + 2];
+						const level = Math.floor(bVal * 10 + 0.001);
+						colors[entries[k].i * 4 + 2] = level * 0.1 + Math.min(maxProx, 1.0) * 0.09;
+					}
 				}
 			}
 			cs = j;
