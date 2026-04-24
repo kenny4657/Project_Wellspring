@@ -222,5 +222,26 @@ export function generateIcoHexGrid(resolution: number): HexCell[] {
 		});
 	}
 
+	// Canonicalize shared corners: adjacent hexes may have corners at
+	// the same position but with slightly different coordinates (computed
+	// from different icosphere triangles). This causes sub-pixel geometry
+	// gaps at shared edges. Snap coincident corners to the exact same
+	// coordinates so both hexes use identical edge endpoints.
+	const cornerMap = new Map<string, Vector3>();
+	const snapScale = 10000; // ~0.6km precision on unit sphere
+	for (const cell of cells) {
+		for (let i = 0; i < cell.corners.length; i++) {
+			const c = cell.corners[i];
+			const key2 = `${Math.round(c.x * snapScale)},${Math.round(c.y * snapScale)},${Math.round(c.z * snapScale)}`;
+			const existing = cornerMap.get(key2);
+			if (existing) {
+				// Snap to the first-seen corner at this position
+				cell.corners[i] = existing;
+			} else {
+				cornerMap.set(key2, c);
+			}
+		}
+	}
+
 	return cells;
 }
