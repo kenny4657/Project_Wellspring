@@ -112,9 +112,9 @@ function subdivTriangle(
 function smoothNormalsPass(
 	positions: Float32Array, normals: Float32Array, colors: Float32Array, vertexCount: number
 ): void {
-	// Use angular direction keys (same as position smoothers) so that
-	// vertices snapped to the same position by position smoothing
-	// end up in the same normal-smoothing bucket.
+	// Use finer quantization (0.1 km) to avoid splitting coincident vertices
+	// into different buckets at rounding boundaries
+	const step = 0.1;
 	const map = new Map<string, number[]>();
 
 	// Build spatial hash of top-face vertices only
@@ -123,8 +123,7 @@ function smoothNormalsPass(
 		const px = positions[i * 3];
 		const py = positions[i * 3 + 1];
 		const pz = positions[i * 3 + 2];
-		const len = Math.sqrt(px * px + py * py + pz * pz) || 1;
-		const key = `${Math.round(px / len / 0.0001)},${Math.round(py / len / 0.0001)},${Math.round(pz / len / 0.0001)}`;
+		const key = `${Math.round(px / step)},${Math.round(py / step)},${Math.round(pz / step)}`;
 		let list = map.get(key);
 		if (!list) { list = []; map.set(key, list); }
 		list.push(i);
