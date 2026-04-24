@@ -306,8 +306,7 @@ void main() {
         // blends with the sandy coast color underneath.
         float waterCliffBlend = 0.0;
         if (cliffProximity > 0.3) {
-            int wCliffPalId = hasCrossBlend ? neighborId : terrainId;
-            vec3 wRock = mix(cliffPalette[wCliffPalId * 3], cliffPalette[wCliffPalId * 3 + 1], 0.5);
+            vec3 wRock = mix(cliffPalette[terrainId * 3], cliffPalette[terrainId * 3 + 1], 0.5);
             waterCliffBlend = smoothstep(0.3, 0.8, cliffProximity);
             procColor = mix(procColor, wRock, waterCliffBlend);
         }
