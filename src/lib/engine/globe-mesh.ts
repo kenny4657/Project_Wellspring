@@ -449,8 +449,16 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 						excludedCount++;
 					}
 				}
+			} else if (nb.heightLevel > 2) {
+				// Water → high land: same cliff erosion as inland lower hex
+				cliffEdges[i] = true;
+				hasCliff = true;
+				steepCliffEdges[i] = true;
+				hasSteepCliff = true;
+				excludedEdges[i] = true;
+				excludedCount++;
 			} else {
-				// Water → land: ramp down to sea level (no ramp up to cliff)
+				// Water → low land: regular coast ramp
 				edgeTargets[i] = 0;
 				coastEdges[i] = true;
 				hasCoast = true;
