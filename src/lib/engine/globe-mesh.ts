@@ -561,39 +561,21 @@ function distToTerrainBorder(
 }
 
 /** Distance from a vertex to the nearest steep cliff edge (2+ levels).
- *  Checks BOTH the current cell's edges AND neighbor cells' edges,
- *  so cliff proximity propagates across hex boundaries. */
+ *  Only checks the cell's OWN edges — no neighbor propagation.
+ *  Each hex is responsible for its own cliff texture. A "pass" hex with
+ *  only 1-level diffs gets zero proximity → no cliff texture. */
 function distToSteepCliff(
 	vx: number, vy: number, vz: number,
-	cell: HexCell, borderInfo: HexBorderInfo,
-	cellById?: Map<number, HexCell>,
-	borderInfoById?: Map<number, HexBorderInfo>
+	cell: HexCell, borderInfo: HexBorderInfo
 ): number {
 	const n = cell.corners.length;
 	let minDist = Infinity;
-	// Check own edges
 	for (let i = 0; i < n; i++) {
 		if (!borderInfo.steepCliffEdges[i]) continue;
 		const a = cell.corners[i];
 		const b = cell.corners[(i + 1) % n];
 		const d = distToSegment(vx, vy, vz, a.x, a.y, a.z, b.x, b.y, b.z);
 		if (d < minDist) minDist = d;
-	}
-	// Check neighbor cells' cliff edges (propagate across hex boundaries)
-	if (cellById && borderInfoById) {
-		for (const nId of cell.neighbors) {
-			const nb = cellById.get(nId);
-			const nbInfo = borderInfoById?.get(nId);
-			if (!nb || !nbInfo?.hasSteepCliff) continue;
-			const nn = nb.corners.length;
-			for (let i = 0; i < nn; i++) {
-				if (!nbInfo.steepCliffEdges[i]) continue;
-				const a = nb.corners[i];
-				const b = nb.corners[(i + 1) % nn];
-				const d = distToSegment(vx, vy, vz, a.x, a.y, a.z, b.x, b.y, b.z);
-				if (d < minDist) minDist = d;
-			}
-		}
 	}
 	return minDist;
 }
@@ -730,10 +712,10 @@ function computeSurfaceHeight(
 	return tierH + interiorNoiseH * NOISE_AMP;
 }
 
-/** Compute height with cliff erosion applied.
- *  Near cliff edges, both hexes blend toward a shared midpoint height
- *  computed deterministically from world-space position. Noise perturbs
- *  the distance field so the cliff contour is irregular. */
+/** Compute height with per-edge-type handling:
+ *  - Steep cliff edges (2+ level diff): narrow parabolic ramp → steep geometry → cliff texture
+ *  - Gentle slope edges (1-level diff): wide cosine ramp → smooth geometry → no cliff texture
+ *  The min-mu logic naturally handles corners where different edge types meet. */
 function computeHeightWithCliffErosion(
 	ux: number, uy: number, uz: number,
 	cell: HexCell, borderInfo: HexBorderInfo,
@@ -743,11 +725,7 @@ function computeHeightWithCliffErosion(
 	const h = computeSurfaceHeight(ux, uy, uz, cell, borderInfo, hexRadius, tierH, isWaterHex);
 	if (!borderInfo.hasCliff) return h;
 
-	// Check ALL cliff edges and use the one with strongest effect (min mu).
-	// This fills holes at hex corners where two cliff edges meet —
-	// the nearest edge to each corner vertex pulls it into the cliff.
 	const n = cell.corners.length;
-	const rampWidth = hexRadius * 0.2;
 	const cliffNoise = fbmNoise(ux * 120 + 500, uy * 120 + 500, uz * 120 + 500);
 	const midNoise = fbmNoise(ux * NOISE_SCALE, uy * NOISE_SCALE, uz * NOISE_SCALE);
 
@@ -759,9 +737,22 @@ function computeHeightWithCliffErosion(
 		const a = cell.corners[i];
 		const b = cell.corners[(i + 1) % n];
 		const dist = distToSegment(ux, uy, uz, a.x, a.y, a.z, b.x, b.y, b.z);
-		const perturbedDist = Math.max(0, dist + cliffNoise * hexRadius * 0.25);
-		const t = Math.min(perturbedDist / rampWidth, 1.0);
-		const mu = t * (2 - t);
+
+		const isSteep = borderInfo.steepCliffEdges[i];
+		let mu: number;
+
+		if (isSteep) {
+			// Steep cliff (2+ level): narrow parabolic ramp → creates steep faces
+			const rampWidth = hexRadius * 0.2;
+			const perturbedDist = Math.max(0, dist + cliffNoise * hexRadius * 0.25);
+			const t = Math.min(perturbedDist / rampWidth, 1.0);
+			mu = t * (2 - t);
+		} else {
+			// Gentle slope (1-level): wide cosine ramp → smooth faces, no cliff texture
+			const rampWidth = hexRadius * 0.7;
+			const t = Math.min(dist / rampWidth, 1.0);
+			mu = (1 - Math.cos(t * Math.PI)) / 2;
+		}
 
 		if (mu < bestMu) {
 			bestMu = mu;
@@ -939,11 +930,10 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 					const vy = triVerts[j + k * 3 + 1];
 					const vz = triVerts[j + k * 3 + 2];
 
-					// Per-vertex cliff proximity: continuous 0-1 (smooth falloff)
-					// Check cliff proximity: own edges + neighbor edges
+					// Per-vertex cliff proximity: only from this hex's own steep edges
 					let cliffProx = 0;
-					{
-						const sd = distToSteepCliff(vx, vy, vz, cell, borderInfo, cellById, borderInfoById);
+					if (borderInfo.hasSteepCliff) {
+						const sd = distToSteepCliff(vx, vy, vz, cell, borderInfo);
 						if (Number.isFinite(sd)) {
 							cliffProx = Math.max(0, 1.0 - sd / (hexRadius * 0.45));
 						}
