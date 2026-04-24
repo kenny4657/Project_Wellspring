@@ -364,6 +364,11 @@ void main() {
             float beachStart = 0.35 + coastNoise;
             float beachBlend = smoothstep(beachStart, 1.0, coastProximity);
             beachBlend *= (1.0 - cliffRockDrawn);
+            // Suppress beach near terrain border so cross-terrain
+            // blend (upward cliff color) is visible through the sand
+            if (hasCrossBlend) {
+                beachBlend *= smoothstep(0.0, 0.35, distToBorder);
+            }
             procColor = mix(procColor, beachColor, beachBlend);
         }
     }
