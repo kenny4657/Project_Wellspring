@@ -755,8 +755,8 @@ function computeHeightWithCliffErosion(
 	// at edge) instead of cosine (which has zero slope at t=0, creating flat midpoint)
 	const rampWidth = hexRadius * 0.2;
 	const t = Math.min(perturbedDist / rampWidth, 1.0);
-	// sqrt gives steep slope at t=0 (cliff edge), smooth at t=1 (interior)
-	const mu = Math.sqrt(t);
+	// Parabolic: slope=2 at t=0 (nonzero at cliff edge), slope=0 at t=1 (smooth interior)
+	const mu = t * (2 - t);
 
 	// Shared midpoint height — deterministic from world position, same for both hexes.
 	// Average of this cell's and neighbor's tier height, plus world-space noise.
