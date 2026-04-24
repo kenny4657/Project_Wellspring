@@ -751,8 +751,8 @@ function computeHeightWithCliffErosion(
 	const cliffNoise = fbmNoise(ux * 120 + 500, uy * 120 + 500, uz * 120 + 500);
 	const perturbedDist = Math.max(0, cliff.dist + cliffNoise * hexRadius * 0.25);
 
-	// Steep cosine ramp over 30% of hexRadius
-	const rampWidth = hexRadius * 0.3;
+	// Steep cosine ramp over 20% of hexRadius — narrower = steeper at midpoint
+	const rampWidth = hexRadius * 0.2;
 	const t = Math.min(perturbedDist / rampWidth, 1.0);
 	const mu = (1 - Math.cos(t * Math.PI)) / 2; // 0 at edge, 1 at interior
 
