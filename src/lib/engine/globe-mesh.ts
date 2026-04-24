@@ -419,7 +419,11 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 					coastEdges[i] = true;
 					hasCoast = true;
 				} else {
-					// High land → water: cliff/wall (excluded like land-land)
+					// High land → water: coastal cliff (cliff texture, not flat wall)
+					cliffEdges[i] = true;
+					hasCliff = true;
+					steepCliffEdges[i] = true;
+					hasSteepCliff = true;
 					excludedEdges[i] = true;
 					excludedCount++;
 				}
