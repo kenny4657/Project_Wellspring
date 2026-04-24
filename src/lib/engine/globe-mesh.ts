@@ -751,10 +751,12 @@ function computeHeightWithCliffErosion(
 	const cliffNoise = fbmNoise(ux * 120 + 500, uy * 120 + 500, uz * 120 + 500);
 	const perturbedDist = Math.max(0, cliff.dist + cliffNoise * hexRadius * 0.25);
 
-	// Steep cosine ramp over 20% of hexRadius — narrower = steeper at midpoint
-	const rampWidth = hexRadius * 0.2;
+	// Ramp over 30% of hexRadius — uses sqrt curve (nonzero slope at edge)
+	// instead of cosine (which has zero slope at t=0, creating flat midpoint)
+	const rampWidth = hexRadius * 0.3;
 	const t = Math.min(perturbedDist / rampWidth, 1.0);
-	const mu = (1 - Math.cos(t * Math.PI)) / 2; // 0 at edge, 1 at interior
+	// sqrt gives steep slope at t=0 (cliff edge), smooth at t=1 (interior)
+	const mu = Math.sqrt(t);
 
 	// Shared midpoint height — deterministic from world position, same for both hexes.
 	// Average of this cell's and neighbor's tier height, plus world-space noise.
