@@ -832,8 +832,10 @@ function computeHeightWithCliffErosion(
 
 		if (isSteep) {
 			// Steep cliff (2+ level): narrow parabolic ramp → creates steep faces
+			// Heavy noise perturbation breaks up straight hex-edge cliff outline
 			const rampWidth = hexRadius * 0.2;
-			const perturbedDist = Math.max(0, dist + cliffNoise * hexRadius * 0.25);
+			const extraNoise = fbmNoise(ux * 60 + 200, uy * 60 + 200, uz * 60 + 200);
+			const perturbedDist = Math.max(0, dist + cliffNoise * hexRadius * 0.45 + extraNoise * hexRadius * 0.35);
 			const t = Math.min(perturbedDist / rampWidth, 1.0);
 			mu = t * (2 - t);
 		} else {
@@ -843,8 +845,6 @@ function computeHeightWithCliffErosion(
 			mu = (1 - Math.cos(t * Math.PI)) / 2;
 		}
 
-		// Smooth-min combines overlapping cliff edges so corners round off
-		// instead of forming sharp angular hex-boundary notches
 		const prevMu = bestMu;
 		bestMu = smoothMin(bestMu, mu, 0.25);
 		// Update midH only if this edge dominated (lowered bestMu significantly)
