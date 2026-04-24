@@ -11,7 +11,7 @@ import { Vector3, Color3, Color4 } from '@babylonjs/core/Maths/math';
 import { MeshBuilder } from '@babylonjs/core/Meshes/meshBuilder';
 // StandardMaterial import is a required side-effect — pickSphere needs
 // a default material to be pickable via scene.pick()
-import '@babylonjs/core/Materials/standardMaterial';
+import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
 import { DirectionalLight } from '@babylonjs/core/Lights/directionalLight';
 import { HemisphericLight } from '@babylonjs/core/Lights/hemisphericLight';
 import { GeospatialCamera } from '@babylonjs/core/Cameras/geospatialCamera';
@@ -137,6 +137,17 @@ export async function createGlobeEngine(
 	// Force renderList to terrain only — depth renderer defaults to null (all meshes)
 	depthTexture.renderList = [];
 	depthTexture.renderList.push(globeMesh);
+
+	// ── Fill sphere — hides sub-pixel rasterization cracks between triangles
+	const fillSphere = MeshBuilder.CreateSphere('fillSphere', {
+		diameter: EARTH_RADIUS_KM * 2 * 0.999,
+		segments: 32
+	}, scene);
+	const fillMat = new StandardMaterial('fillMat', scene);
+	fillMat.diffuseColor = new Color3(0.28, 0.40, 0.18); // muted green to match terrain
+	fillMat.specularColor = Color3.Black();
+	fillSphere.material = fillMat;
+	fillSphere.isPickable = false;
 
 	const waterSphere = MeshBuilder.CreateSphere('waterSurface', {
 		diameter: EARTH_RADIUS_KM * 2 * 0.9995,
