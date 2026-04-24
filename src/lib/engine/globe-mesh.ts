@@ -743,28 +743,37 @@ function computeHeightWithCliffErosion(
 	const h = computeSurfaceHeight(ux, uy, uz, cell, borderInfo, hexRadius, tierH, isWaterHex);
 	if (!borderInfo.hasCliff) return h;
 
-	const cliff = distToCliffWithTarget(ux, uy, uz, cell, borderInfo, cellById);
-	if (!Number.isFinite(cliff.dist)) return h;
-
-	// Noise-perturb distance so cliff contour follows noise, not hex edge
-	// Low frequency so noise varies significantly along each hex edge
-	const cliffNoise = fbmNoise(ux * 120 + 500, uy * 120 + 500, uz * 120 + 500);
-	const perturbedDist = Math.max(0, cliff.dist + cliffNoise * hexRadius * 0.25);
-
-	// Ramp over 20% of hexRadius — steep cliff with sqrt curve (nonzero slope
-	// at edge) instead of cosine (which has zero slope at t=0, creating flat midpoint)
+	// Check ALL cliff edges and use the one with strongest effect (min mu).
+	// This fills holes at hex corners where two cliff edges meet —
+	// the nearest edge to each corner vertex pulls it into the cliff.
+	const n = cell.corners.length;
 	const rampWidth = hexRadius * 0.2;
-	const t = Math.min(perturbedDist / rampWidth, 1.0);
-	// Parabolic: slope=2 at t=0 (nonzero at cliff edge), slope=0 at t=1 (smooth interior)
-	const mu = t * (2 - t);
-
-	// Shared midpoint height — deterministic from world position, same for both hexes.
-	// Average of this cell's and neighbor's tier height, plus world-space noise.
-	const midTierH = (tierH + cliff.neighborHeight) / 2;
+	const cliffNoise = fbmNoise(ux * 120 + 500, uy * 120 + 500, uz * 120 + 500);
 	const midNoise = fbmNoise(ux * NOISE_SCALE, uy * NOISE_SCALE, uz * NOISE_SCALE);
-	const midH = midTierH + (Math.abs(midNoise) + 0.15) * NOISE_AMP * 0.3;
 
-	return midH * (1 - mu) + h * mu;
+	let bestMu = 1.0;
+	let bestMidH = h;
+
+	for (let i = 0; i < n; i++) {
+		if (!borderInfo.cliffEdges[i]) continue;
+		const a = cell.corners[i];
+		const b = cell.corners[(i + 1) % n];
+		const dist = distToSegment(ux, uy, uz, a.x, a.y, a.z, b.x, b.y, b.z);
+		const perturbedDist = Math.max(0, dist + cliffNoise * hexRadius * 0.25);
+		const t = Math.min(perturbedDist / rampWidth, 1.0);
+		const mu = t * (2 - t);
+
+		if (mu < bestMu) {
+			bestMu = mu;
+			const nb = findNeighborAcrossEdge(cell, i, cellById);
+			const neighborHeight = nb ? getLevelHeight(nb.heightLevel) : 0;
+			const midTierH = (tierH + neighborHeight) / 2;
+			bestMidH = midTierH + (Math.abs(midNoise) + 0.15) * NOISE_AMP * 0.3;
+		}
+	}
+
+	if (bestMu >= 1.0) return h;
+	return bestMidH * (1 - bestMu) + h * bestMu;
 }
 
 function cornerPatchHeight(
