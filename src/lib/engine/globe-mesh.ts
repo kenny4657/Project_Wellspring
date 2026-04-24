@@ -450,19 +450,10 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 					}
 				}
 			} else {
-				// Water → high land: raise this exact coast edge to the same
-				// cliff-foot target used by the high land edge. Low shores stay at sea level.
-				edgeTargets[i] = nb.heightLevel > 2
-					? (getLevelHeight(cell.heightLevel) + getLevelHeight(nb.heightLevel)) / 2
-					: 0;
+				// Water → land: ramp down to sea level (no ramp up to cliff)
+				edgeTargets[i] = 0;
 				coastEdges[i] = true;
 				hasCoast = true;
-				// Also mark as steep cliff so water hex gets cliff proximity
-				// and the shader draws cliff rock texture on the ramped surface
-				if (nb.heightLevel > 2) {
-					steepCliffEdges[i] = true;
-					hasSteepCliff = true;
-				}
 			}
 		} else {
 			// ── Land hex edge logic ──
