@@ -843,8 +843,12 @@ function computeHeightWithCliffErosion(
 			mu = (1 - Math.cos(t * Math.PI)) / 2;
 		}
 
-		if (mu < bestMu) {
-			bestMu = mu;
+		// Smooth-min combines overlapping cliff edges so corners round off
+		// instead of forming sharp angular hex-boundary notches
+		const prevMu = bestMu;
+		bestMu = smoothMin(bestMu, mu, 0.25);
+		// Update midH only if this edge dominated (lowered bestMu significantly)
+		if (mu < prevMu) {
 			const nb = findNeighborAcrossEdge(cell, i, cellById);
 			const neighborHeight = nb ? getLevelHeight(nb.heightLevel) : 0;
 			const midTierH = (tierH + neighborHeight) / 2;
