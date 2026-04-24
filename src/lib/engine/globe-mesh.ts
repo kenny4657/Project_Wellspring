@@ -185,10 +185,23 @@ function smoothWaterCornerPositions(
 			avgR += Math.sqrt(px * px + py * py + pz * pz);
 		}
 		avgR /= indices.length;
+		// Harmonize cliff proximity: max across shared vertices
+		let maxProx = 0;
+		for (const i of indices) {
+			const bVal = colors[i * 4 + 2];
+			const rawB10 = bVal * 10;
+			const prox = (rawB10 - Math.floor(rawB10 + 0.001)) / 0.9;
+			if (prox > maxProx) maxProx = prox;
+		}
 		for (const i of indices) {
 			positions[i * 3] = ux * avgR;
 			positions[i * 3 + 1] = uy * avgR;
 			positions[i * 3 + 2] = uz * avgR;
+			if (maxProx > 0) {
+				const bVal = colors[i * 4 + 2];
+				const level = Math.floor(bVal * 10 + 0.001);
+				colors[i * 4 + 2] = level * 0.1 + Math.min(maxProx, 1.0) * 0.09;
+			}
 		}
 	}
 }
@@ -1058,6 +1071,12 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 							}
 						}
 						if (Number.isFinite(minCliffDist)) {
+							// Noise-perturb distance for organic blend contour
+							// (matches how distToTerrainBorder perturbs cliff edges)
+							if (isWaterHex) {
+								const cliffNoise = fbmNoise(vx * 120 + 500, vy * 120 + 500, vz * 120 + 500);
+								minCliffDist = Math.max(0, minCliffDist + cliffNoise * hexRadius * 0.25);
+							}
 							cliffProx = Math.max(0, 1.0 - minCliffDist / (hexRadius * 0.5));
 						}
 						// In mixed hexes (both steep + gentle edges), suppress
