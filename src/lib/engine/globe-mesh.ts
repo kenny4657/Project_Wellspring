@@ -449,17 +449,23 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 						excludedCount++;
 					}
 				}
-			} else {
-				// Water → land: ramp down to sea level (no ramp up to cliff)
-				edgeTargets[i] = 0;
-				coastEdges[i] = true;
-				hasCoast = true;
-				// Mark steep cliff so water hex gets cliff proximity for
-				// shader blending (cliff rock texture blends upward from edge)
-				if (nb.heightLevel > 2) {
+			} else if (nb.heightLevel > 2) {
+				// Water → high land: treat like inland cliff edge
+				// (cliff erosion handles the ramp, same as land→land)
+				const heightDiff = Math.abs(nb.heightLevel - cell.heightLevel);
+				cliffEdges[i] = true;
+				hasCliff = true;
+				if (heightDiff >= 2) {
 					steepCliffEdges[i] = true;
 					hasSteepCliff = true;
 				}
+				excludedEdges[i] = true;
+				excludedCount++;
+			} else {
+				// Water → low land: regular coast ramp
+				edgeTargets[i] = 0;
+				coastEdges[i] = true;
+				hasCoast = true;
 			}
 		} else {
 			// ── Land hex edge logic ──
