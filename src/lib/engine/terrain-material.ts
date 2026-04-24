@@ -364,6 +364,9 @@ void main() {
             float beachStart = 0.35 + coastNoise;
             float beachBlend = smoothstep(beachStart, 1.0, coastProximity);
             beachBlend *= (1.0 - cliffRockDrawn);
+            // Suppress beach near cliff base so transition matches inland cliffs
+            // (cliff rock → terrain color → beach, not cliff rock → beach directly)
+            beachBlend *= (1.0 - cliffProximity);
             procColor = mix(procColor, beachColor, beachBlend);
         }
     }
