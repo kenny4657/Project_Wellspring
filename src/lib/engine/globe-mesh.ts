@@ -1055,11 +1055,7 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 						const cd = distToCoast(vx, vy, vz, cell, borderInfo);
 						alpha = 0.5 + 0.5 * Math.min(cd / hexRadius, 1.0);
 					}
-					// For water hexes with cliff proximity, encode cliff neighbor's
-					// terrain in G channel so shader uses correct cliff palette
-					const effectiveNId = (isWaterHex && cliffProx > 0 && cliffNbTerrain >= 0) ? cliffNbTerrain : chosenNId;
-					const effectiveBF = (isWaterHex && cliffProx > 0 && cliffNbTerrain >= 0) ? 0.01 : triBFs[k];
-					const topColor = getTopFaceColor(cell.terrain, cell.heightLevel, effectiveNId, effectiveBF, cliffProx);
+					const topColor = getTopFaceColor(cell.terrain, cell.heightLevel, chosenNId, triBFs[k], cliffProx);
 					positions.push(displaced[k * 3], displaced[k * 3 + 1], displaced[k * 3 + 2]);
 					normals.push(nx, ny, nz);
 					colors.push(topColor[0], topColor[1], topColor[2], alpha);
