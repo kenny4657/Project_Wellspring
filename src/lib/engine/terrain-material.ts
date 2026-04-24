@@ -343,27 +343,27 @@ void main() {
 
             float erosionNoise = snoise(vWorldPos * 0.006) * 0.02;
 
-            // Same blend for all hexes: steepness controls cliff rock,
-            // proximity fades it — identical to how land-land cliffs work
-            if (steepness > 0.003) {
+            if (heightLevel < 2) {
+                // Water hexes: blend cliff rock from proximity directly
+                cliffRockDrawn = smoothstep(0.0, 0.5, cliffProximity);
+            } else if (steepness > 0.003) {
+                // Land hexes: steepness-gated cliff rock
                 cliffRockDrawn = smoothstep(0.003 + erosionNoise, 0.06, steepness);
                 float proxFade = smoothstep(0.0, 0.3, cliffProximity);
                 cliffRockDrawn *= proxFade;
             }
 
-            // At low blend, fade rock color toward the underlying terrain
-            // so the cliff edge dissolves into terrain rather than leaving
-            // a dark contour line from high-contrast rock over light sand
-            vec3 blendedRock = mix(procColor, rockColor, smoothstep(0.0, 0.3, cliffRockDrawn));
-            procColor = mix(procColor, blendedRock, cliffRockDrawn);
+            procColor = mix(procColor, rockColor, cliffRockDrawn);
         }
 
         // Then: if coastal, blend the result toward beach
+        // Suppress beach where cliff rock is actually drawn
         if (coastProximity > 0.01) {
             float coastNoise = snoise(vWorldPos * 0.005) * 0.12
                              + snoise(vWorldPos * 0.015) * 0.06;
             float beachStart = 0.35 + coastNoise;
             float beachBlend = smoothstep(beachStart, 1.0, coastProximity);
+            beachBlend *= (1.0 - cliffRockDrawn);
             procColor = mix(procColor, beachColor, beachBlend);
         }
     }
