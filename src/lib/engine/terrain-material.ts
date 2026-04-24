@@ -299,7 +299,6 @@ void main() {
 
         // Cliff texture — per-terrain rock with continuous proximity blending
         float steepness = 1.0 - dot(N, normalize(vWorldPos));
-        float cliffRockDrawn = 0.0;
 
         if (cliffProximity > 0.01) {
             // Water hexes near cliffs: use cliff neighbor's terrain for palette
@@ -344,6 +343,7 @@ void main() {
             // Blend: land hexes use steepness gate, water hexes use proximity only
             // (flat water surface has no geometric steepness)
             float erosionNoise = snoise(vWorldPos * 0.006) * 0.02;
+            float cliffRockDrawn = 0.0;
             if (heightLevel < 2) {
                 // Water hex: proximity-based blend, no steepness required
                 cliffRockDrawn = smoothstep(0.0, 0.5, cliffProximity);
@@ -356,14 +356,11 @@ void main() {
         }
 
         // Then: if coastal, blend the result toward beach
-        // Suppress beach where cliff rock is drawn so water hex cliff blend
-        // isn't overwritten by sand color
         if (coastProximity > 0.01) {
             float coastNoise = snoise(vWorldPos * 0.005) * 0.12
                              + snoise(vWorldPos * 0.015) * 0.06;
             float beachStart = 0.35 + coastNoise;
             float beachBlend = smoothstep(beachStart, 1.0, coastProximity);
-            beachBlend *= (1.0 - cliffRockDrawn);
             procColor = mix(procColor, beachColor, beachBlend);
         }
     }
