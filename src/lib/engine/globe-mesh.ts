@@ -419,12 +419,10 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 		if (!nb) continue;
 
 		// Track terrain type differences for color blending
-		// Skip water↔water edges, but allow water→high-land so coast
-		// blends upward toward cliff neighbor's terrain color
+		// Skip water neighbors — coastline ramps handle those transitions
 		const nbIsWaterTerrain = nb.heightLevel <= 1;
 		const cellIsWaterTerrain = cell.heightLevel <= 1;
-		const bothWater = nbIsWaterTerrain && cellIsWaterTerrain;
-		if (nb.terrain !== cell.terrain && !bothWater) {
+		if (nb.terrain !== cell.terrain && !nbIsWaterTerrain && !cellIsWaterTerrain) {
 			edgeNeighborTerrains[i] = nb.terrain;
 			hasTerrainBorder = true;
 		}
