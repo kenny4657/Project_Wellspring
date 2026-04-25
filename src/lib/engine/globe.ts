@@ -177,86 +177,94 @@ export async function createGlobeEngine(
 		return bestIdx;
 	}
 
-	// ── MapLibre-style sphere-trackball pan ────────────────────
-	// Replace Babylon's drag-plane pan (which drifts when the camera is tilted,
-	// because the tangent plane orientation depends on camera pose) with a pure
-	// world-space sphere rotation. Each pointermove computes the quaternion that
-	// rotates the previous globe hit point to the current one and applies it to
-	// camera.center.
+	// ── MapLibre-style sphere-trackball pan (anchor-to-grab) ────────────────
+	// Replace Babylon's drag-plane pan with a sphere rotation that keeps the
+	// originally grabbed world point pinned under the cursor for the entire
+	// drag. Two design choices that took several iterations to get right:
 	//
-	// Critical detail (the reason this fixes "left drag dies after tilt"): at
-	// high pitch the cursor often points above the horizon, so a normal pick
-	// against the sphere misses and the previous code did nothing. We instead
-	// project the cursor ray onto the sphere — when the ray misses, we use the
-	// closest point of the ray to the planet center, normalized to the sphere
-	// surface (the limb). This always yields a valid sphere point, just like
-	// MapLibre's globe drag, and keeps left-drag responsive at any tilt.
+	// 1. Anchor-to-grab, NOT incremental. We snapshot the grab point at
+	//    pointerdown and never touch it during the drag. Every pointermove
+	//    computes the rotation that takes the CURRENT cursor pick back to the
+	//    ORIGINAL grab point, then applies it to camera.center. This is
+	//    self-correcting: any frame's rotation puts grab back under the cursor
+	//    regardless of accumulated FP drift, intermittent dropped frames, or
+	//    camera state changes that happened between drags. The previous
+	//    incremental form (sphereDragPrev = curr each frame) accumulated drift
+	//    after right-drag tilts and made left-drag feel "unintuitive" over time.
 	//
-	// GeospatialCameraPointersInput stays attached so right-drag tilt continues
-	// to work (it writes to rotationAccumulatedPixels, which we don't touch).
-	// Babylon's left-drag pan also still runs and writes to panAccumulatedPixels,
-	// but we zero those out each pointermove so _applyGeocentricTranslation is
-	// never invoked. Net effect: Babylon's pan is neutralized, ours wins.
+	// 2. No off-planet projection. If the cursor ray misses the sphere, we do
+	//    NOTHING that frame — we don't fall back to a limb projection or a
+	//    virtual sphere. Off-planet projections produce huge rotation deltas
+	//    when the user drags through the sky region (which dominates the
+	//    screen at high tilt) and that came across as "left drag can only
+	//    rotate the planet." Freezing while off-planet, plus anchor-to-grab,
+	//    means dragging back onto the planet seamlessly resumes with grab
+	//    still pinned to the cursor.
+	//
+	// We keep GeospatialCameraPointersInput attached so right-drag tilt still
+	// works through rotationAccumulatedPixels (which we never touch). Babylon's
+	// left-drag pan also runs in parallel and writes panAccumulatedPixels, but
+	// we zero it each pointermove so _applyGeocentricTranslation is never
+	// invoked — net result: only our rotation moves the camera.
 	const SPHERE_PICK_RADIUS = EARTH_RADIUS_KM * 0.997;
 
-	function projectCursorToSphere(sx: number, sy: number): Vector3 | null {
+	function pickSphereWorld(sx: number, sy: number): Vector3 | null {
 		const ray = scene.createPickingRay(sx, sy, null, camera);
 		const o = ray.origin;
-		const d = ray.direction; // Babylon's createPickingRay returns a normalized direction
-		// Closest approach of the ray (parameterized as o + t*d) to the world origin
-		// (sphere center). For unit d, t* = -dot(o, d).
+		const d = ray.direction;
 		const t = -Vector3.Dot(o, d);
-		if (t < 0) return null; // sphere is behind the camera
+		if (t < 0) return null;
 		const closest = o.add(d.scale(t));
 		const closestLenSq = closest.lengthSquared();
 		const r2 = SPHERE_PICK_RADIUS * SPHERE_PICK_RADIUS;
-		if (closestLenSq <= r2) {
-			// Ray intersects the sphere — return the front (entry) hit, the same
-			// point scene.pick would return.
-			const dt = Math.sqrt(r2 - closestLenSq);
-			return o.add(d.scale(t - dt));
-		}
-		// Ray misses — clamp to the visible limb so dragging still produces a
-		// well-defined rotation. This is what makes high-pitch panning feel
-		// natural instead of dead.
-		return closest.normalize().scale(SPHERE_PICK_RADIUS);
+		if (closestLenSq > r2) return null; // ray misses — drag freezes
+		const dt = Math.sqrt(r2 - closestLenSq);
+		return o.add(d.scale(t - dt));
 	}
 
-	let sphereDragPrev: Vector3 | null = null;
+	// The originally grabbed world point. Set on pointerdown, cleared on up.
+	// Crucially NOT updated during the drag — that is what makes the algorithm
+	// resistant to per-frame drift.
+	let grabPoint: Vector3 | null = null;
 
 	canvas.addEventListener('pointerdown', (e) => {
 		if (e.button !== 0) return;
 		pointerDownPos = { x: e.clientX, y: e.clientY };
-		sphereDragPrev = projectCursorToSphere(scene.pointerX, scene.pointerY);
+		grabPoint = pickSphereWorld(scene.pointerX, scene.pointerY);
 	});
 
 	canvas.addEventListener('pointermove', () => {
-		if (!sphereDragPrev) return;
-		const curr = projectCursorToSphere(scene.pointerX, scene.pointerY);
+		if (!grabPoint) return;
+		const curr = pickSphereWorld(scene.pointerX, scene.pointerY);
 		if (curr) {
-			const fromN = curr.clone().normalize();
-			const toN = sphereDragPrev.clone().normalize();
+			const fromN = curr.normalizeToNew();
+			const toN = grabPoint.normalizeToNew();
 			const cosA = Math.max(-1, Math.min(1, Vector3.Dot(fromN, toN)));
 			if (cosA < 0.9999999) {
 				const axis = Vector3.Cross(fromN, toN).normalize();
 				const rot = Matrix.RotationAxis(axis, Math.acos(cosA));
+				// Preserve the existing radius (Babylon's _recalculateCenter may
+				// place the center at a slightly different radius than
+				// EARTH_RADIUS_KM after zoom; rescaling to a hardcoded constant
+				// here would tug the camera each frame).
+				const r = camera.center.length();
 				camera.center = Vector3.TransformCoordinates(
-					camera.center.clone().normalize(),
+					camera.center.normalizeToNew(),
 					rot
-				).scale(EARTH_RADIUS_KM);
+				).scaleInPlace(r);
 			}
-			sphereDragPrev = curr;
+			// Note: grabPoint is intentionally NOT updated. This is the entire
+			// point of anchor-to-grab — the next frame will rotate again from
+			// the new pick back to the original grab.
 		}
-		// Neutralize Babylon's pan: it added to panAccumulatedPixels in its own
-		// pointermove handler (registered earlier, runs first); zeroing here
-		// means computeCurrentFrameDeltas sees 0 and _applyGeocentricTranslation
-		// never fires to fight our rotation.
+		// Neutralize Babylon's parallel pan: zero its accumulator so
+		// _applyGeocentricTranslation never fires to fight our rotation.
 		camera.movement.panAccumulatedPixels.setAll(0);
 	});
 
 	canvas.addEventListener('pointerup', (e) => {
 		if (e.button !== 0) return;
-		sphereDragPrev = null;
+		grabPoint = null;
 		if (pointerDownPos) {
 			const dx = e.clientX - pointerDownPos.x;
 			const dy = e.clientY - pointerDownPos.y;
