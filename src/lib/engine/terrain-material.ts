@@ -39,7 +39,13 @@ void main() {
 }
 `;
 
-const FRAGMENT = /* glsl */ `
+// ── Fragment shader chunks ──────────────────────────────────
+// The fragment shader is split into named chunks concatenated at the bottom
+// into FRAGMENT. Each chunk is a self-contained block of GLSL that compiles
+// in sequence; the preamble (precision, uniforms, varyings) lives at the top
+// of GLSL_NOISE so order matters.
+
+const GLSL_NOISE = /* glsl */ `
 precision highp float;
 
 uniform vec3 sunDir;
@@ -132,7 +138,9 @@ vec3 slabMap(vec2 uv, float warp) {
     float cv2 = hash1(cellId + 100.0);
     return vec3(edgeDist, cv1, cv2);
 }
+`;
 
+const GLSL_SCRATCHY = /* glsl */ `
 // ── Scratchy organic texture (matches Sota's tileable textures) ──
 
 float scratchyPattern(vec2 uv) {
@@ -154,7 +162,9 @@ float triplanarScratchy(vec3 worldPos, vec3 normal, float scale) {
 
     return tx * blend.x + ty * blend.y + tz * blend.z;
 }
+`;
 
+const GLSL_PALETTE = /* glsl */ `
 // ── Per-terrain palette lookup ──────────────────────────────
 // terrainPalette[id*4+0] = shore, [id*4+1] = grass, [id*4+2] = hill, [id*4+3] = snow
 
@@ -195,7 +205,9 @@ vec3 computeTerrainColor(int id, float heightAboveR, float tierH, float scratchy
         return palSnow(id, scratchy);
     }
 }
+`;
 
+const GLSL_WALL_TEXTURE = /* glsl */ `
 // ── Wall cross-section ──────────────────────────────────────
 
 vec3 textureWall(vec3 terrainBase, vec3 wp) {
@@ -225,7 +237,9 @@ vec3 textureWall(vec3 terrainBase, vec3 wp) {
 
     return mix(landWall, waterWall, bDom);
 }
+`;
 
+const GLSL_MAIN_SETUP = /* glsl */ `
 // ── Main ────────────────────────────────────────────────────
 
 void main() {
@@ -296,7 +310,9 @@ void main() {
         } else {
             procColor = ownColor;
         }
+`;
 
+const GLSL_CLIFF_RENDERING = /* glsl */ `
         // Cliff texture — per-terrain rock with continuous proximity blending
         float steepness = 1.0 - dot(N, normalize(vWorldPos));
 
@@ -360,7 +376,9 @@ void main() {
             // Track for beach suppression
             waterCliffBlend = max(waterCliffBlend, erosionBlend);
         }
+`;
 
+const GLSL_BEACH_OVERLAY = /* glsl */ `
         // Then: if coastal, blend the result toward beach
         // Suppress beach across the ENTIRE cliff zone (using cliffProximity
         // directly) so the cliff face and water-hex cliff blend form a
@@ -374,7 +392,9 @@ void main() {
             procColor = mix(procColor, beachColor, beachBlend);
         }
     }
+`;
 
+const GLSL_LIGHTING = /* glsl */ `
     // ── Lighting ──
     float ambient = 0.55;
     float sun  = max(0.0, dot(N, sunDir))  * 0.45;
@@ -395,6 +415,16 @@ void main() {
     gl_FragColor = vec4(litColor, 1.0);
 }
 `;
+
+const FRAGMENT =
+	GLSL_NOISE +
+	GLSL_SCRATCHY +
+	GLSL_PALETTE +
+	GLSL_WALL_TEXTURE +
+	GLSL_MAIN_SETUP +
+	GLSL_CLIFF_RENDERING +
+	GLSL_BEACH_OVERLAY +
+	GLSL_LIGHTING;
 
 export function createTerrainMaterial(scene: Scene): ShaderMaterial {
 	ShaderStore.ShadersStore['terrainVertexShader'] = VERTEX;
