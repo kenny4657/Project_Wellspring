@@ -373,17 +373,24 @@ const GLSL_CLIFF_RENDERING = /* glsl */ `
             float midBlend = smoothstep(0.5, 1.0, cliffProximity);
             rockColor = mix(rockColor, midRock, midBlend * 0.75);
 
-            // Cliff foot sand-blend: at low elevations (near sea level) the
-            // cliff face picks up sand tone, so coastal cliffs sit on a
-            // sandy base instead of meeting the beach at a hard horizontal
-            // line. Inland cliffs (high elevation) keep pure rock — the
-            // height gate naturally restricts this to coastal cases.
-            float footAmt = smoothstep(0.008 * planetRadius, 0.0005 * planetRadius, heightAboveR);
-            // Break up the boundary with noise so it doesn't read as a stripe
-            float footNoise = snoise(vWorldPos * 0.012) * 0.15
-                           + snoise(vWorldPos * 0.04) * 0.08;
+            // Cliff foot sand-blend: the bottom portion of the cliff face
+            // takes on sand color so coastal cliffs sit on a sandy base
+            // instead of meeting the beach at a hard horizontal line.
+            // Coastal cliff foot sits at heightAboveR ≈ 0.005 * planetRadius
+            // (midpoint between cliff tier and low-land tier). Threshold
+            // covers that range so the bottom ~60% of the face picks up sand;
+            // inland cliffs sit at higher elevations and get less effect.
+            float footAmt = 1.0 - smoothstep(0.004 * planetRadius, 0.010 * planetRadius, heightAboveR);
+            // Erosion noise breaks up the boundary so it doesn't read as a
+            // straight horizontal stripe. Two octaves: large blotches +
+            // fine grain.
+            float footNoise = snoise(vWorldPos * 0.010) * 0.30
+                            + snoise(vWorldPos * 0.035) * 0.15;
             footAmt = clamp(footAmt + footNoise, 0.0, 1.0);
-            rockColor = mix(rockColor, beachColor * 0.88, footAmt * 0.55);
+            // Up to 70% beach mix at the foot. Slight desaturation keeps
+            // the sand reading as "wet/dirty sand" rather than dry beach.
+            vec3 footSand = beachColor * 0.82;
+            rockColor = mix(rockColor, footSand, footAmt * 0.7);
 
             // Blend: steepness only — no proximity in the blend = no hairline
             float erosionNoise = snoise(vWorldPos * 0.006) * 0.02;
