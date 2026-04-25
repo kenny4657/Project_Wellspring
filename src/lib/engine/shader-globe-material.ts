@@ -53,7 +53,6 @@ import {
 	GLSL_SCRATCHY,
 	GLSL_PALETTE,
 	GLSL_COASTAL_CONSTANTS,
-	GLSL_CLIFF_RENDERING,
 	GLSL_BEACH_OVERLAY,
 	GLSL_LIGHTING,
 } from './terrain-material';
@@ -796,29 +795,60 @@ const GLSL_WATER_OVERRIDE_LAST = /* glsl */ `
 // block; the very last `}` is the else-block close.
 const GLSL_BEACH_OVERLAY_NO_CLOSE = GLSL_BEACH_OVERLAY.replace(/\}\s*$/, '');
 
-// Patch GLSL_CLIFF_RENDERING: legacy steepness = 1 - dot(N, radial) only
-// works on a prism mesh (wall verts have N tangential, top verts have N
-// radial). On a smooth icosphere vWorldNormal is ~radial everywhere, so
-// the formula yields ~0 and the slab-rock branch never fires.
+// New cliff chunk -- single fragment-side gate from cleanCliffEdgeDistN.
 //
-// Goal: paint rock as a thin crisp strip exactly along hex tier-transition
-// edges, never on hex tops. We don't need a real surface-normal signal --
-// the wall is geometrically the last 15% of edge distance (Strategy 3
-// ramp), so gating on edge-distance does the same job and is bulletproof:
-//   - no NaN risk (no cross-products)
-//   - no dFdx smearing (not screen-space)
-//   - rock is structurally confined to the edge band, never spills onto
-//     hex tops the way cliffProximity-based gating did
+// Why we don't reuse the legacy GLSL_CLIFF_RENDERING chunk: its outer
+// gate is `if (cliffProximity > 0.01 && steepness > 0.003)`. Even after
+// patching `steepness` to use cleanCliffEdgeDistN (the unperturbed
+// cliff-edge distance), `cliffProximity` is still computed from the
+// PERTURBED 6-neighbor scan and gets scattered on/off by boundary noise.
+// The AND of a clean signal and a noisy signal is a noisy gate -> the
+// zigzag rock pattern the user kept reporting.
 //
-// `cliffEdgeDistN` is computed in GLSL_MAIN_SETUP_NEW above from the 6-
-// neighbor scan -- 0 right at the closest hex edge, 1 at hex center.
-// Steepness becomes 1 at the edge, 0 by the time we're 15% in toward the
-// hex center. The legacy chunk's downstream `cliffProximity > 0.01` gate
-// still ensures we only paint where a real tier transition exists.
-const GLSL_CLIFF_RENDERING_PATCHED = GLSL_CLIFF_RENDERING.replace(
-	'float steepness = 1.0 - dot(N, normalize(vWorldPos));',
-	'float steepness = 1.0 - smoothstep(0.0, 0.18, cleanCliffEdgeDistN);',
-);
+// This chunk uses cleanCliffEdgeDistN as the SOLE gate. Per-fragment,
+// from unperturbed P, distance-to-nearest-cliff-edge specifically.
+// No interaction with perturbed cliffProximity. No vertex-interpolated
+// signal. No normals. No dFdx.
+//
+// wallness fade band 0..0.22 of apothem: total rock band ~44% of apothem
+// (since the same cliff edge sees clean distance from BOTH sides). On a
+// 6371 km planet at res=40 hex apothem ~76 km, so band ~33 km wide --
+// substantial enough to read as a wall at oblique angles.
+//
+// waterCliffBlend stays exposed because GLSL_BEACH_OVERLAY reads it.
+const GLSL_CLIFF_RENDERING_NEW = /* glsl */ `
+        float wallness = 1.0 - smoothstep(0.0, 0.22, cleanCliffEdgeDistN);
+        float waterCliffBlend = 0.0;
+        if (wallness > 0.005) {
+            int cliffPalId = hasCrossBlend ? neighborId : terrainId;
+            vec3 cliffLight = cliffPalette[cliffPalId * 3];
+            vec3 cliffDark  = cliffPalette[cliffPalId * 3 + 1];
+            vec3 cliffPale  = cliffPalette[cliffPalId * 3 + 2];
+
+            // Procedural rock color from worldspace simplex noise.
+            float rockN1 = snoise(vWorldPos * 0.012) * 0.5 + 0.5;
+            float rockN2 = snoise(vWorldPos * 0.045) * 0.5 + 0.5;
+            vec3 rockColor = mix(cliffLight, cliffDark, rockN1);
+            rockColor = mix(rockColor, cliffPale, smoothstep(0.62, 0.92, rockN2) * 0.55);
+            rockColor += snoise(vWorldPos * 0.006) * 0.025;
+
+            // Cliff-foot sand: low-elevation walls pick up sand color so
+            // they meet the beach without a hard seam. Same constants as
+            // legacy COAST_FOOT_FULL/FADE/AMOUNT.
+            float footAmt = 1.0 - smoothstep(
+                COAST_FOOT_FULL * planetRadius,
+                COAST_FOOT_FADE * planetRadius,
+                heightAboveR
+            );
+            float footNoise = snoise(vWorldPos * 0.010) * 0.30
+                            + snoise(vWorldPos * 0.035) * 0.15;
+            footAmt = clamp(footAmt + footNoise, 0.0, 1.0);
+            rockColor = mix(rockColor, beachColor * 0.82, footAmt * COAST_FOOT_AMOUNT);
+
+            procColor = mix(procColor, rockColor, wallness);
+            waterCliffBlend = wallness;
+        }
+`;
 
 const FRAGMENT =
 	GLSL_NOISE +
@@ -828,7 +858,7 @@ const FRAGMENT =
 	GLSL_PALETTE +
 	GLSL_HEX_HELPERS +
 	GLSL_MAIN_SETUP_NEW +
-	GLSL_CLIFF_RENDERING_PATCHED +
+	GLSL_CLIFF_RENDERING_NEW +
 	GLSL_BEACH_OVERLAY_NO_CLOSE +
 	GLSL_WATER_OVERRIDE_LAST +
 	'\n}\n' +              // close the else block
