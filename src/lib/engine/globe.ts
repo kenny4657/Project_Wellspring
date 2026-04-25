@@ -102,13 +102,24 @@ export async function createGlobeEngine(
 	camera.maxZ = EARTH_RADIUS_KM * 20;
 
 	camera.attachControl();
-	// Remove Babylon's pointer input entirely. We replace BOTH left-drag pan
-	// AND right-drag tilt with our own DOM handlers below. With this input
-	// gone, panAccumulatedPixels stays zero forever, the drag-plane state is
-	// never touched, _hitPointRadius is never set — there is no Babylon pan
-	// internal state that could snap our camera.center back. Wheel zoom and
-	// keyboard inputs remain attached and active.
-	camera.inputs.removeByType('GeospatialCameraPointersInput');
+	// GeospatialCameraPointersInput stays attached — removing it breaks DOM
+	// pointer event delivery for reasons internal to Babylon. Right-drag tilt
+	// continues to work natively through it. We override only what we need:
+	//
+	// 1) Patch _recalculateCenter to a no-op. This private method (called from
+	//    _checkInputs) snaps camera.center to wherever _lookAtVector hits the
+	//    sphere whenever movement transitions from active to idle. It fires
+	//    after zoom and after Babylon's own pan, and it is the snap-back the
+	//    user keeps seeing — at high pitch, the look vector hits a different
+	//    spot than where we dragged the center to. The Babylon forum thread
+	//    "GeospatialCamera and Genericized Camera Inputs" acknowledges this
+	//    architecture is incomplete; until upstream adds a hook there is no
+	//    documented way to disable it. Our pan keeps center.length() constant
+	//    so we don't need the snap.
+	// 2) Patch camera.movement.startDrag to a no-op so _hitPointRadius never
+	//    gets set, isDragging stays false, and zoom isn't blocked during pan.
+	(camera as unknown as { _recalculateCenter: () => void })._recalculateCenter = () => {};
+	camera.movement.startDrag = () => {};
 
 	// ── FXAA Anti-Aliasing ──────────────────────────────────
 	// Smooths sub-pixel hairline artifacts at hex mesh boundaries
@@ -184,91 +195,58 @@ export async function createGlobeEngine(
 		return bestIdx;
 	}
 
-	// ── Camera pointer controls (Babylon's pointer input is removed) ─────
-	// Left drag → cursor pixel delta drives a rotation of camera.center
-	// computed from the angle between the world-space rays through the
-	// previous and current cursor pixels. Drag distance == rotation amount,
-	// independent of pitch/yaw and independent of where the cursor is on
-	// screen.
-	//
-	// Right drag → direct yaw/pitch modification, matching Babylon's tilt
-	// sensitivity (PI/500 rad per pixel). Goes through the camera's setters,
-	// which update the orientation but do NOT trigger _recalculateCenter.
-	//
-	// Because GeospatialCameraPointersInput is removed, panAccumulatedPixels,
-	// _hitPointRadius, and the drag-plane state are never set. There is no
-	// Babylon pan state that could fight us or snap the camera back.
-	const TILT_PER_PIXEL = Math.PI / 500;
-
+	// ── Left-drag pan: cursor pixel delta → camera.center rotation ───────
+	// Each pointermove computes the world-space rays through the previous
+	// and current cursor pixels and rotates camera.center by the angle
+	// between them. Drag distance == rotation amount, regardless of pitch.
+	// We zero panAccumulatedPixels each move to neutralize Babylon's parallel
+	// drag-plane pan (it would otherwise also write to camera.center).
+	// Right-drag tilt is handled natively by GeospatialCameraPointersInput.
 	let leftDragLast: { x: number; y: number } | null = null;
-	let rightDragLast: { x: number; y: number } | null = null;
 
 	canvas.addEventListener('pointerdown', (e) => {
-		try { canvas.setPointerCapture(e.pointerId); } catch { /* ignore */ }
-		if (e.button === 0) {
-			pointerDownPos = { x: e.clientX, y: e.clientY };
-			leftDragLast = { x: scene.pointerX, y: scene.pointerY };
-		} else if (e.button === 2) {
-			rightDragLast = { x: e.clientX, y: e.clientY };
-		}
+		if (e.button !== 0) return;
+		pointerDownPos = { x: e.clientX, y: e.clientY };
+		leftDragLast = { x: scene.pointerX, y: scene.pointerY };
 	});
 
-	canvas.addEventListener('pointermove', (e) => {
-		// Left drag: rotate camera.center by the angle between cursor rays
-		if (leftDragLast && (e.buttons & 1)) {
-			const sx = scene.pointerX;
-			const sy = scene.pointerY;
-			if (sx !== leftDragLast.x || sy !== leftDragLast.y) {
-				const rayCurr = scene.createPickingRay(sx, sy, null, camera);
-				const rayPrev = scene.createPickingRay(leftDragLast.x, leftDragLast.y, null, camera);
-				const dirCurr = rayCurr.direction;
-				const dirPrev = rayPrev.direction;
-				const cosA = Math.max(-1, Math.min(1, Vector3.Dot(dirCurr, dirPrev)));
-				if (cosA < 0.9999999) {
-					const axis = Vector3.Cross(dirCurr, dirPrev).normalize();
-					const rot = Matrix.RotationAxis(axis, Math.acos(cosA));
-					const r = camera.center.length();
-					camera.center = Vector3.TransformCoordinates(
-						camera.center.normalizeToNew(),
-						rot
-					).scaleInPlace(r);
-				}
-				leftDragLast = { x: sx, y: sy };
+	canvas.addEventListener('pointermove', () => {
+		if (!leftDragLast) return;
+		const sx = scene.pointerX;
+		const sy = scene.pointerY;
+		if (sx !== leftDragLast.x || sy !== leftDragLast.y) {
+			const rayCurr = scene.createPickingRay(sx, sy, null, camera);
+			const rayPrev = scene.createPickingRay(leftDragLast.x, leftDragLast.y, null, camera);
+			const dirCurr = rayCurr.direction;
+			const dirPrev = rayPrev.direction;
+			const cosA = Math.max(-1, Math.min(1, Vector3.Dot(dirCurr, dirPrev)));
+			if (cosA < 0.9999999) {
+				const axis = Vector3.Cross(dirCurr, dirPrev).normalize();
+				const rot = Matrix.RotationAxis(axis, Math.acos(cosA));
+				const r = camera.center.length();
+				camera.center = Vector3.TransformCoordinates(
+					camera.center.normalizeToNew(),
+					rot
+				).scaleInPlace(r);
 			}
+			leftDragLast = { x: sx, y: sy };
 		}
-		// Right drag: tilt by directly nudging yaw/pitch
-		if (rightDragLast && (e.buttons & 2)) {
-			const dx = e.clientX - rightDragLast.x;
-			const dy = e.clientY - rightDragLast.y;
-			if (dx !== 0) camera.yaw = camera.yaw + dx * TILT_PER_PIXEL;
-			if (dy !== 0) {
-				const newPitch = camera.pitch - dy * TILT_PER_PIXEL;
-				camera.pitch = Math.max(0, Math.min(camera.limits.pitchMax, newPitch));
-			}
-			rightDragLast = { x: e.clientX, y: e.clientY };
-		}
+		camera.movement.panAccumulatedPixels.setAll(0);
 	});
 
 	canvas.addEventListener('pointerup', (e) => {
-		try { canvas.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
-		if (e.button === 0) {
-			leftDragLast = null;
-			if (pointerDownPos) {
-				const dx = e.clientX - pointerDownPos.x;
-				const dy = e.clientY - pointerDownPos.y;
-				if (Math.sqrt(dx * dx + dy * dy) < 5) {
-					const idx = pickHex(scene.pointerX, scene.pointerY);
-					if (idx >= 0) onHexClickCallback?.(idx);
-				}
-				pointerDownPos = null;
+		if (e.button !== 0) return;
+		leftDragLast = null;
+		if (pointerDownPos) {
+			const dx = e.clientX - pointerDownPos.x;
+			const dy = e.clientY - pointerDownPos.y;
+			if (Math.sqrt(dx * dx + dy * dy) < 5) {
+				const idx = pickHex(scene.pointerX, scene.pointerY);
+				if (idx >= 0) onHexClickCallback?.(idx);
 			}
-		} else if (e.button === 2) {
-			rightDragLast = null;
+			pointerDownPos = null;
 		}
 	});
-
-	// Suppress browser context menu so right-drag tilt isn't interrupted
-	canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
 	// ── Render Loop ─────────────────────────────────────────
 	let waterTime = 0;
