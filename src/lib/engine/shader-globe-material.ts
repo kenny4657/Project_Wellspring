@@ -629,6 +629,12 @@ void main() {
         float minWaterLandDist = 1.0;
         float minHeightDist = 1.0;
         float minDiffTerrainDist = 1.0;
+        // Normalized distance from this fragment to the closest hex edge,
+        // 0 right at the edge, 1 at hex center. Used as the cliff "is this
+        // a wall fragment" signal: rock paint gates on this so it stays
+        // confined to the geometric edge ramp instead of smearing across
+        // hex tops the way steepness=cliffProximity did.
+        float cliffEdgeDistN = 1.0;
 
         {
             float r = 0.5 / (resolution + 1.0);
@@ -666,6 +672,7 @@ void main() {
                 }
             }
             distToBorder = minDiffTerrainDist;
+            cliffEdgeDistN = clamp(minEdgeDist / r, 0.0, 1.0);
         }
 
         int neighborId = blendNeighborId;
@@ -755,27 +762,28 @@ const GLSL_WATER_OVERRIDE_LAST = /* glsl */ `
 // block; the very last `}` is the else-block close.
 const GLSL_BEACH_OVERLAY_NO_CLOSE = GLSL_BEACH_OVERLAY.replace(/\}\s*$/, '');
 
-// Patch GLSL_CLIFF_RENDERING: the legacy chunk computes
-//   steepness = 1.0 - dot(N, normalize(vWorldPos));
-// which is correct for the per-hex-prism mesh whose vertex normals
-// reflect actual face orientation. For the smooth icosphere, vWorldNormal
-// is radial-out (passed by the vertex shader to avoid NaN dots), so that
-// formula always yields ~0 and the slab-rock branch never fires.
+// Patch GLSL_CLIFF_RENDERING: legacy steepness = 1 - dot(N, radial) only
+// works on a prism mesh (wall verts have N tangential, top verts have N
+// radial). On a smooth icosphere vWorldNormal is ~radial everywhere, so
+// the formula yields ~0 and the slab-rock branch never fires.
 //
-// Earlier attempt: dFdx/dFdy of heightAboveR. Lit up every fragment where
-// height was changing -- including interior noise -- producing smeared
-// swirling brown blobs that didn't follow hex tier edges.
+// Goal: paint rock as a thin crisp strip exactly along hex tier-transition
+// edges, never on hex tops. We don't need a real surface-normal signal --
+// the wall is geometrically the last 15% of edge distance (Strategy 3
+// ramp), so gating on edge-distance does the same job and is bulletproof:
+//   - no NaN risk (no cross-products)
+//   - no dFdx smearing (not screen-space)
+//   - rock is structurally confined to the edge band, never spills onto
+//     hex tops the way cliffProximity-based gating did
 //
-// Use cliffProximity instead. It's computed in GLSL_MAIN_SETUP_NEW from
-// the 6-neighbor scan: =1.0 right at a real tier-transition edge between
-// adjacent hexes, falls linearly to 0 toward the hex interior. That's
-// exactly the geometric "is this fragment on a cliff face" signal the
-// legacy steepness was approximating with the prism-wall normal trick.
-// Result: slab-rock texture fires on real hex-tier-transition cliff
-// faces (matching legacy crisp rocky walls), not on interior bumps.
+// `cliffEdgeDistN` is computed in GLSL_MAIN_SETUP_NEW above from the 6-
+// neighbor scan -- 0 right at the closest hex edge, 1 at hex center.
+// Steepness becomes 1 at the edge, 0 by the time we're 15% in toward the
+// hex center. The legacy chunk's downstream `cliffProximity > 0.01` gate
+// still ensures we only paint where a real tier transition exists.
 const GLSL_CLIFF_RENDERING_PATCHED = GLSL_CLIFF_RENDERING.replace(
 	'float steepness = 1.0 - dot(N, normalize(vWorldPos));',
-	'float steepness = cliffProximity;',
+	'float steepness = 1.0 - smoothstep(0.0, 0.15, cliffEdgeDistN);',
 );
 
 const FRAGMENT =
