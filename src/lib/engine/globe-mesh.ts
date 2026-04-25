@@ -450,12 +450,20 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 					}
 				}
 			} else {
-				// Water → land: water edge stays at sea level. No ramped
-				// sandy bridge up to the cliff foot — the cliff drops straight
-				// into flat water on the land-hex side.
-				edgeTargets[i] = 0;
-				coastEdges[i] = true;
-				hasCoast = true;
+				// Water → land edge.
+				if (nb.heightLevel > 2) {
+					// Neighbor is a cliff: DO NOT ramp water up to sea level
+					// and DO NOT mark as coast. Water stays flat at its own
+					// depth; the water sphere hides it and the cliff drops
+					// straight into water — no beach geometry at all.
+					edgeTargets[i] = getLevelHeight(cell.heightLevel);
+				} else {
+					// Neighbor is low land: normal beach — ramp water up to
+					// sea level so the coast has a gentle shoreline.
+					edgeTargets[i] = 0;
+					coastEdges[i] = true;
+					hasCoast = true;
+				}
 			}
 		} else {
 			// ── Land hex edge logic ──
