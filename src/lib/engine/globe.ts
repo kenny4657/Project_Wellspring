@@ -102,24 +102,6 @@ export async function createGlobeEngine(
 	camera.maxZ = EARTH_RADIUS_KM * 20;
 
 	camera.attachControl();
-	// GeospatialCameraPointersInput stays attached — removing it breaks DOM
-	// pointer event delivery for reasons internal to Babylon. Right-drag tilt
-	// continues to work natively through it. We override only what we need:
-	//
-	// 1) Patch _recalculateCenter to a no-op. This private method (called from
-	//    _checkInputs) snaps camera.center to wherever _lookAtVector hits the
-	//    sphere whenever movement transitions from active to idle. It fires
-	//    after zoom and after Babylon's own pan, and it is the snap-back the
-	//    user keeps seeing — at high pitch, the look vector hits a different
-	//    spot than where we dragged the center to. The Babylon forum thread
-	//    "GeospatialCamera and Genericized Camera Inputs" acknowledges this
-	//    architecture is incomplete; until upstream adds a hook there is no
-	//    documented way to disable it. Our pan keeps center.length() constant
-	//    so we don't need the snap.
-	// 2) Patch camera.movement.startDrag to a no-op so _hitPointRadius never
-	//    gets set, isDragging stays false, and zoom isn't blocked during pan.
-	(camera as unknown as { _recalculateCenter: () => void })._recalculateCenter = () => {};
-	camera.movement.startDrag = () => {};
 
 	// ── FXAA Anti-Aliasing ──────────────────────────────────
 	// Smooths sub-pixel hairline artifacts at hex mesh boundaries
@@ -195,49 +177,12 @@ export async function createGlobeEngine(
 		return bestIdx;
 	}
 
-	// ── Left-drag pan: cursor pixel delta → camera.center rotation ───────
-	// Each pointermove computes the world-space rays through the previous
-	// and current cursor pixels and rotates camera.center by the angle
-	// between them. Drag distance == rotation amount, regardless of pitch.
-	// We zero panAccumulatedPixels each move to neutralize Babylon's parallel
-	// drag-plane pan (it would otherwise also write to camera.center).
-	// Right-drag tilt is handled natively by GeospatialCameraPointersInput.
-	let leftDragLast: { x: number; y: number } | null = null;
-
 	canvas.addEventListener('pointerdown', (e) => {
-		if (e.button !== 0) return;
-		pointerDownPos = { x: e.clientX, y: e.clientY };
-		leftDragLast = { x: scene.pointerX, y: scene.pointerY };
-	});
-
-	canvas.addEventListener('pointermove', () => {
-		if (!leftDragLast) return;
-		const sx = scene.pointerX;
-		const sy = scene.pointerY;
-		if (sx !== leftDragLast.x || sy !== leftDragLast.y) {
-			const rayCurr = scene.createPickingRay(sx, sy, null, camera);
-			const rayPrev = scene.createPickingRay(leftDragLast.x, leftDragLast.y, null, camera);
-			const dirCurr = rayCurr.direction;
-			const dirPrev = rayPrev.direction;
-			const cosA = Math.max(-1, Math.min(1, Vector3.Dot(dirCurr, dirPrev)));
-			if (cosA < 0.9999999) {
-				const axis = Vector3.Cross(dirCurr, dirPrev).normalize();
-				const rot = Matrix.RotationAxis(axis, Math.acos(cosA));
-				const r = camera.center.length();
-				camera.center = Vector3.TransformCoordinates(
-					camera.center.normalizeToNew(),
-					rot
-				).scaleInPlace(r);
-			}
-			leftDragLast = { x: sx, y: sy };
-		}
-		camera.movement.panAccumulatedPixels.setAll(0);
+		if (e.button === 0) pointerDownPos = { x: e.clientX, y: e.clientY };
 	});
 
 	canvas.addEventListener('pointerup', (e) => {
-		if (e.button !== 0) return;
-		leftDragLast = null;
-		if (pointerDownPos) {
+		if (e.button === 0 && pointerDownPos) {
 			const dx = e.clientX - pointerDownPos.x;
 			const dy = e.clientY - pointerDownPos.y;
 			if (Math.sqrt(dx * dx + dy * dy) < 5) {
