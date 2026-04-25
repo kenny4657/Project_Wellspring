@@ -318,11 +318,26 @@ float tierHeight(float level) {
 vec2 phase5AndPhase6Displacement(vec3 P, float ownLevel) {
     if (g_hexId < 0.0) return vec2(0.0, 1.0); // safe fallback
 
-    float ownH = tierHeight(ownLevel);
+    // Water hexes (heightLevel 0 or 1) collapse to a single uniform depth
+    // just below sea level. Two reasons:
+    //
+    //   1. Without flattening, deep ocean (-0.020R) vs shallow (-0.008R)
+    //      produce stair-step seams in the water surface (inline water
+    //      paints the displaced seafloor, not a separate flat plane).
+    //
+    //   2. The flat depth must be slightly below tier 2 land (0.0R) so
+    //      every coastline (including water -> tier 2 land) shows a
+    //      geometric cliff. If both were 0, coastlines would be perfectly
+    //      hex-aligned with no displacement to break the 60-degree edges.
+    //
+    // -0.001R = ~6 km. Subtle but enough for Phase 6 noise to wiggle the
+    // boundary visibly. Deep vs shallow color difference is preserved
+    // purely in the fragment-side fresnel mix (no geometry needed).
+    const float WATER_FLAT_DEPTH = -0.001;
+    bool ownIsWater = (ownLevel <= 1.5);
+    float ownH = ownIsWater ? WATER_FLAT_DEPTH : tierHeight(ownLevel);
 
     if (g_isPentagon) {
-        // Pentagons: flat top, no noise (they don't have a clean (i, j) for
-        // the row-parity-dependent neighbor offsets).
         return vec2(ownH, 1.0);
     }
 
@@ -340,7 +355,16 @@ vec2 phase5AndPhase6Displacement(vec3 P, float ownLevel) {
 
     float nbHexId = neighborIdAtEdge(closestEdge);
     float nbLevel = (nbHexId >= 0.0) ? sampleHexData(nbHexId).y : ownLevel;
-    float nbH = tierHeight(nbLevel);
+    bool nbIsWater = (nbLevel <= 1.5);
+    float nbH = nbIsWater ? WATER_FLAT_DEPTH : tierHeight(nbLevel);
+
+    // For Phase 6 cliff-noise activation we want the *real* tier delta,
+    // not the post-flatten delta. Water-flatten makes water and land tier-2
+    // both sit at h=0 (delta=0), which would kill cliff noise at every
+    // sea-level coastline. Compute the "true" delta from the tier tables.
+    float ownTierH = tierHeight(ownLevel);
+    float nbTierH  = tierHeight(nbLevel);
+    float trueHeightDelta = abs(nbTierH - ownTierH);
 
     // Strategy 3: flat hex top + sharp transition near edge. The "0.15"
     // is the plan's edge-band fraction (last 15% of edge distance gets the
@@ -349,19 +373,18 @@ vec2 phase5AndPhase6Displacement(vec3 P, float ownLevel) {
     float strategyH = mix(nbH, ownH, t);
     float h = strategyH;
 
-    // Interior surface noise (matches legacy hex-heights.ts). Applied to
-    // every vertex, not just at cliff edges -- gives the small variation
-    // legacy mesh has from fbm displacement on every hex top. 3-octave
-    // simplex; water hexes (level 0/1) use abs() so the noise pushes UP
-    // from the seafloor rather than oscillating sea level; land hexes
-    // bias slightly upward (+0.3) to match legacy's land formula.
-    {
+    // Interior surface noise. Land hexes only -- water surface stays
+    // perfectly flat at sea level. The legacy stack gets bumpy water
+    // visuals from the water-sphere's wave shader, not from displacement.
+    // Adding noise to water hexes here would re-introduce the visible
+    // stair-step / wobble pattern we just fixed by flattening to sea level.
+    if (!ownIsWater) {
         vec3 iP = P * interiorNoiseFreq;
         float iN = snoise(iP)         * 0.55
                  + snoise(iP * 2.07)   * 0.30
                  + snoise(iP * 4.13)   * 0.15;
-        float iH = (ownLevel <= 1.5) ? abs(iN) : (iN + 0.3);
-        h += iH * interiorNoiseAmp;
+        // Land bias: +0.3 so plains don't dip below sea level into water palette.
+        h += (iN + 0.3) * interiorNoiseAmp;
     }
 
     // Phase 6: cliff-face noise. Active where edge is close AND height
@@ -372,8 +395,10 @@ vec2 phase5AndPhase6Displacement(vec3 P, float ownLevel) {
     // double-tier-step (delta=0.010) saturates. Audit-flagged: the prior
     // 0.012 underrepresented single-tier transitions.
     float cliffness = 1.0 - smoothstep(0.0, 0.15, edgeDistNorm);
-    float heightDelta = abs(nbH - ownH);
-    float cliffActivity = cliffness * smoothstep(0.0, 0.008, heightDelta);
+    // Use the tier-table delta (not the post-flatten delta) so coastlines
+    // (water tier 0/1 -> land tier 2/3/4) trigger cliff noise even though
+    // both sides display at h=0.
+    float cliffActivity = cliffness * smoothstep(0.0, 0.008, trueHeightDelta);
     if (cliffActivity > 0.0001) {
         // 3-octave simplex (snoise comes from GLSL_NOISE in fragment, from
         // GLSL_NOISE_VERTEX_SUBSET in vertex; same Ashima impl in both).
@@ -519,7 +544,20 @@ float snoise(vec3 v) {
 const GLSL_MAIN_SETUP_NEW = /* glsl */ `
 void main() {
     vec3 P = normalize(vSpherePos);
-    vec3 N = normalize(vWorldNormal);
+
+    // Analytic surface normal from screen-space derivatives of the
+    // *displaced* world position. The vertex shader sets vWorldNormal
+    // to the radial-out direction, but on cliff faces (where the Phase 5
+    // ramp tilts the surface 45-90deg sideways) that's wrong. Using
+    // dFdx/dFdy of vWorldPos gives the actual triangle's facet normal,
+    // including all the displacement noise. Result: legacy GLSL_CLIFF_
+    // RENDERING's steepness > 0.003 gate fires correctly on cliff faces,
+    // unlocking the slab-map rock texture.
+    vec3 ddxP = dFdx(vWorldPos);
+    vec3 ddyP = dFdy(vWorldPos);
+    vec3 N = normalize(cross(ddxP, ddyP));
+    if (dot(N, vWorldPos) < 0.0) N = -N;  // ensure outward orientation
+
     bool isWall = false;  // smooth sphere -- no walls
     float distFromCenter = length(vWorldPos);
     float heightAboveR = distFromCenter - planetRadius;
@@ -528,7 +566,22 @@ void main() {
     if (isWall) {
         procColor = vec3(0.0);
     } else {
-        computeHexLookup(P);
+        // Perturb the hex lookup position with a small noise displacement
+        // so coast and biome boundaries don't follow the perfect 60-degree
+        // hex edges. The noise amplitude must stay below the hex apothem
+        // in unit-sphere terms (~ 0.5/(res+1) = 0.012 at res=40) so most
+        // fragments still land in their own hex; only fragments within
+        // ~AMP of an edge see the noise potentially flip them to the
+        // neighbor. Result: coastlines, biome borders, and cliff lines
+        // are all wavy rather than hex-aligned.
+        vec3 boundaryNoise = vec3(
+            snoise(P * 80.0),
+            snoise(P * 80.0 + vec3(100.0, 0.0, 0.0)),
+            snoise(P * 80.0 + vec3(0.0, 100.0, 0.0))
+        );
+        vec3 P_lookup = normalize(P + boundaryNoise * 0.004);
+
+        computeHexLookup(P_lookup);
         float hexIdF = g_hexId;
         if (hexIdF < 0.0) {
             gl_FragColor = vec4(0.4, 0.4, 0.4, 1.0);
@@ -636,10 +689,18 @@ void main() {
             procColor = ownColor;
         }
 
-        // Phase 4 inline water (see comments on the original Phase 4
-        // commit). Phase 5/6 displacement makes water hexes geometrically
-        // lower than land, but we keep the inline color since the legacy
-        // water-sphere isn't wired into shader-preview yet.
+        // Water override is now in GLSL_WATER_OVERRIDE_LAST, injected at
+        // the END of the else block so the legacy cliff + beach branches
+        // can run for non-water hexes without overwriting water hex tops
+        // with seafloor rock textures.
+`;
+
+// ── GLSL_WATER_OVERRIDE_LAST ────────────────────────────────
+// Injected at the end of the else block (between BEACH_OVERLAY's body
+// and its closing brace) so cliff and beach branches don't overwrite
+// the water hex's surface with rock textures. Sharp coast boundary --
+// water-water cross-blend only, no water-land blend.
+const GLSL_WATER_OVERRIDE_LAST = /* glsl */ `
         if (selfIsWater) {
             vec3 viewDir = normalize(cameraPos - vWorldPos);
             float fresnel = pow(1.0 - max(0.0, dot(N, viewDir)), 2.0);
@@ -650,12 +711,12 @@ void main() {
             else selfWater = mix(deepColor, shallowColor, fresnel * 0.3 + 0.2);
 
             vec3 waterCol = selfWater;
-            if (hasCrossBlend) {
+            bool nbIsWater = (neighborId == 0 || neighborId == 1 || neighborId == 3);
+            if (hasCrossBlend && nbIsWater) {
                 vec3 nbWater;
                 if (neighborId == 0) nbWater = mix(deepColor, shallowColor, fresnel * 0.3 + 0.1);
                 else if (neighborId == 1) nbWater = mix(deepColor, shallowColor, fresnel * 0.3 + 0.4);
-                else if (neighborId == 3) nbWater = mix(deepColor, shallowColor, fresnel * 0.3 + 0.3) + vec3(-0.02, 0.02, 0.03);
-                else nbWater = procColor;
+                else nbWater = mix(deepColor, shallowColor, fresnel * 0.3 + 0.3) + vec3(-0.02, 0.02, 0.03);
                 float n1 = snoise(vWorldPos * 0.004) * 0.22;
                 float n2 = snoise(vWorldPos * 0.012) * 0.10;
                 float threshold = max(0.35 + n1 + n2, 0.08);
@@ -669,6 +730,12 @@ void main() {
         }
 `;
 
+// Strip the trailing `}` (closes the else) from GLSL_BEACH_OVERLAY so we
+// can inject the water override before that close. The legacy chunk's
+// last meaningful line is closing brace of its `if (coastProximity > ...)`
+// block; the very last `}` is the else-block close.
+const GLSL_BEACH_OVERLAY_NO_CLOSE = GLSL_BEACH_OVERLAY.replace(/\}\s*$/, '');
+
 const FRAGMENT =
 	GLSL_NOISE +
 	GLSL_PHASE4_UNIFORMS +
@@ -678,7 +745,9 @@ const FRAGMENT =
 	GLSL_HEX_HELPERS +
 	GLSL_MAIN_SETUP_NEW +
 	GLSL_CLIFF_RENDERING +
-	GLSL_BEACH_OVERLAY +
+	GLSL_BEACH_OVERLAY_NO_CLOSE +
+	GLSL_WATER_OVERRIDE_LAST +
+	'\n}\n' +              // close the else block
 	GLSL_LIGHTING;
 
 // Phase 6 default tunables. Cliff noise amplitude is in fraction-of-planet-
@@ -690,15 +759,23 @@ const FRAGMENT =
 // 1 / cliffStrataFreq fraction of planetRadius. freq=300 gives bands
 // every ~21 km, so ~5-10 visible bands across a tier transition.
 const PHASE6_DEFAULTS = {
-	cliffNoiseAmp: 0.005,
-	cliffNoiseFreq: 6.0,
+	// Cliff noise frequency must be HIGH enough that the noise varies
+	// meaningfully within the 12 km cliff transition band (15% of hex
+	// apothem). At freq=6 the noise period was 169 km -- the whole cliff
+	// band shifted uniformly per region, so coastlines stayed hex-aligned.
+	// Freq=40 -> period ~25 km, half a cycle across the cliff band ->
+	// visible per-hex boundary wiggle. Amp bumped 0.005 -> 0.010 so the
+	// coastline-shift effect (horizontal shift = vert noise / cliff slope)
+	// is visible at planet-scale views.
+	cliffNoiseAmp: 0.010,
+	cliffNoiseFreq: 40.0,
 	cliffStrataAmp: 0.0008,
 	cliffStrataFreq: 300.0,
-	// Interior noise -- matches legacy hex-heights.ts (NOISE_AMP=0.008,
-	// NOISE_SCALE=35). Without this, hex tops are perfectly flat and the
-	// terrain reads as "tile mosaic" instead of "noisy planet surface."
-	interiorNoiseAmp: 0.008,
-	interiorNoiseFreq: 35.0,
+	// Interior noise stays gentle so dFdx/dFdy normals don't see every
+	// per-triangle slope as a cliff. 0.0025R / freq 20 keeps the surface
+	// readable as bumpy plains without lighting up the slab-rock branch.
+	interiorNoiseAmp: 0.0025,
+	interiorNoiseFreq: 20.0,
 };
 
 export interface ShaderGlobeMaterialOptions {

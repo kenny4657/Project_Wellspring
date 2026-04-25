@@ -318,23 +318,32 @@ export async function createGlobeEngine(
 			globeMesh.setEnabled(true);
 			waterSphere.setEnabled(true);
 			shaderGlobe.mesh.setEnabled(false);
+			// Legacy depth list = legacy mesh.
+			depthTexture.renderList = [globeMesh];
 			camera.attachPostProcess(fxaa);
 		} else if (mode === 'shader-debug') {
 			// shader-debug renders raw bit-encoded IDs in mode 3; FXAA would
-			// average those bytes and corrupt the verifier output.
+			// average those bytes and corrupt the verifier output. Water
+			// sphere off so the bit-encoded debug colors aren't masked.
 			globeMesh.setEnabled(false);
 			waterSphere.setEnabled(false);
 			shaderGlobe.mesh.setEnabled(true);
 			shaderGlobe.mesh.material = debugMat;
+			depthTexture.renderList = [];
 			camera.detachPostProcess(fxaa);
 		} else {
 			// shader-preview: real biome rendering with Phase 5/6 displacement.
-			// FXAA on -- without it the cliff-edge transitions read as harsh
-			// stair-steps in the silhouette.
+			// Water sphere stays OFF: Babylon's depth renderer uses a
+			// default vertex shader that doesn't apply our displacement,
+			// so water-sphere depth-occlusion would see the un-displaced
+			// sphere and discard everywhere. A displacement-aware custom
+			// depth material is Phase 8 work; for now water is rendered
+			// inline by shader-globe-material with a sharp coast boundary.
 			globeMesh.setEnabled(false);
 			waterSphere.setEnabled(false);
 			shaderGlobe.mesh.setEnabled(true);
 			shaderGlobe.mesh.material = shaderGlobeMat;
+			depthTexture.renderList = [];
 			camera.attachPostProcess(fxaa);
 		}
 	}
