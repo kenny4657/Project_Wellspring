@@ -361,14 +361,16 @@ void main() {
             waterCliffBlend = max(waterCliffBlend, erosionBlend);
         }
 
-        // Then: if coastal AND no cliff proximity, blend the result toward beach.
-        // Skip beach entirely in the cliff zone — no sandy bridge between
-        // water and cliff, just direct ocean→cliff transition.
-        if (coastProximity > 0.01 && cliffProximity < 0.01) {
+        // Then: if coastal, blend the result toward beach
+        // Suppress beach across the ENTIRE cliff zone (using cliffProximity
+        // directly) so the cliff face and water-hex cliff blend form a
+        // continuous surface — no muddy beach band at the join.
+        if (coastProximity > 0.01) {
             float coastNoise = snoise(vWorldPos * 0.005) * 0.12
                              + snoise(vWorldPos * 0.015) * 0.06;
             float beachStart = 0.35 + coastNoise;
             float beachBlend = smoothstep(beachStart, 1.0, coastProximity);
+            beachBlend *= (1.0 - cliffProximity);
             procColor = mix(procColor, beachColor, beachBlend);
         }
     }
