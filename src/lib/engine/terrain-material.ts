@@ -359,8 +359,7 @@ const GLSL_COASTAL_CONSTANTS = /* glsl */ `
 #define COAST_FOOT_AMOUNT  0.70    // peak sand-color mix into rock (0..1)
 
 // Beach overlay tunables.
-#define BEACH_CLIFF_STRENGTH 0.50  // beach strength multiplied by (1 - cliffProx * THIS)
-#define BEACH_CLIFF_DIRT     0.70  // peak dirt-tone mix into beach near cliff (0..1)
+#define BEACH_CLIFF_ROCK   0.65    // peak rock-color mix into beach near cliff (0..1)
 
 // Set to 1 to paint magenta over pixels where the cliff-foot blend
 // is active (footAmt > 0.5). Useful to verify the threshold is hitting
@@ -450,23 +449,36 @@ const GLSL_CLIFF_RENDERING = /* glsl */ `
 
 const GLSL_BEACH_OVERLAY = /* glsl */ `
         // ── (c) Beach overlay ──
-        // Coastal land paints sand on the top face. Near a cliff, the
-        // beach reduces in strength AND shifts toward a dirt tone so the
-        // sand→rock transition reads as a continuous band rather than a
-        // hard seam.
+        // Coastal land paints sand on the top face. Near a cliff, beach
+        // color blends toward actual cliff ROCK color (same palette the
+        // cliff face uses) so the two surfaces converge to the same color
+        // at the shared edge — no horizontal seam.
         if (coastProximity > 0.01) {
             float coastNoise = snoise(vWorldPos * 0.005) * 0.12
                              + snoise(vWorldPos * 0.015) * 0.06;
             float beachBlend = smoothstep(0.35 + coastNoise, 1.0, coastProximity);
-            beachBlend *= (1.0 - cliffProximity * BEACH_CLIFF_STRENGTH);
 
-            vec3 dirtTone = vec3(0.45, 0.36, 0.24);
-            vec3 beachAtCliff = mix(
-                beachColor,
-                dirtTone,
-                smoothstep(0.1, 0.7, cliffProximity) * BEACH_CLIFF_DIRT
+            // Rock color matched to the cliff face palette. Same blend the
+            // cliff hex's foot sand mix uses, just from the other direction.
+            vec3 rockNearCliff = mix(
+                cliffPalette[terrainId * 3],
+                cliffPalette[terrainId * 3 + 1],
+                0.55
             );
+            // Erosion noise breaks up the boundary so it matches the
+            // cliff-foot noise pattern on the other side.
+            float beachRockNoise = snoise(vWorldPos * 0.010) * 0.30
+                                 + snoise(vWorldPos * 0.035) * 0.15;
+            float rockMix = smoothstep(0.05, 0.85, cliffProximity);
+            rockMix = clamp(rockMix + beachRockNoise * 0.3, 0.0, 1.0);
+            vec3 beachAtCliff = mix(beachColor, rockNearCliff, rockMix * BEACH_CLIFF_ROCK);
+
             procColor = mix(procColor, beachAtCliff, beachBlend);
+
+            // Debug tint for the beach-side rock blend (same toggle).
+            if (COASTAL_DEBUG_TINT == 1 && rockMix > 0.4) {
+                procColor = mix(procColor, vec3(0.2, 1.0, 0.2), 0.5);
+            }
         }
     }
 `;
