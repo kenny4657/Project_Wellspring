@@ -593,6 +593,28 @@ void main() {
         // ~AMP of an edge see the noise potentially flip them to the
         // neighbor. Result: coastlines, biome borders, and cliff lines
         // are all wavy rather than hex-aligned.
+        // Unperturbed lookup FIRST -- captures the clean geometric distance
+        // to the real hex edge. We need this for the cliff gate because
+        // boundary-noise amp (0.004) is wider than the rock band width (15%
+        // of apothem ~ 0.0018 unit sphere). If the cliff gate is computed
+        // off the noise-perturbed lookup, the rock band gets dragged around
+        // by the noise field and degenerates into thin meandering ribbons.
+        // Color/biome lookups still use the perturbed P below so coastlines
+        // and biome edges remain wavy.
+        computeHexLookup(P);
+        float cleanCliffEdgeDistN = 1.0;
+        {
+            float rClean = 0.5 / (resolution + 1.0);
+            float minEd = 1e30;
+            for (int k = 0; k < 6; k++) {
+                float ang = float(k) * (3.14159265 / 3.0);
+                vec2 nrm = vec2(cos(ang), sin(ang));
+                float ed = rClean - dot(g_P2D - g_self_2d, nrm);
+                if (ed < minEd) minEd = ed;
+            }
+            cleanCliffEdgeDistN = clamp(minEd / rClean, 0.0, 1.0);
+        }
+
         vec3 boundaryNoise = vec3(
             snoise(P * 80.0),
             snoise(P * 80.0 + vec3(100.0, 0.0, 0.0)),
@@ -629,23 +651,13 @@ void main() {
         float minWaterLandDist = 1.0;
         float minHeightDist = 1.0;
         float minDiffTerrainDist = 1.0;
-        // Normalized distance from this fragment to the closest hex edge,
-        // 0 right at the edge, 1 at hex center. Used as the cliff "is this
-        // a wall fragment" signal: rock paint gates on this so it stays
-        // confined to the geometric edge ramp instead of smearing across
-        // hex tops the way steepness=cliffProximity did.
-        float cliffEdgeDistN = 1.0;
 
         {
             float r = 0.5 / (resolution + 1.0);
-            float minEdgeDist = 1e30;
             for (int k = 0; k < 6; k++) {
                 float ang = float(k) * (3.14159265 / 3.0);
                 vec2 nrm = vec2(cos(ang), sin(ang));
                 float ed = r - dot(g_P2D - g_self_2d, nrm);
-                if (ed < minEdgeDist) {
-                    minEdgeDist = ed;
-                }
                 float ndN = neighborIdAtEdge(k);
                 if (ndN < 0.0) continue;
                 vec2 ndata = sampleHexData(ndN);
@@ -672,7 +684,6 @@ void main() {
                 }
             }
             distToBorder = minDiffTerrainDist;
-            cliffEdgeDistN = clamp(minEdgeDist / r, 0.0, 1.0);
         }
 
         int neighborId = blendNeighborId;
@@ -783,7 +794,7 @@ const GLSL_BEACH_OVERLAY_NO_CLOSE = GLSL_BEACH_OVERLAY.replace(/\}\s*$/, '');
 // still ensures we only paint where a real tier transition exists.
 const GLSL_CLIFF_RENDERING_PATCHED = GLSL_CLIFF_RENDERING.replace(
 	'float steepness = 1.0 - dot(N, normalize(vWorldPos));',
-	'float steepness = 1.0 - smoothstep(0.0, 0.15, cliffEdgeDistN);',
+	'float steepness = 1.0 - smoothstep(0.0, 0.18, cleanCliffEdgeDistN);',
 );
 
 const FRAGMENT =
