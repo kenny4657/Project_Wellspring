@@ -36,7 +36,7 @@ import { TERRAIN_PROFILES } from '$lib/world/terrain-types';
 import type { HexCell } from './icosphere';
 import type { HexBorderInfo } from './hex-borders';
 import { findNeighborAcrossEdge } from './hex-borders';
-import { distToSegment, distToCoast, distToGentleLandEdge } from './hex-distance-fields';
+import { distToSegment, distToCoast, distToGentleLandEdge, distToSteepCliff } from './hex-distance-fields';
 
 // ── Shared B-channel packing constants ──────────────────────
 // These three constants are the single source of truth for the B-channel
@@ -147,10 +147,20 @@ export function encodeTopVertexColor(
 		}
 	}
 
-	// Coast proximity in alpha
+	// Coast proximity in alpha.
+	// For low-land hexes that are BOTH coastal AND cliff-adjacent, also treat
+	// the cliff edge as a coast source — this makes coastProximity non-zero at
+	// the cliff-facing vertices so the beach overlay's rocky blend fires there,
+	// matching the cliff foot sand blend from the other side of the shared edge.
+	// Non-coastal hexes (pure inland grass next to a cliff) are unaffected
+	// because borderInfo.hasCoast is false for them.
 	let alpha = 1.0;
 	if (borderInfo.hasCoast) {
-		const cd = distToCoast(vx, vy, vz, cell, borderInfo);
+		let cd = distToCoast(vx, vy, vz, cell, borderInfo);
+		if (!isWaterHex && borderInfo.hasSteepCliff && cell.heightLevel === 2) {
+			const cliffDist = distToSteepCliff(vx, vy, vz, cell, borderInfo);
+			cd = Math.min(cd, cliffDist);
+		}
 		alpha = 0.5 + 0.5 * Math.min(cd / hexRadius, 1.0);
 	}
 

@@ -449,23 +449,14 @@ const GLSL_CLIFF_RENDERING = /* glsl */ `
 
 const GLSL_BEACH_OVERLAY = /* glsl */ `
         // ── (c) Beach overlay ──
-        // Two activation paths:
-        //   • coastProximity  — classic coast strip on any hex with a water edge.
-        //   • cliffBaseAct    — flat land at the foot of a coastal cliff should also
-        //                       look sandy so it reads continuously with the cliff
-        //                       foot sand blend from section (b). Gated on height
-        //                       so inland/elevated cliff-adjacent hexes are excluded.
-        // Suppress on steep cliff faces (steepness > 0.015) so the beach overlay
-        // doesn't wash out the rock texture that section (b) just painted there.
-        float cliffBaseAct = smoothstep(0.02, 0.5, cliffProximity)
-            * (1.0 - smoothstep(COAST_FOOT_FULL * planetRadius, COAST_FOOT_FADE * planetRadius, heightAboveR))
-            * (1.0 - smoothstep(0.003, 0.015, steepness));
-        float beachActivation = max(coastProximity, cliffBaseAct);
-
-        if (beachActivation > 0.01) {
+        // Coastal land paints sand on the top face. Near a cliff, beach
+        // color blends toward actual cliff ROCK color (same palette the
+        // cliff face uses) so the two surfaces converge to the same color
+        // at the shared edge — no horizontal seam.
+        if (coastProximity > 0.01) {
             float coastNoise = snoise(vWorldPos * 0.005) * 0.12
                              + snoise(vWorldPos * 0.015) * 0.06;
-            float beachBlend = smoothstep(0.35 + coastNoise, 1.0, beachActivation);
+            float beachBlend = smoothstep(0.35 + coastNoise, 1.0, coastProximity);
 
             // Rock palette: use the cliff neighbor's terrain when the G channel
             // carries a cross-terrain blend (section a does the same). This makes
