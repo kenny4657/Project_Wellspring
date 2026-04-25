@@ -15,6 +15,11 @@ import { ShaderStore } from '@babylonjs/core/Engines/shaderStore';
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import type { Scene } from '@babylonjs/core/scene';
 import { loadTerrainSettings, packCustomPalettes, packCliffPalettes, type RGB, type TerrainSettings } from '$lib/world/terrain-types';
+import { HEIGHT_LEVEL_SCALE, CLIFF_PROX_SCALE, B_CHANNEL_DECODE_MUL } from './vertex-encoding';
+
+// Decoder-side constants derived from the encoder's pack formula.
+// rawB = vColor.b * B_CHANNEL_DECODE_MUL → fract(rawB) = cliffProx * (CLIFF_PROX_SCALE * B_CHANNEL_DECODE_MUL)
+const CLIFF_PROX_DECODE_DIV = CLIFF_PROX_SCALE * B_CHANNEL_DECODE_MUL;
 
 const VERTEX = /* glsl */ `
 precision highp float;
@@ -257,10 +262,11 @@ void main() {
         // ── Per-terrain height blending + cross-terrain border blend ────
         int terrainId = int(vColor.r * 9.0 + 0.5);
         // B channel packs heightLevel (0-4) and cliff proximity (0-1):
-        //   B = heightLevel * 0.1 + cliffProximity * 0.09
-        float rawB = vColor.b * 10.0;
+        //   B = heightLevel * ${HEIGHT_LEVEL_SCALE.toFixed(2)} + cliffProximity * ${CLIFF_PROX_SCALE.toFixed(2)}
+        // Constants are interpolated from vertex-encoding.ts (shared source of truth).
+        float rawB = vColor.b * ${B_CHANNEL_DECODE_MUL.toFixed(1)};
         int heightLevel = int(floor(rawB + 0.001));
-        float cliffProximity = fract(rawB + 0.001) / 0.9;
+        float cliffProximity = fract(rawB + 0.001) / ${CLIFF_PROX_DECODE_DIV.toFixed(2)};
         cliffProximity = clamp(cliffProximity, 0.0, 1.0);
         // Reconstruct tierH from height level
         float tierH;

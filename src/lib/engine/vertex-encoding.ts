@@ -38,6 +38,26 @@ import type { HexBorderInfo } from './hex-borders';
 import { findNeighborAcrossEdge } from './hex-borders';
 import { distToSegment, distToCoast, distToGentleLandEdge } from './hex-distance-fields';
 
+// ── Shared B-channel packing constants ──────────────────────
+// These three constants are the single source of truth for the B-channel
+// pack/unpack formula. They are imported by `terrain-material.ts` and
+// interpolated into the GLSL string at shader-build time so the encode and
+// decode literally share the same numeric values. Change one, both update.
+
+/** Per-tier multiplier on the B channel. B = heightLevel * HEIGHT_LEVEL_SCALE + cliffProx * CLIFF_PROX_SCALE.
+ *  Used by both TS encoder and GLSL decoder — change one, both update. */
+export const HEIGHT_LEVEL_SCALE = 0.1;
+
+/** Cliff proximity contribution to B. Must stay strictly < HEIGHT_LEVEL_SCALE
+ *  so the integer step at 0.1 survives floor() decoding.
+ *  Used by both TS encoder and GLSL decoder — change one, both update. */
+export const CLIFF_PROX_SCALE = 0.09;
+
+/** Decode multiplier: shader does `rawB = vColor.b * B_CHANNEL_DECODE_MUL`.
+ *  Must equal 1 / HEIGHT_LEVEL_SCALE.
+ *  Used by both TS encoder and GLSL decoder — change one, both update. */
+export const B_CHANNEL_DECODE_MUL = 10.0;
+
 /** Wall vertex color: terrain profile RGB (used by textureWall for blue-detection). */
 export function getTerrainColor(idx: number): [number, number, number] {
 	return TERRAIN_PROFILES[idx]?.color ?? [0.5, 0.5, 0.5];
@@ -55,7 +75,7 @@ export function getTopFaceColor(terrainIdx: number, heightLevel: number, neighbo
 	const r = terrainIdx / 9.0;
 	const level = Math.min(heightLevel, 4);
 	const prox = Math.max(0, Math.min(cliffProximity, 1.0));
-	const b = level * 0.1 + prox * 0.09;
+	const b = level * HEIGHT_LEVEL_SCALE + prox * CLIFF_PROX_SCALE;
 	const nId = neighborTerrainId >= 0 ? neighborTerrainId : terrainIdx;
 	const g = (nId + Math.min(blendFactor, 0.99)) / 10.0;
 	return [r, g, b];
