@@ -364,7 +364,7 @@ const GLSL_COASTAL_CONSTANTS = /* glsl */ `
 // Set to 1 to paint magenta over pixels where the cliff-foot blend
 // is active (footAmt > 0.5). Useful to verify the threshold is hitting
 // the right vertices when a tweak appears to do nothing visually.
-#define COASTAL_DEBUG_TINT 1
+#define COASTAL_DEBUG_TINT 0
 `;
 
 const GLSL_CLIFF_RENDERING = /* glsl */ `
