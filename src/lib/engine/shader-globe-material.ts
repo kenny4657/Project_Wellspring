@@ -797,27 +797,26 @@ const GLSL_BEACH_OVERLAY_NO_CLOSE = GLSL_BEACH_OVERLAY.replace(/\}\s*$/, '');
 
 // New cliff chunk -- single fragment-side gate from cleanCliffEdgeDistN.
 //
-// Why we don't reuse the legacy GLSL_CLIFF_RENDERING chunk: its outer
-// gate is `if (cliffProximity > 0.01 && steepness > 0.003)`. Even after
-// patching `steepness` to use cleanCliffEdgeDistN (the unperturbed
-// cliff-edge distance), `cliffProximity` is still computed from the
-// PERTURBED 6-neighbor scan and gets scattered on/off by boundary noise.
-// The AND of a clean signal and a noisy signal is a noisy gate -> the
-// zigzag rock pattern the user kept reporting.
+// wallness MUST be a step-like mask, NOT a smooth fade across the whole
+// wall band. The wall band is [0, 0.15] of apothem (Strategy 3 ramp).
+// We want full rock across that whole band -- and a quick falloff just
+// at the boundary so it doesn't bleed onto the hex top. Earlier
+// attempts used `1 - smoothstep(0, 0.22, edgeDistN)` which fades
+// throughout the band -- mid-wall fragments only got 50-60% rock blend
+// with grass, so the wall read as a thin brown line at the edge with
+// grass-blended tint everywhere else. This formula keeps rock at full
+// strength throughout the wall band:
+//   ed = 0..0.18 -> wallness = 1 (full rock, the entire wall)
+//   ed = 0.18..0.24 -> falloff
+//   ed > 0.24 -> wallness = 0 (hex top, no rock)
 //
-// This chunk uses cleanCliffEdgeDistN as the SOLE gate. Per-fragment,
-// from unperturbed P, distance-to-nearest-cliff-edge specifically.
-// No interaction with perturbed cliffProximity. No vertex-interpolated
-// signal. No normals. No dFdx.
-//
-// wallness fade band 0..0.22 of apothem: total rock band ~44% of apothem
-// (since the same cliff edge sees clean distance from BOTH sides). On a
-// 6371 km planet at res=40 hex apothem ~76 km, so band ~33 km wide --
-// substantial enough to read as a wall at oblique angles.
-//
-// waterCliffBlend stays exposed because GLSL_BEACH_OVERLAY reads it.
+// Cliff-foot sand: legacy uses a pure heightAboveR threshold which fires
+// for ANY cliff at low elevation, including inland tier 2->3 cliffs
+// where the whole wall is below the threshold. That dyes the entire
+// inland wall sand-tan. Gate footAmt on coastProximity so the sand
+// blend only fires for actually coastal cliffs.
 const GLSL_CLIFF_RENDERING_NEW = /* glsl */ `
-        float wallness = 1.0 - smoothstep(0.0, 0.22, cleanCliffEdgeDistN);
+        float wallness = 1.0 - smoothstep(0.18, 0.24, cleanCliffEdgeDistN);
         float waterCliffBlend = 0.0;
         if (wallness > 0.005) {
             int cliffPalId = hasCrossBlend ? neighborId : terrainId;
@@ -832,9 +831,9 @@ const GLSL_CLIFF_RENDERING_NEW = /* glsl */ `
             rockColor = mix(rockColor, cliffPale, smoothstep(0.62, 0.92, rockN2) * 0.55);
             rockColor += snoise(vWorldPos * 0.006) * 0.025;
 
-            // Cliff-foot sand: low-elevation walls pick up sand color so
-            // they meet the beach without a hard seam. Same constants as
-            // legacy COAST_FOOT_FULL/FADE/AMOUNT.
+            // Cliff-foot sand: only fires when actually coastal. For
+            // inland cliffs coastProximity is 0 so footGate is 0 and
+            // the wall stays purely rocky.
             float footAmt = 1.0 - smoothstep(
                 COAST_FOOT_FULL * planetRadius,
                 COAST_FOOT_FADE * planetRadius,
@@ -843,7 +842,8 @@ const GLSL_CLIFF_RENDERING_NEW = /* glsl */ `
             float footNoise = snoise(vWorldPos * 0.010) * 0.30
                             + snoise(vWorldPos * 0.035) * 0.15;
             footAmt = clamp(footAmt + footNoise, 0.0, 1.0);
-            rockColor = mix(rockColor, beachColor * 0.82, footAmt * COAST_FOOT_AMOUNT);
+            float footGate = smoothstep(0.0, 0.4, coastProximity);
+            rockColor = mix(rockColor, beachColor * 0.82, footAmt * COAST_FOOT_AMOUNT * footGate);
 
             procColor = mix(procColor, rockColor, wallness);
             waterCliffBlend = wallness;
