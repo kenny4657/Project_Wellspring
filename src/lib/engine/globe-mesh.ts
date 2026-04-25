@@ -434,16 +434,12 @@ export function buildCornerGapPatchMesh(cells: HexCell[], radius: number, scene:
 		const n = cell.corners.length;
 		if (n < 3) continue;
 
-		let hexRadius = 0;
-		for (let i = 0; i < n; i++) {
-			const dx = cell.corners[i].x - cell.center.x;
-			const dy = cell.corners[i].y - cell.center.y;
-			const dz = cell.corners[i].z - cell.center.z;
-			hexRadius += Math.sqrt(dx * dx + dy * dy + dz * dz);
-		}
-		hexRadius /= n;
+		const hexRadius = computeHexRadius(cell);
 
 		const tierH = getLevelHeight(cell.heightLevel);
+		// Corner-gap patches are tiny filler tris; a fixed encoding (no
+		// cliff/coast modulation) is intentional — encodeTopVertexColor
+		// would over-darken these patches at coastal corners.
 		const topColor = getTopFaceColor(cell.terrain, cell.heightLevel, -1, 0);
 
 		for (let i = 0; i < n; i++) {
@@ -515,6 +511,58 @@ export function buildCornerGapPatchMesh(cells: HexCell[], radius: number, scene:
 	return mesh;
 }
 
+/** Recolor the 3 vertices of a single top-face triangle in place.
+ *  Reads positions from `positionsBuffer`, writes RGBA into `colorsBuffer`.
+ *  Same per-triangle neighborId rule as the build path: GPU interpolation +
+ *  floor() on the G channel produces hairline artifacts unless all 3 verts
+ *  agree on the neighbor terrain id. */
+function updateCellTopFaceTriangle(
+	c: HexCell,
+	borderInfo: HexBorderInfo,
+	cellById: Map<number, HexCell>,
+	hexRadius: number,
+	triStart: number,
+	colorsBuffer: Float32Array,
+	positionsBuffer: Float32Array,
+): void {
+	const triNIds = [-1, -1, -1];
+	const triBFs = [0, 0, 0];
+	const triUVs: number[][] = [[], [], []];
+	for (let k = 0; k < 3; k++) {
+		const pi = (triStart + k) * 3;
+		const px = positionsBuffer[pi], py = positionsBuffer[pi + 1], pz = positionsBuffer[pi + 2];
+		const len = Math.sqrt(px * px + py * py + pz * pz) || 1;
+		triUVs[k] = [px / len, py / len, pz / len];
+		if (borderInfo.hasTerrainBorder) {
+			const tb = distToTerrainBorder(triUVs[k][0], triUVs[k][1], triUVs[k][2], c, borderInfo, hexRadius);
+			if (tb.neighborTerrainId >= 0) {
+				triBFs[k] = Math.min(tb.dist / hexRadius, 0.999);
+				triNIds[k] = tb.neighborTerrainId;
+			}
+		}
+	}
+	// Pick neighborId from vertex closest to border
+	let chosenNId = -1;
+	let minBF = Infinity;
+	for (let k = 0; k < 3; k++) {
+		if (triNIds[k] >= 0 && triBFs[k] < minBF) {
+			minBF = triBFs[k];
+			chosenNId = triNIds[k];
+		}
+	}
+	for (let k = 0; k < 3; k++) {
+		const vi = (triStart + k) * 4;
+		const rgba = encodeTopVertexColor(
+			c, triUVs[k][0], triUVs[k][1], triUVs[k][2],
+			borderInfo, cellById, hexRadius, chosenNId, triBFs[k]
+		);
+		colorsBuffer[vi] = rgba[0];
+		colorsBuffer[vi + 1] = rgba[1];
+		colorsBuffer[vi + 2] = rgba[2];
+		colorsBuffer[vi + 3] = rgba[3];
+	}
+}
+
 /** Update colors for a cell and its neighbors when terrain is painted.
  *  Recomputes per-vertex terrain blend for all affected cells. */
 export function updateCellTerrain(
@@ -544,19 +592,9 @@ export function updateCellTerrain(
 
 	for (const ci of affected) {
 		const c = cells[ci];
-		const n = c.corners.length;
 		const wallColor = getTerrainColor(c.terrain);
-		const tierH = getLevelHeight(c.heightLevel);
 		const borderInfo = getHexBorderInfo(c, cellById);
-
-		let hexRadius = 0;
-		for (let i = 0; i < n; i++) {
-			const dx = c.corners[i].x - c.center.x;
-			const dy = c.corners[i].y - c.center.y;
-			const dz = c.corners[i].z - c.center.z;
-			hexRadius += Math.sqrt(dx * dx + dy * dy + dz * dz);
-		}
-		hexRadius /= n;
+		const hexRadius = computeHexRadius(c);
 
 		const start = vertexStarts[ci];
 		const count = totalVerticesPerCell[ci];
@@ -574,42 +612,7 @@ export function updateCellTerrain(
 			} else {
 				// Top-face triangle — process 3 vertices together
 				// to ensure same neighborId (prevents interpolation artifacts)
-				const triNIds = [-1, -1, -1];
-				const triBFs = [0, 0, 0];
-				const triUVs: number[][] = [[], [], []];
-				for (let k = 0; k < 3; k++) {
-					const pi = (start + i + k) * 3;
-					const px = positionsBuffer[pi], py = positionsBuffer[pi + 1], pz = positionsBuffer[pi + 2];
-					const len = Math.sqrt(px * px + py * py + pz * pz) || 1;
-					triUVs[k] = [px / len, py / len, pz / len];
-					if (borderInfo.hasTerrainBorder) {
-						const tb = distToTerrainBorder(triUVs[k][0], triUVs[k][1], triUVs[k][2], c, borderInfo, hexRadius);
-						if (tb.neighborTerrainId >= 0) {
-							triBFs[k] = Math.min(tb.dist / hexRadius, 0.999);
-							triNIds[k] = tb.neighborTerrainId;
-						}
-					}
-				}
-				// Pick neighborId from vertex closest to border
-				let chosenNId = -1;
-				let minBF = Infinity;
-				for (let k = 0; k < 3; k++) {
-					if (triNIds[k] >= 0 && triBFs[k] < minBF) {
-						minBF = triBFs[k];
-						chosenNId = triNIds[k];
-					}
-				}
-				for (let k = 0; k < 3; k++) {
-					const vi = (start + i + k) * 4;
-					const rgba = encodeTopVertexColor(
-						c, triUVs[k][0], triUVs[k][1], triUVs[k][2],
-						borderInfo, cellById, hexRadius, chosenNId, triBFs[k]
-					);
-					colorsBuffer[vi] = rgba[0];
-					colorsBuffer[vi + 1] = rgba[1];
-					colorsBuffer[vi + 2] = rgba[2];
-					colorsBuffer[vi + 3] = rgba[3];
-				}
+				updateCellTopFaceTriangle(c, borderInfo, cellById, hexRadius, start + i, colorsBuffer, positionsBuffer);
 				i += 3;
 			}
 		}
