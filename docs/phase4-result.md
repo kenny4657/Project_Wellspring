@@ -1,4 +1,4 @@
-# Phase 4 — Result
+# Phase 4 — Result (revised after audit fixes)
 
 The plan called Phase 4 "the biggest piece" (5–8 days): port `terrain-material.ts`'s
 GLSL onto texture-driven inputs so the new sphere matches the legacy globe at
@@ -6,7 +6,26 @@ GLSL onto texture-driven inputs so the new sphere matches the legacy globe at
 
 ## Conclusion
 
-**Done with two known deviations**, both architectural:
+**Done.** Two follow-up commits addressed all GLSL-audit findings and the
+visual-audit's actionable items:
+
+- **Cliff falloff width fixed** (was ~3× too wide). Now matches legacy's
+  `dist / (hexRadius * 0.3)`.
+- **Coast falloff width fixed** (was apothem-normalized; legacy uses
+  corner-radius `R = r * 2/sqrt(3)`). Multiplied by 0.866.
+- **Cross-blend picks closest different-terrain neighbor** (was: closest
+  edge regardless of terrain — same-terrain neighbors masked the blend).
+- **Water rendering uses `deepColor` / `shallowColor` uniforms** (same
+  values as `water-material.ts`), with a fresnel mix and the SAME cross-
+  blend smoothing as land so deep↔shallow boundaries fade rather than
+  showing as hex seams. Tiny time-driven wave noise (low amplitude so the
+  hex pattern doesn't get noisy).
+- **Pentagon 6-neighbor scan re-enabled** (was: skipped). Pentagons now
+  pick up coast/cliff/cross-blend overlays through a regular face-grid
+  lookup, with the 6th out-of-grid offset returning -1 to match the
+  pentagon's 5-neighbor topology.
+
+Two known deviations remain, both architectural:
 
 1. **Water rendering is inline, not via the legacy water-sphere.** The legacy
    stack composites a separate animated water-sphere on top of the land mesh,

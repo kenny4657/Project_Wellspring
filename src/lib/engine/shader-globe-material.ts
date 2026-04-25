@@ -90,6 +90,12 @@ uniform sampler2D terrainTex;
 uniform sampler2D heightTex;
 uniform float dataTexSize;
 
+// Phase 4 water rendering. Same names as water-material.ts so a future
+// shared "water-color settings" surface (Colors tab extension) can drive
+// both renderers from one source.
+uniform vec3 deepColor;
+uniform vec3 shallowColor;
+
 // Phase 2 hex lookup uniforms (same names the debug material uses).
 uniform sampler2D hexLookup;
 uniform float gridSize;       // = res + 2
@@ -184,11 +190,15 @@ void computeHexLookup(vec3 P) {
     g_self_2d = vec2(0.0);
 
     float pent = pentagonHit(P);
-    if (pent >= 0.0) {
-        g_hexId = pent;
-        g_isPentagon = true;
-        return;
-    }
+    g_isPentagon = (pent >= 0.0);
+    // Don't early-return for pentagons. We still want g_face/g_i/g_j filled
+    // so downstream can run the 6-neighbor scan and pick up coast / cliff /
+    // cross-blend overlays at pentagon hexes. The face-grid lookup at the
+    // pentagon's position returns the same cellId pent would, but in many
+    // faces (the pentagon shares 5 face triangles); pick whichever face the
+    // dot product picks. The scan's row-parity offset table will produce
+    // 5 valid neighbors and 1 out-of-grid (-1) -- matching the pentagon's
+    // 5-neighbor topology naturally.
     int face = findFace(P);
     vec3 v0 = faceVertA[face];
     vec3 v1 = faceVertB[face];
@@ -209,7 +219,10 @@ void computeHexLookup(vec3 P) {
     g_face = face; g_i = i; g_j = j;
     g_P2D = vec2(cx, cz);
     g_self_2d = selfCenter2D(i, j);
-    g_hexId = sampleLookupFace(face, i, j);
+    // For pentagons, prefer the pentagon-table id (it's authoritative; the
+    // face-grid may return any of the 5 face entries). Otherwise use the
+    // standard face-grid lookup.
+    g_hexId = g_isPentagon ? pent : sampleLookupFace(face, i, j);
 }
 `;
 
@@ -315,19 +328,27 @@ void main() {
         // coast/cliff overlays -- a small visual concession for the 12
         // pole hexes).
         float distToBorder = 1.0;
-        int closestEdge = 0;
         int blendNeighborId = terrainId;
-        // Match legacy hex-borders.ts: a hex is "water" by heightLevel <= 1
-        // (deep/shallow ocean tiers), not by terrain id. Coast (terrain 2)
-        // and lake (terrain 3) sit at heightLevel 1 or 2 depending on
-        // generation, and the legacy treats that as the source of truth.
+        // Match legacy hex-borders.ts: water = heightLevel <= 1.
         bool selfIsWater = (heightLevel <= 1);
         bool anyWaterLandTransition = false;
         bool anyHeightTransition = false;
         float minWaterLandDist = 1.0;
         float minHeightDist = 1.0;
+        // Cross-blend selection: track the closest neighbor that has a
+        // DIFFERENT terrain id (not just the closest neighbor regardless of
+        // terrain). A same-terrain closest neighbor would otherwise mask
+        // a different-terrain farther one, leaving the cross-blend never
+        // triggering -- which was Phase 4's audit-flagged bug.
+        float minDiffTerrainDist = 1.0;
 
-        if (!g_isPentagon) {
+        // The scan runs for all hexes including pentagons. For pentagons,
+        // computeHexLookup sets g_face/g_i/g_j via the standard face find
+        // (the pentagon table provides the authoritative cellId; the scan
+        // just walks the face-grid neighbors as if it were a regular hex).
+        // 5 neighbors come back valid, the 6th returns -1 and is skipped,
+        // matching the pentagon's 5-neighbor topology.
+        {
             float r = 0.5 / (resolution + 1.0);
             float minEdgeDist = 1e30;
             for (int k = 0; k < 6; k++) {
@@ -336,7 +357,6 @@ void main() {
                 float ed = r - dot(g_P2D - g_self_2d, nrm);
                 if (ed < minEdgeDist) {
                     minEdgeDist = ed;
-                    closestEdge = k;
                 }
                 float ndN = neighborIdAtEdge(k);
                 if (ndN < 0.0) continue;
@@ -346,8 +366,13 @@ void main() {
                 bool nIsWater = (nH <= 1);
                 float edN = clamp(ed / r, 0.0, 1.0);
 
-                // Coast: water/land transition by heightLevel, matching
-                // legacy classifyEdge water/cliff/water-to-low-land paths.
+                // Cross-blend: pick the closest different-terrain neighbor.
+                if (nT != terrainId && edN < minDiffTerrainDist) {
+                    minDiffTerrainDist = edN;
+                    blendNeighborId = nT;
+                }
+
+                // Coast: water/land transition by heightLevel.
                 if (nIsWater != selfIsWater) {
                     anyWaterLandTransition = true;
                     minWaterLandDist = min(minWaterLandDist, edN);
@@ -365,30 +390,34 @@ void main() {
                     minHeightDist = min(minHeightDist, edN);
                 }
             }
-            distToBorder = clamp(minEdgeDist / r, 0.0, 1.0);
-            float closestNid = neighborIdAtEdge(closestEdge);
-            if (closestNid >= 0.0) {
-                vec2 nd = sampleHexData(closestNid);
-                int nT = int(nd.x);
-                if (nT != terrainId) blendNeighborId = nT;
-            }
+            // distToBorder: distance to the closest different-terrain
+            // neighbor's edge (used by the cross-blend smoothstep). If no
+            // different-terrain neighbor was found, distToBorder stays at
+            // 1.0 (= deep inland) and the blend doesn't trigger.
+            distToBorder = minDiffTerrainDist;
         }
 
         int neighborId = blendNeighborId;
         bool hasCrossBlend = (neighborId != terrainId);
 
-        // Coast proximity: 1.0 right at a water/land border, 0.0 deep
-        // inland. Legacy decoded vColor.a as
-        //   coastProximity = clamp((1.0 - vColor.a) * 2.0, 0.0, 1.0)
-        // where vColor.a was 0.5 at the water edge and 1.0 inland. Our
-        // direct definition above produces the same shape.
+        // Coast proximity: 1.0 at a water/land border, 0.0 deep inland.
+        // Legacy decoded vColor.a as 1 - cd/hexRadius where hexRadius is
+        // the corner radius R = r * 2/sqrt(3). We use the apothem r, so
+        // multiply the normalized distance by r/R = sqrt(3)/2 ~= 0.866 to
+        // get the same falloff width.
         float coastProximity = anyWaterLandTransition
-            ? clamp(1.0 - minWaterLandDist, 0.0, 1.0)
+            ? clamp(1.0 - minWaterLandDist * 0.866, 0.0, 1.0)
             : 0.0;
 
-        // Cliff proximity: 1.0 at a height-tier border, 0.0 inland.
+        // Cliff proximity: 1.0 at a height-tier border, 0.0 inland. Legacy
+        // (vertex-encoding.ts:131) uses 1 - dist/(hexRadius * 0.3); the
+        // band reaches 0 at 30% of the corner radius. Apothem-normalized
+        // that's about 0.35 * r. So divide by 0.35 (instead of 1.0).
+        // Without this fix the cliff color band was ~3x too wide and dark
+        // outlines bled across every hex with a different heightLevel
+        // neighbor.
         float cliffProximity = anyHeightTransition
-            ? clamp(1.0 - minHeightDist, 0.0, 1.0)
+            ? clamp(1.0 - minHeightDist / 0.35, 0.0, 1.0)
             : 0.0;
 
         // ── Per-cell colors (palettes), same math as legacy ────
@@ -424,26 +453,56 @@ void main() {
         }
 
         // Phase 4 water rendering. The legacy stack uses a separate animated
-        // water sphere positioned BELOW the legacy land mesh's elevation.
-        // Phase 4 has no displacement (Phase 5's job), so the water sphere
-        // can't composite correctly -- shader-globe sits at planetRadius
-        // and water-sphere at 0.9995R is fully occluded. To stay visually
-        // close to legacy without porting the full animated water shader,
-        // override water-tier hexes (heightLevel <= 1) with a static blue
-        // tone derived from each terrain's profile.color and a small wave
-        // noise for variation. Phase 5+6 should reintegrate the proper
-        // animated water-material once elevation is back.
-        if (heightLevel <= 1) {
-            vec3 waterBase;
-            if (terrainId == 0) waterBase = vec3(0.07, 0.13, 0.34);       // deep ocean
-            else if (terrainId == 1) waterBase = vec3(0.13, 0.30, 0.52);  // shallow ocean
-            else if (terrainId == 3) waterBase = vec3(0.10, 0.28, 0.55);  // lake
-            else waterBase = vec3(0.18, 0.35, 0.55);                      // fallback
-            // Subtle wave-noise variation; legacy water has live waves driven
-            // by the time uniform -- we keep it static for Phase 4 simplicity.
-            float w1 = snoise(vWorldPos * 0.006) * 0.05;
-            float w2 = snoise(vWorldPos * 0.025) * 0.03;
-            procColor = waterBase + vec3(w1 + w2);
+        // water-sphere positioned BELOW the land mesh's elevation. Phase 4
+        // has no displacement (Phase 5's job), so the water-sphere can't
+        // composite correctly -- shader-globe sits at planetRadius and the
+        // water-sphere at 0.9995R is fully occluded.
+        //
+        // Approach: render water inline using deepColor/shallowColor (same
+        // values as water-material.ts) plus a fresnel mix between them,
+        // a tiny time-driven wave perturbation (low amplitude so the hex
+        // pattern doesn't get noisy), and the same cross-blend smoothing
+        // we use on land so deep/shallow water hex boundaries fade rather
+        // than show as hard seams.
+        if (selfIsWater) {
+            vec3 viewDir = normalize(cameraPos - vWorldPos);
+            float fresnel = pow(1.0 - max(0.0, dot(N, viewDir)), 2.0);
+
+            // Per-terrain water colors. Legacy water-material.ts has a single
+            // pair (deepColor, shallowColor); we map terrain ids onto that
+            // pair plus a small lake variant. This honors the legacy palette
+            // (water is global, not per-cell) so the Colors-tab water-color
+            // editor is the right place for any future user customization.
+            vec3 selfWater;
+            if (terrainId == 0) selfWater = mix(deepColor, shallowColor, fresnel * 0.3 + 0.1);
+            else if (terrainId == 1) selfWater = mix(deepColor, shallowColor, fresnel * 0.3 + 0.4);
+            else if (terrainId == 3) selfWater = mix(deepColor, shallowColor, fresnel * 0.3 + 0.3) + vec3(-0.02, 0.02, 0.03);
+            else selfWater = mix(deepColor, shallowColor, fresnel * 0.3 + 0.2);
+
+            // Cross-blend across water/water hex boundaries (e.g., deep <->
+            // shallow). Reuses the land cross-blend's distance + threshold
+            // logic so the two paths produce visually consistent transitions.
+            vec3 waterCol = selfWater;
+            if (hasCrossBlend) {
+                vec3 nbWater;
+                if (neighborId == 0) nbWater = mix(deepColor, shallowColor, fresnel * 0.3 + 0.1);
+                else if (neighborId == 1) nbWater = mix(deepColor, shallowColor, fresnel * 0.3 + 0.4);
+                else if (neighborId == 3) nbWater = mix(deepColor, shallowColor, fresnel * 0.3 + 0.3) + vec3(-0.02, 0.02, 0.03);
+                else nbWater = procColor; // neighbor is land -- use land color so coast fade reads correctly
+                float n1 = snoise(vWorldPos * 0.004) * 0.22;
+                float n2 = snoise(vWorldPos * 0.012) * 0.10;
+                float threshold = max(0.35 + n1 + n2, 0.08);
+                float blend = (1.0 - smoothstep(0.0, threshold, distToBorder)) * 0.45;
+                waterCol = mix(selfWater, nbWater, blend);
+            }
+
+            // Tiny time-driven wave perturbation. Amplitude is intentionally
+            // low so it doesn't make the hex tessellation look noisy.
+            float wave = snoise(vWorldPos * 0.012 + vec3(time * 0.3, 0.0, 0.0)) * 0.012
+                       + snoise(vWorldPos * 0.04  + vec3(0.0, time * 0.2, 0.0)) * 0.006;
+            waterCol += vec3(wave);
+
+            procColor = waterCol;
         }
 `;
 
@@ -483,6 +542,7 @@ export function createShaderGlobeMaterial(scene: Scene, opts: ShaderGlobeMateria
 			'terrainPalette', 'terrainBlend', 'terrainBlendPos', 'cliffPalette',
 			// Phase 1 / 2 / 4 additions
 			'dataTexSize',
+			'deepColor', 'shallowColor',
 			'gridSize', 'resolution',
 			'faceCentroid', 'faceVertA', 'faceVertB', 'faceVertC',
 			'pentagonVert', 'pentagonId', 'pentagonThreshold',
@@ -501,6 +561,9 @@ export function createShaderGlobeMaterial(scene: Scene, opts: ShaderGlobeMateria
 	mat.setFloat('topOffset', 0.080 * R);
 	mat.setFloat('hillRatio', 0.40);
 	mat.setFloat('time', 0);
+	// Match water-material.ts defaults (line 220-221).
+	mat.setVector3('deepColor', new Vector3(0.08, 0.18, 0.35));
+	mat.setVector3('shallowColor', new Vector3(0.15, 0.35, 0.55));
 
 	const settings = loadTerrainSettings();
 	applyShaderGlobeSettings(mat, settings);
