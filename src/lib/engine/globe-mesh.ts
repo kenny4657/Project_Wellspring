@@ -396,6 +396,107 @@ function countLandNeighbors(cell: HexCell, cellById: Map<number, HexCell>): numb
 	return count;
 }
 
+/**
+ * Per-edge classification result. `edgeTarget` is the height the edge
+ * ramps toward (used to build corner/interior surfaces). The flags below
+ * drive distance fields, shader coloring, and exclusion from the ramp.
+ *
+ * Semantics quick-reference:
+ *   coast      — water↔land edge that SHOULD render a beach (low-land shores only).
+ *   cliff      — any edge across a height difference (land↔land or land↔water high-drop).
+ *   steepCliff — cliff with 2+ level diff → rock texture, steep ramp geometry.
+ *   gentleLand — land↔land with ≤1 level diff → no cliff texture, smooth ramp.
+ *   excluded   — edge ignored by the coastal-ramp distance competition
+ *                (cliffs handle their own geometry; same-depth water edges
+ *                drop out so the ramp can extend broadly across the hex).
+ */
+interface EdgeClass {
+	edgeTarget: number;
+	excluded: boolean;
+	coast: boolean;
+	cliff: boolean;
+	steepCliff: boolean;
+	gentleLand: boolean;
+}
+
+const EMPTY_EDGE: EdgeClass = {
+	edgeTarget: 0, excluded: false,
+	coast: false, cliff: false, steepCliff: false, gentleLand: false,
+};
+
+/** Water hex edge whose neighbor is also water.
+ *  Target: minimum depth of the two hexes (shared lower bowl).
+ *  Excluded only when both hexes are "open water" (≤2 land neighbors each)
+ *  so the coastline ramp of a nearby shore hex can sweep through. Small
+ *  lakes keep edges active so the water body retains hex shape. */
+function classifyWaterToWater(cell: HexCell, nb: HexCell, cellById: Map<number, HexCell>): EdgeClass {
+	const target = getLevelHeight(Math.min(cell.heightLevel, nb.heightLevel));
+	let excluded = false;
+	if (cell.heightLevel === nb.heightLevel) {
+		const cellLand = countLandNeighbors(cell, cellById);
+		const nbLand = countLandNeighbors(nb, cellById);
+		if (cellLand <= 2 && nbLand <= 2) excluded = true;
+	}
+	return { ...EMPTY_EDGE, edgeTarget: target, excluded };
+}
+
+/** Water hex edge whose neighbor is LOW land (heightLevel ≤ 2).
+ *  Ramp the water edge up to sea level and flag as coast → shader paints
+ *  the beach band. This is the ordinary gentle shoreline. */
+function classifyWaterToLowLand(): EdgeClass {
+	return { ...EMPTY_EDGE, edgeTarget: 0, coast: true };
+}
+
+/** Water hex edge whose neighbor is a CLIFF (land heightLevel > 2).
+ *  Ramp to sea level for clean geometry joining with the cliff foot, but
+ *  do NOT flag as coast — distToCoast will ignore this edge so no sand is
+ *  painted directly against the cliff. If an adjacent edge of the same
+ *  water hex is a low-land coast, its coastProximity naturally fades off
+ *  along this edge away from the shared corner → graceful beach taper. */
+function classifyWaterToCliff(): EdgeClass {
+	return { ...EMPTY_EDGE, edgeTarget: 0 };
+}
+
+/** Low-land hex edge whose neighbor is water.
+ *  Ramp land down to sea level and flag as coast (beach on the land side). */
+function classifyLowLandToWater(): EdgeClass {
+	return { ...EMPTY_EDGE, edgeTarget: 0, coast: true };
+}
+
+/** High-land hex edge whose neighbor is water: coastal cliff.
+ *  Marked as a steep cliff (rock texture) and excluded from the ramp
+ *  distance field — the cliff erosion logic handles the face geometry. */
+function classifyCliffToWater(): EdgeClass {
+	return { ...EMPTY_EDGE, cliff: true, steepCliff: true, excluded: true };
+}
+
+/** Land hex edge whose neighbor is also land.
+ *  All such edges are excluded from the coastal ramp — cliff erosion
+ *  handles height differences. Flags depend on the level gap:
+ *    gap 0      → gentleLand (blend seam, no cliff)
+ *    gap 1      → cliff + gentleLand (soft slope, no rock texture)
+ *    gap ≥ 2    → cliff + steepCliff (rock face + steep ramp) */
+function classifyLandToLand(cell: HexCell, nb: HexCell): EdgeClass {
+	const gap = Math.abs(nb.heightLevel - cell.heightLevel);
+	return {
+		edgeTarget: 0, excluded: true, coast: false,
+		cliff: gap > 0,
+		steepCliff: gap >= 2,
+		gentleLand: gap <= 1,
+	};
+}
+
+/** Dispatch to the correct per-edge classifier. */
+function classifyEdge(cell: HexCell, nb: HexCell, cellById: Map<number, HexCell>): EdgeClass {
+	const cellIsWater = cell.heightLevel <= 1;
+	const nbIsWater = nb.heightLevel <= 1;
+
+	if (cellIsWater && nbIsWater) return classifyWaterToWater(cell, nb, cellById);
+	if (cellIsWater && !nbIsWater) return nb.heightLevel > 2 ? classifyWaterToCliff() : classifyWaterToLowLand();
+	if (!cellIsWater && nbIsWater) return cell.heightLevel > 2 ? classifyCliffToWater() : classifyLowLandToWater();
+	return classifyLandToLand(cell, nb);
+}
+
 function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBorderInfo {
 	const n = cell.corners.length;
 	const excludedEdges: boolean[] = new Array(n).fill(false);
@@ -418,108 +519,33 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 		const nb = findNeighborAcrossEdge(cell, i, cellById);
 		if (!nb) continue;
 
-		// Track terrain type differences for color blending
-		// Skip water neighbors — coastline ramps handle those transitions
-		const nbIsWaterTerrain = nb.heightLevel <= 1;
-		const cellIsWaterTerrain = cell.heightLevel <= 1;
-		if (nb.terrain !== cell.terrain && !nbIsWaterTerrain && !cellIsWaterTerrain) {
+		// Track terrain-type differences for color blending (land↔land only;
+		// water hexes use coastline ramps instead of cross-terrain blending).
+		if (nb.terrain !== cell.terrain && nb.heightLevel > 1 && cell.heightLevel > 1) {
 			edgeNeighborTerrains[i] = nb.terrain;
 			hasTerrainBorder = true;
 		}
 
 		if (nb.heightLevel === cell.heightLevel) exactSameCount++;
-		const nbIsWater = nb.heightLevel <= 1;
 
-		if (isWater) {
-			// ── Water hex edge logic ──
-			// Set targets for ALL water edges (cornerTargets reads them all
-			// regardless of exclusion). Exclude same-depth edges from the
-			// distance competition so the coastal ramp extends broadly,
-			// but ONLY when BOTH hexes sharing the edge qualify (≤2 land
-			// neighbors each). This ensures both sides always agree on
-			// exclusion → no gap. Small lakes (≥3 land neighbors on
-			// either side) keep edges active for angular hex shape.
-			if (nbIsWater) {
-				edgeTargets[i] = getLevelHeight(Math.min(cell.heightLevel, nb.heightLevel));
-				if (cell.heightLevel === nb.heightLevel) {
-					const cellLand = countLandNeighbors(cell, cellById);
-					const nbLand = countLandNeighbors(nb, cellById);
-					if (cellLand <= 2 && nbLand <= 2) {
-						excludedEdges[i] = true;
-						excludedCount++;
-					}
-				}
-			} else {
-				// Water → land edge. Keep the water edge at sea level so
-				// geometry joins cleanly with the land hex on the other side.
-				edgeTargets[i] = 0;
-				if (nb.heightLevel > 2) {
-					// Neighbor is a cliff: NOT flagged as a coast edge, so
-					// distToCoast ignores it and no beach is painted directly
-					// against the cliff. A neighboring low-land edge on the
-					// same water hex still contributes coastProximity, which
-					// fades off along the cliff edge away from the shared
-					// corner — giving a graceful beach line that tapers into
-					// the cliff rather than stopping abruptly.
-				} else {
-					// Low-land shoreline: full beach.
-					coastEdges[i] = true;
-					hasCoast = true;
-				}
-			}
-		} else {
-			// ── Land hex edge logic ──
-			if (nbIsWater) {
-				if (cell.heightLevel <= 2) {
-					// Low land → water: smooth ramp down to sea level
-					edgeTargets[i] = 0;
-					coastEdges[i] = true;
-					hasCoast = true;
-				} else {
-					// High land → water: coastal cliff (cliff texture, not flat wall)
-					cliffEdges[i] = true;
-					hasCliff = true;
-					steepCliffEdges[i] = true;
-					hasSteepCliff = true;
-					excludedEdges[i] = true;
-					excludedCount++;
-				}
-			} else {
-				// Land → land: all excluded (cliff erosion handles transitions)
-				const heightDiff = Math.abs(nb.heightLevel - cell.heightLevel);
-				if (heightDiff > 0) {
-					cliffEdges[i] = true;
-					hasCliff = true;
-					if (heightDiff >= 2) {
-						steepCliffEdges[i] = true;
-						hasSteepCliff = true;
-					}
-				}
-				if (heightDiff <= 1) {
-					gentleLandEdges[i] = true;
-					hasGentleLandEdge = true;
-				}
-				excludedEdges[i] = true;
-				excludedCount++;
-			}
-		}
+		const ec = classifyEdge(cell, nb, cellById);
+		edgeTargets[i] = ec.edgeTarget;
+		if (ec.excluded) { excludedEdges[i] = true; excludedCount++; }
+		if (ec.coast) { coastEdges[i] = true; hasCoast = true; }
+		if (ec.cliff) { cliffEdges[i] = true; hasCliff = true; }
+		if (ec.steepCliff) { steepCliffEdges[i] = true; hasSteepCliff = true; }
+		if (ec.gentleLand) { gentleLandEdges[i] = true; hasGentleLandEdge = true; }
 	}
 
 	return {
-		excludedEdges,
-		edgeTargets,
+		excludedEdges, edgeTargets,
 		allSameHeight: isWater && exactSameCount >= n,
 		hasBorder: excludedCount < n,
-		edgeNeighborTerrains,
-		hasTerrainBorder,
-		coastEdges,
-		hasCoast,
-		cliffEdges,
-		hasCliff,
-		steepCliffEdges,
-		hasSteepCliff,
-		gentleLandEdges,
-		hasGentleLandEdge,
+		edgeNeighborTerrains, hasTerrainBorder,
+		coastEdges, hasCoast,
+		cliffEdges, hasCliff,
+		steepCliffEdges, hasSteepCliff,
+		gentleLandEdges, hasGentleLandEdge,
 	};
 }
 
