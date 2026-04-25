@@ -373,6 +373,18 @@ const GLSL_CLIFF_RENDERING = /* glsl */ `
             float midBlend = smoothstep(0.5, 1.0, cliffProximity);
             rockColor = mix(rockColor, midRock, midBlend * 0.75);
 
+            // Cliff foot sand-blend: at low elevations (near sea level) the
+            // cliff face picks up sand tone, so coastal cliffs sit on a
+            // sandy base instead of meeting the beach at a hard horizontal
+            // line. Inland cliffs (high elevation) keep pure rock — the
+            // height gate naturally restricts this to coastal cases.
+            float footAmt = smoothstep(0.008 * planetRadius, 0.0005 * planetRadius, heightAboveR);
+            // Break up the boundary with noise so it doesn't read as a stripe
+            float footNoise = snoise(vWorldPos * 0.012) * 0.15
+                           + snoise(vWorldPos * 0.04) * 0.08;
+            footAmt = clamp(footAmt + footNoise, 0.0, 1.0);
+            rockColor = mix(rockColor, beachColor * 0.88, footAmt * 0.55);
+
             // Blend: steepness only — no proximity in the blend = no hairline
             float erosionNoise = snoise(vWorldPos * 0.006) * 0.02;
             float erosionBlend = smoothstep(0.003 + erosionNoise, 0.06, steepness);
@@ -385,17 +397,24 @@ const GLSL_CLIFF_RENDERING = /* glsl */ `
 `;
 
 const GLSL_BEACH_OVERLAY = /* glsl */ `
-        // Then: if coastal, blend the result toward beach
-        // Suppress beach across the ENTIRE cliff zone (using cliffProximity
-        // directly) so the cliff face and water-hex cliff blend form a
-        // continuous surface — no muddy beach band at the join.
+        // If coastal, blend toward beach. Near a cliff, instead of fully
+        // suppressing the beach (which used to leave a hard sand→rock line)
+        // we tint the beach toward dirt and reduce its strength, giving a
+        // transitional band where sand picks up rocky tone before meeting
+        // the cliff face.
         if (coastProximity > 0.01) {
             float coastNoise = snoise(vWorldPos * 0.005) * 0.12
                              + snoise(vWorldPos * 0.015) * 0.06;
             float beachStart = 0.35 + coastNoise;
             float beachBlend = smoothstep(beachStart, 1.0, coastProximity);
-            beachBlend *= (1.0 - cliffProximity);
-            procColor = mix(procColor, beachColor, beachBlend);
+            // Half the beach strength under heavy cliff influence, but never
+            // fully cancel — keeps the transition continuous.
+            beachBlend *= (1.0 - cliffProximity * 0.5);
+            // Beach color shifts toward dirt as cliff proximity rises.
+            vec3 dirtTone = vec3(0.45, 0.36, 0.24);
+            float dirtMix = smoothstep(0.1, 0.7, cliffProximity);
+            vec3 beachAtCliff = mix(beachColor, dirtTone, dirtMix * 0.7);
+            procColor = mix(procColor, beachAtCliff, beachBlend);
         }
     }
 `;
