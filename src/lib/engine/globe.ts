@@ -177,6 +177,49 @@ export async function createGlobeEngine(
 		return bestIdx;
 	}
 
+	// ── MapLibre-style sphere-trackball pan ────────────────────
+	// Replace Babylon's drag-plane pan (which drifts when the camera is tilted,
+	// because the tangent plane orientation depends on camera pose). Each frame
+	// we compute the quaternion that rotates the previous sphere hit to the
+	// current one and apply it to camera.center. Because this is pure sphere
+	// rotation in world space, it is independent of pitch/yaw and stable across
+	// any combination of left-drag and right-drag tilt.
+	//
+	// GeospatialCameraPointersInput stays attached, so it routes pointer events
+	// to startDrag/handleDrag/stopDrag (left button) and _handleTilt via
+	// rotationAccumulatedPixels (right button). We DO NOT call the originals —
+	// that way _hitPointRadius stays undefined, panAccumulatedPixels stays zero,
+	// and _applyGeocentricTranslation is never invoked to fight our rotation.
+	let sphereDragPrev: Vector3 | null = null;
+
+	camera.movement.startDrag = (pointerX: number, pointerY: number) => {
+		const pick = scene.pick(pointerX, pointerY, (m) => m === pickSphere);
+		sphereDragPrev = pick?.pickedPoint?.clone() ?? null;
+	};
+
+	camera.movement.handleDrag = (pointerX: number, pointerY: number) => {
+		if (!sphereDragPrev) return;
+		const pick = scene.pick(pointerX, pointerY, (m) => m === pickSphere);
+		if (!pick?.pickedPoint) return;
+		const curr = pick.pickedPoint;
+		const fromN = curr.clone().normalize();
+		const toN = sphereDragPrev.clone().normalize();
+		const cosA = Math.max(-1, Math.min(1, Vector3.Dot(fromN, toN)));
+		if (cosA < 0.9999999) {
+			const axis = Vector3.Cross(fromN, toN).normalize();
+			const rot = Matrix.RotationAxis(axis, Math.acos(cosA));
+			camera.center = Vector3.TransformCoordinates(
+				camera.center.clone().normalize(),
+				rot
+			).scale(EARTH_RADIUS_KM);
+		}
+		sphereDragPrev = curr.clone();
+	};
+
+	camera.movement.stopDrag = () => {
+		sphereDragPrev = null;
+	};
+
 	canvas.addEventListener('pointerdown', (e) => {
 		if (e.button === 0) pointerDownPos = { x: e.clientX, y: e.clientY };
 	});
