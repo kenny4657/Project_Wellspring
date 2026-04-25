@@ -361,10 +361,11 @@ void main() {
             waterCliffBlend = max(waterCliffBlend, erosionBlend);
         }
 
-        // Then: if coastal, blend the result toward beach — but only on
-        // LAND hexes. Water hexes (terrainId 0/1) never get beach paint,
-        // so cliffs drop directly into water with no sandy bridge.
-        if (coastProximity > 0.01 && terrainId > 1) {
+        // Then: if coastal, blend the result toward beach
+        // Suppress beach across the ENTIRE cliff zone (using cliffProximity
+        // directly) so the cliff face and water-hex cliff blend form a
+        // continuous surface — no muddy beach band at the join.
+        if (coastProximity > 0.01) {
             float coastNoise = snoise(vWorldPos * 0.005) * 0.12
                              + snoise(vWorldPos * 0.015) * 0.06;
             float beachStart = 0.35 + coastNoise;
