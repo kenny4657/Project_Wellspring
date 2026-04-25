@@ -414,6 +414,19 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 	let hasGentleLandEdge = false;
 	const isWater = cell.heightLevel <= 1;
 
+	// Pre-scan: if this water hex touches ANY cliff (land neighbor with
+	// heightLevel > 2), keep the ENTIRE water hex at its natural depth.
+	// That way the water sphere fully covers it, the cliff descends
+	// straight into water, and there's no awkward partial-ramp transition
+	// at the corner between a cliff edge and a low-land coast edge.
+	let waterTouchesCliff = false;
+	if (isWater) {
+		for (let i = 0; i < n; i++) {
+			const nb = findNeighborAcrossEdge(cell, i, cellById);
+			if (nb && nb.heightLevel > 2) { waterTouchesCliff = true; break; }
+		}
+	}
+
 	for (let i = 0; i < n; i++) {
 		const nb = findNeighborAcrossEdge(cell, i, cellById);
 		if (!nb) continue;
@@ -450,16 +463,17 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 					}
 				}
 			} else {
-				// Water → land edge. Always match the land's edge height at
-				// sea level so the corner joins cleanly (the cliff's foot
-				// lands at sea level too → no offset, no awkward shape).
-				edgeTargets[i] = 0;
-				if (nb.heightLevel > 2) {
-					// Neighbor is a cliff: don't mark as coast. The distToCoast
-					// field then ignores this edge, so the beach shader has no
-					// coast proximity to paint sand with next to the cliff.
+				// Water → land edge.
+				if (waterTouchesCliff) {
+					// This water hex borders at least one cliff — keep ALL
+					// its edges at its own depth so the hex stays fully under
+					// the water sphere. No beach anywhere on it, and no
+					// awkward shape at the cliff↔coast transition corner.
+					edgeTargets[i] = getLevelHeight(cell.heightLevel);
 				} else {
-					// Neighbor is low land: normal beach shoreline.
+					// Pure low-land shoreline: ramp water up to sea level
+					// and mark as coast for the beach shader.
+					edgeTargets[i] = 0;
 					coastEdges[i] = true;
 					hasCoast = true;
 				}
