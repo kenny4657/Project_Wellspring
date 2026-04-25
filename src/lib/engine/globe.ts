@@ -102,9 +102,6 @@ export async function createGlobeEngine(
 	camera.maxZ = EARTH_RADIUS_KM * 20;
 
 	camera.attachControl();
-	// Remove Babylon's built-in pointer pan (we replace it with sphere-trackball
-	// below). Wheel zoom and keyboard inputs remain registered and active.
-	camera.inputs.removeByType('GeospatialCameraPointersInput');
 
 	// ── FXAA Anti-Aliasing ──────────────────────────────────
 	// Smooths sub-pixel hairline artifacts at hex mesh boundaries
@@ -162,14 +159,10 @@ export async function createGlobeEngine(
 
 	report(`Globe ready: ${cells.length} cells, ${globeMesh.getTotalVertices().toLocaleString()} vertices`);
 
-	// ── Pointer Input (sphere-trackball pan + tilt) ──────────
-	// Left drag: MapLibre-style sphere-trackball — each frame rotates camera.center
-	// by the quaternion from the previous sphere hit to the current one. Zero drift
-	// because no tangent-plane approximation.
-	// Right drag: feeds rotationAccumulatedPixels so Babylon's existing rotation
-	// system applies pitch/yaw with proper clamping.
+	// ── Picking / Painting ──────────────────────────────────
+	// Pick against the lightweight pickSphere instead of the 5M-vertex globe mesh.
+	// Only fire on click (not drag) so left-click-drag camera orbit still works.
 	let onHexClickCallback: ((cellIndex: number) => void) | null = null;
-	let sphereDragPrev: Vector3 | null = null;
 	let pointerDownPos: { x: number; y: number } | null = null;
 
 	function pickHex(sx: number, sy: number): number {
@@ -185,60 +178,19 @@ export async function createGlobeEngine(
 	}
 
 	canvas.addEventListener('pointerdown', (e) => {
-		if (e.button === 0) {
-			pointerDownPos = { x: e.clientX, y: e.clientY };
-			const pick = scene.pick(e.offsetX, e.offsetY, m => m === pickSphere);
-			if (pick?.pickedPoint) {
-				sphereDragPrev = pick.pickedPoint.clone();
-				canvas.setPointerCapture(e.pointerId);
-			}
-		} else if (e.button === 2) {
-			canvas.setPointerCapture(e.pointerId);
-		}
-	});
-
-	canvas.addEventListener('pointermove', (e) => {
-		if (sphereDragPrev && (e.buttons & 1)) {
-			const pick = scene.pick(e.offsetX, e.offsetY, m => m === pickSphere);
-			if (pick?.pickedPoint) {
-				const curr = pick.pickedPoint;
-				const fromN = curr.clone().normalize();
-				const toN   = sphereDragPrev.clone().normalize();
-				const cosA  = Math.max(-1, Math.min(1, Vector3.Dot(fromN, toN)));
-				if (cosA < 0.9999999) {
-					const axis = Vector3.Cross(fromN, toN).normalize();
-					const rot  = Matrix.RotationAxis(axis, Math.acos(cosA));
-					camera.center = Vector3.TransformCoordinates(
-						camera.center.clone().normalize(), rot
-					).scale(EARTH_RADIUS_KM);
-				}
-				sphereDragPrev = curr.clone();
-			}
-		}
-		if (e.buttons & 2) {
-			// Right-drag tilt: feed Babylon's rotation accumulator so pitch/yaw
-			// clamping and _applyGeocentricRotation run normally each frame.
-			camera.movement.rotationAccumulatedPixels.y += e.movementX;
-			camera.movement.rotationAccumulatedPixels.x -= e.movementY;
-		}
+		if (e.button === 0) pointerDownPos = { x: e.clientX, y: e.clientY };
 	});
 
 	canvas.addEventListener('pointerup', (e) => {
-		if (e.button === 0) {
-			sphereDragPrev = null;
-			if (pointerDownPos) {
-				const dx = e.clientX - pointerDownPos.x;
-				const dy = e.clientY - pointerDownPos.y;
-				if (Math.sqrt(dx * dx + dy * dy) < 5) {
-					const idx = pickHex(scene.pointerX, scene.pointerY);
-					if (idx >= 0) onHexClickCallback?.(idx);
-				}
-				pointerDownPos = null;
+		if (e.button === 0 && pointerDownPos) {
+			const dx = e.clientX - pointerDownPos.x;
+			const dy = e.clientY - pointerDownPos.y;
+			if (Math.sqrt(dx * dx + dy * dy) < 5) {
+				const idx = pickHex(scene.pointerX, scene.pointerY);
+				if (idx >= 0) onHexClickCallback?.(idx);
 			}
-		} else if (e.button === 2) {
-			sphereDragPrev = null;
+			pointerDownPos = null;
 		}
-		try { canvas.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
 	});
 
 	// ── Render Loop ─────────────────────────────────────────
