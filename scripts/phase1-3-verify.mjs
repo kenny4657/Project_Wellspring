@@ -53,22 +53,35 @@ console.log(`Cells: ${cpuCheck.cells.length}`);
 // Phase 1 byte-level integrity: every cells[i].terrain/heightLevel must
 // match the texture CPU mirror at offset i*4.
 const integrity = await page.evaluate(() => window.__globeEngine._phase1DataIntegrity());
-console.log(`Phase 1 integrity: ${integrity.mismatches} byte mismatches across ${integrity.totalCells} cells (${integrity.mismatches === 0 ? 'PASS' : 'FAIL'})`);
+console.log(`Phase 1 CPU integrity: ${integrity.mismatches} byte mismatches across ${integrity.totalCells} cells (${integrity.mismatches === 0 ? 'PASS' : 'FAIL'})`);
 
-// Paint round-trip: pick a hex, change its terrain, confirm the texture
-// mirror updates. Then revert so subsequent runs are deterministic.
-const paintCheck = await page.evaluate(() => {
+// GPU readback: prove the texture upload actually landed correctly. Catches
+// any RawTexture.update() bug the CPU-mirror check can't see.
+const gpuIntegrity = await page.evaluate(async () => await window.__globeEngine._phase1GpuIntegrity());
+if (gpuIntegrity.error) {
+	console.log(`Phase 1 GPU integrity: ERROR ${gpuIntegrity.error}`);
+} else {
+	const mis = (gpuIntegrity.terrainMis ?? 0) + (gpuIntegrity.heightMis ?? 0);
+	console.log(`Phase 1 GPU integrity: terrain=${gpuIntegrity.terrainMis} height=${gpuIntegrity.heightMis} mismatches across ${gpuIntegrity.sampled} samples (${mis === 0 ? 'PASS' : 'FAIL'})`);
+}
+
+// Paint round-trip: change a cell's terrain, confirm the GPU-side texture
+// reflects the new value. This actually exercises RawTexture.update() and
+// the GPU upload pipeline, not just the CPU mirror.
+const paintCheck = await page.evaluate(async () => {
 	const eng = window.__globeEngine;
 	const targetCell = eng.cells[100];
 	const oldTerrain = targetCell.terrain;
-	const newTerrain = oldTerrain === 4 ? 7 : 4; // plains <-> swamp
+	const newTerrain = oldTerrain === 4 ? 7 : 4;
 	const tIds = ['ocean','shallow','coast','lake','plains','grass','desert','swamp','tundra','hills'];
 	eng.setHexTerrain(100, tIds[newTerrain]);
-	const after = eng._phase1DataIntegrity();
+	const cpuMirror = eng._phase1DataIntegrity();
+	const gpu = await eng._phase1GpuIntegrity();
 	eng.setHexTerrain(100, tIds[oldTerrain]); // revert
-	return { mismatches: after.mismatches, oldTerrain, newTerrain };
+	return { mismatches: cpuMirror.mismatches, gpu, oldTerrain, newTerrain };
 });
-console.log(`Phase 1 paint round-trip: ${paintCheck.mismatches} mismatches after setHexTerrain (${paintCheck.mismatches === 0 ? 'PASS' : 'FAIL'})`);
+const gpuMis = (paintCheck.gpu.terrainMis ?? 0) + (paintCheck.gpu.heightMis ?? 0);
+console.log(`Phase 1 paint round-trip: cpu=${paintCheck.mismatches} gpu=${gpuMis} mismatches (${paintCheck.mismatches === 0 && gpuMis === 0 ? 'PASS' : 'FAIL'})`);
 
 // ── GPU-side check: shader-debug mode 4 (terrain from texture). ──
 // Sample N pixels, decode the terrain ID we expect from the displayed color,
@@ -158,10 +171,14 @@ const fillRatio = nonBackground / total;
 console.log(`Phase 3 (shader-preview flat sphere): ${(fillRatio * 100).toFixed(1)}% of canvas is non-background`);
 console.log(`  Expected: ~30%-50% (sphere occupies the central main panel area).`);
 
-// Sample center pixel of the shader-preview screenshot — should be bluish-grey
-// from the flat color (0.45, 0.55, 0.70) with diffuse shading.
+// Sample center pixel of the shader-preview screenshot — should be the
+// unshaded flat color (0.45, 0.55, 0.70) → RGB ~(115, 140, 178).
 const ci = (Math.floor(p3.info.height / 2) * p3.info.width + Math.floor(p3.info.width / 2)) * p3.info.channels;
-console.log(`Phase 3 center pixel RGB = (${p3.data[ci]}, ${p3.data[ci + 1]}, ${p3.data[ci + 2]})`);
+const cr = p3.data[ci], cg = p3.data[ci + 1], cb = p3.data[ci + 2];
+console.log(`Phase 3 center pixel RGB = (${cr}, ${cg}, ${cb})`);
+// Allow ±5 per channel for sRGB / driver rounding.
+const expectFlat = (Math.abs(cr - 115) <= 5 && Math.abs(cg - 140) <= 5 && Math.abs(cb - 178) <= 5);
+console.log(`Phase 3 flat color: ${expectFlat ? 'PASS' : 'FAIL'} (expected ~(115, 140, 178))`);
 
 // ── Phase 1 mode-5 (height) screenshot ──
 await page.selectOption('select', 'shader-debug');

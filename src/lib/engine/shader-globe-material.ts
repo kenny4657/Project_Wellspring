@@ -47,20 +47,15 @@ void main() {
 const FRAGMENT = /* glsl */ `
 precision highp float;
 
+// Phase 3 deliverable per plan: "Initial fragment shader = single flat color."
+// Lighting (ambient/diffuse/etc.) is Phase 4 sub-phase 5 (GLSL_LIGHTING port).
+// The sphere will read as a flat disk against the dark background -- that's
+// fine, the silhouette plus the perf overlay's "Draw calls 1" prove the mesh
+// is correct.
 uniform vec3 flatColor;
-uniform vec3 sunDir;
-
-varying vec3 vWorldPos;
-varying vec3 vWorldNormal;
-varying vec3 vSpherePos;
 
 void main() {
-    // Cheap directional shading just so the sphere reads as a sphere
-    // (without it Phase 3 looks like a flat disk and we can't tell the
-    // mesh is right). Pure flat color comes back once Phase 4 takes over.
-    float ambient = 0.55;
-    float diffuse = max(0.0, dot(normalize(vWorldNormal), sunDir)) * 0.45;
-    gl_FragColor = vec4(flatColor * (ambient + diffuse), 1.0);
+    gl_FragColor = vec4(flatColor, 1.0);
 }
 `;
 
@@ -84,8 +79,10 @@ export function createShaderGlobeMaterial(scene: Scene, opts: ShaderGlobeMateria
 		attributes: ['position', 'normal'],
 		uniforms: [
 			'world', 'viewProjection',
-			'flatColor', 'sunDir',
-			'planetRadius',
+			'flatColor',
+			// Phase 4 forward-compat: these slots are bound but unused today.
+			// Phase 4's biome shading port reads from them without re-wiring.
+			'sunDir', 'cameraPos', 'planetRadius',
 			'gridSize', 'resolution',
 			'faceCentroid', 'faceVertA', 'faceVertB', 'faceVertC',
 			'pentagonVert', 'pentagonId', 'pentagonThreshold',

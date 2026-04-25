@@ -55,6 +55,17 @@ export function createHexDataTextures(cells: HexCell[], scene: Scene): HexDataTe
 	const size = Math.max(64, nextPow2(Math.ceil(Math.sqrt(cells.length))));
 	const capacity = size * size;
 
+	// Sanity: every cell.id must be addressable. nextPow2(ceil(sqrt(N))) makes
+	// capacity >= N for any N >= 1, but a future caller could pass cells with
+	// non-contiguous IDs (id values >= N). Catch that at build time rather
+	// than letting Uint8Array silently no-op the out-of-range write.
+	for (let i = 0; i < cells.length; i++) {
+		const id = cells[i].id;
+		if (id < 0 || id >= capacity) {
+			throw new Error(`hex-data-textures: cell.id ${id} exceeds texture capacity ${capacity}`);
+		}
+	}
+
 	const terrainData = new Uint8Array(capacity * 4);
 	const heightData = new Uint8Array(capacity * 4);
 	const ownerData = new Uint8Array(capacity * 4);
@@ -62,6 +73,12 @@ export function createHexDataTextures(cells: HexCell[], scene: Scene): HexDataTe
 	for (let i = 0; i < cells.length; i++) {
 		const c = cells[i];
 		const idx = c.id * 4;
+		// All values are bytes; mask to 0..255 explicitly so a future overflow
+		// (e.g., > 9 terrain types or > 4 height levels) corrupts visibly via
+		// the wrong byte rather than via Uint8Array's silent truncation.
+		if (c.terrain < 0 || c.terrain > 255 || c.heightLevel < 0 || c.heightLevel > 255) {
+			throw new Error(`hex-data-textures: cell ${c.id} has out-of-range bytes terrain=${c.terrain} height=${c.heightLevel}`);
+		}
 		terrainData[idx] = c.terrain;
 		heightData[idx] = c.heightLevel;
 		// Cliff style: byte 0..255. Reserved for Phase 6 noise variation.
@@ -112,6 +129,9 @@ export function updateHex(
 	height: number,
 ): void {
 	if (hexId < 0 || hexId >= tex.capacity) return;
+	if (terrain < 0 || terrain > 255 || height < 0 || height > 255) {
+		throw new Error(`updateHex: out-of-range bytes terrain=${terrain} height=${height}`);
+	}
 	const idx = hexId * 4;
 	tex._terrainData[idx] = terrain;
 	tex._heightData[idx] = height;

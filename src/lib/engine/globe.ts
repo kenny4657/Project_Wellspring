@@ -68,8 +68,12 @@ export interface GlobeEngine {
 	pickHexAt(sx: number, sy: number): number;
 	/** CPU mirror of GLSL face-grid lookup. Used by phase2-verify.mjs. */
 	pickHexByFaceGridAt(sx: number, sy: number): number;
+	/** Phase 3 mesh stats (vertex / triangle count of the shader-globe sphere). */
+	_phase3MeshStats(): { vertexCount: number; triangleCount: number };
 	/** Phase 1 byte-level integrity check; see implementation for details. */
 	_phase1DataIntegrity(): { totalCells: number; mismatches: number };
+	/** Phase 1 GPU-side integrity check; reads pixels back from textures. */
+	_phase1GpuIntegrity(): Promise<{ sampled?: number; terrainMis?: number; heightMis?: number; error?: string }>;
 	readonly hexCount: number;
 	readonly cells: HexCell[];
 	readonly renderMode: RenderMode;
@@ -229,6 +233,21 @@ export async function createGlobeEngine(
 		hexData,
 	});
 
+	// Pre-bind the preview material at creation time and force-compile both
+	// shaders during init. Without this, the first switch into shader-preview
+	// or shader-debug triggers a synchronous shader compile mid-frame -- a
+	// visible ~50-300 ms stall depending on driver. Forcing here pays the
+	// cost up front while the loading overlay is still showing.
+	shaderGlobe.mesh.material = shaderGlobeMat;
+	report('Compiling shader-globe materials...');
+	await tick();
+	await new Promise<void>((resolve) => {
+		let pending = 2;
+		const done = () => { if (--pending === 0) resolve(); };
+		shaderGlobeMat.forceCompilation(shaderGlobe.mesh, done);
+		debugMat.forceCompilation(shaderGlobe.mesh, done);
+	});
+
 	report(`Globe ready: ${cells.length} cells, ${globeMesh.getTotalVertices().toLocaleString()} legacy verts, ${shaderGlobe.vertexCount.toLocaleString()} shader-globe verts`);
 
 	// ── Picking / Painting ──────────────────────────────────
@@ -345,11 +364,10 @@ export async function createGlobeEngine(
 		waterMat.setVector3('sunDir', sunDirVec);
 		waterMat.setFloat('cameraNear', camera.minZ);
 		waterMat.setFloat('cameraFar', camera.maxZ);
-		// Phase 3 material: only sunDir matters today. Push it every frame so
-		// the diffuse term tracks the camera-following light. Use setVector3
-		// (not setFloats) -- setFloats with 3 elements goes to glUniform1fv,
-		// which only works for arrays, not bare vec3 uniforms.
-		shaderGlobeMat.setVector3('sunDir', sunDirVec);
+		// Phase 3 material: pure flat color, no per-frame uniforms required.
+		// Phase 4 will start pushing sunDir / cameraPos here when the biome
+		// shading port lands -- the slots are already declared in the
+		// material's uniform list.
 		scene.render();
 		gpuTimer?.end();
 	});
@@ -382,7 +400,13 @@ export async function createGlobeEngine(
 		},
 		pickHexAt(sx: number, sy: number) { return pickHex(sx, sy); },
 		/** Phase 1 validation hook: returns true iff every cell's terrain and
-		 *  heightLevel match the bytes in the data textures' CPU mirrors. */
+		 *  heightLevel match the bytes in the data textures' CPU mirrors.
+		 *  Cheap (no GPU round-trip) — use _phase1GpuIntegrity() to also
+		 *  prove the GPU upload is correct. */
+		/** Phase 3 visibility: vertex/triangle counts of the new shader sphere. */
+		_phase3MeshStats() {
+			return { vertexCount: shaderGlobe.vertexCount, triangleCount: shaderGlobe.triangleCount };
+		},
 		_phase1DataIntegrity() {
 			let mismatches = 0;
 			for (let i = 0; i < cells.length; i++) {
@@ -392,6 +416,32 @@ export async function createGlobeEngine(
 				if (hexData._heightData[idx] !== c.heightLevel) mismatches++;
 			}
 			return { totalCells: cells.length, mismatches };
+		},
+		/** Phase 1 GPU-side integrity check. Reads pixels back from each
+		 *  texture and compares to cells. Catches the case the CPU-mirror
+		 *  check can't: a broken `RawTexture.update()` upload. Async because
+		 *  Babylon's readPixels returns a promise. */
+		async _phase1GpuIntegrity() {
+			const samplesPerTex = Math.min(cells.length, 1024);
+			let terrainMis = 0, heightMis = 0;
+			// Read full textures once; comparing 1k random cells gives strong
+			// signal without the readback's ~5ms cost dominating.
+			const tBuf = await hexData.terrain.readPixels(0, 0);
+			const hBuf = await hexData.height.readPixels(0, 0);
+			if (!tBuf || !hBuf) return { error: 'readPixels returned null' };
+			const tArr = new Uint8Array((tBuf as ArrayBufferView).buffer, (tBuf as ArrayBufferView).byteOffset, (tBuf as ArrayBufferView).byteLength);
+			const hArr = new Uint8Array((hBuf as ArrayBufferView).buffer, (hBuf as ArrayBufferView).byteOffset, (hBuf as ArrayBufferView).byteLength);
+			const seen = new Set<number>();
+			for (let s = 0; s < samplesPerTex; s++) {
+				const i = (s * 7919) % cells.length;
+				if (seen.has(i)) continue;
+				seen.add(i);
+				const c = cells[i];
+				const idx = c.id * 4;
+				if (tArr[idx] !== c.terrain) terrainMis++;
+				if (hArr[idx] !== c.heightLevel) heightMis++;
+			}
+			return { sampled: seen.size, terrainMis, heightMis };
 		},
 		pickHexByFaceGridAt(sx: number, sy: number) {
 			const result = scene.pick(sx, sy, (m) => m === pickSphere);
