@@ -20,12 +20,6 @@ import '@babylonjs/core/Shaders/default.vertex';
 import '@babylonjs/core/Shaders/default.fragment';
 import '@babylonjs/core/Animations/animatable';
 import { FxaaPostProcess } from '@babylonjs/core/PostProcesses/fxaaPostProcess';
-import { EngineInstrumentation } from '@babylonjs/core/Instrumentation/engineInstrumentation';
-import { SceneInstrumentation } from '@babylonjs/core/Instrumentation/sceneInstrumentation';
-// Side-effect import: adds engine.captureGPUFrameTime / startTimeQuery / etc.
-// to the engine prototype. Without this import EngineInstrumentation throws
-// "this.engine.captureGPUFrameTime is not a function" the moment we enable it.
-import '@babylonjs/core/Engines/Extensions/engine.query';
 // Side-effect imports needed for camera pointer input system
 import '@babylonjs/core/Events/pointerEvents';
 import '@babylonjs/core/Culling/ray';
@@ -41,7 +35,7 @@ import { assignTerrain } from '$lib/engine/terrain-gen';
 import { TERRAIN_TYPES, type TerrainTypeId, type TerrainSettings } from '$lib/world/terrain-types';
 
 /** Icosphere resolution — controls hex count. Total ~ 10 * res² + 2 */
-const ICO_RESOLUTION = 20;
+const ICO_RESOLUTION = 40;
 
 export interface GlobeEngine {
 	dispose(): void;
@@ -213,21 +207,19 @@ export async function createGlobeEngine(
 	});
 
 	// ── Performance instrumentation ──────────────────────────
-	// EngineInstrumentation.captureGPUFrameTime requires the
-	// EXT_disjoint_timer_query WebGL extension. It works in Chrome/Edge on
-	// most modern hardware; if unavailable we just report 0 for gpuFrameMs.
-	const engineInst = new EngineInstrumentation(engine);
-	// Wrapped in try/catch in case EXT_disjoint_timer_query is unavailable on
-	// the user's GPU/driver — we still want the rest of the perf overlay.
-	let gpuTimingAvailable = false;
-	try {
-		engineInst.captureGPUFrameTime = true;
-		gpuTimingAvailable = true;
-	} catch (err) {
-		console.warn('[Globe] GPU frame timing unavailable:', err);
-	}
-	const sceneInst = new SceneInstrumentation(scene);
-	sceneInst.captureRenderTime = true;
+	// Earlier we used EngineInstrumentation/SceneInstrumentation, but
+	// captureGPUFrameTime wraps each frame in gl.beginQuery/endQuery via
+	// EXT_disjoint_timer_query, and that broke rendering entirely on this
+	// machine (blank canvas, no error). Stick to the lightweight, observer-free
+	// metrics: engine.getFps() / engine.getDeltaTime() and a per-frame moving
+	// average — never touches the GL query state machine.
+	let frameMsAvg = 0;
+	scene.onAfterRenderObservable.add(() => {
+		// Babylon updates engine.getDeltaTime() each frame; smooth it for the
+		// overlay so the readout is stable instead of jittering frame-to-frame.
+		const dt = engine.getDeltaTime();
+		frameMsAvg = frameMsAvg * 0.9 + dt * 0.1;
+	});
 	const totalBuildMs = performance.now() - totalBuildStart;
 
 	// ── Render Loop ─────────────────────────────────────────
@@ -289,11 +281,9 @@ export async function createGlobeEngine(
 
 		get perf() {
 			return {
-				fps: engine.performanceMonitor.averageFPS,
-				frameMs: sceneInst.renderTimeCounter.lastSecAverage,
-				gpuFrameMs: gpuTimingAvailable
-					? engineInst.gpuFrameTimeCounter.lastSecAverage / 1e6 // ns → ms
-					: 0,
+				fps: engine.getFps(),
+				frameMs: frameMsAvg,
+				gpuFrameMs: 0, // intentionally unavailable — see comment above
 				drawCalls: scene.getActiveMeshes().length,
 				vertexCount: globeMesh.getTotalVertices(),
 				meshBuildMs,
