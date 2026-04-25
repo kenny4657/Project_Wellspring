@@ -366,12 +366,10 @@ vec2 phase5AndPhase6Displacement(vec3 P, float ownLevel) {
     float nbTierH  = tierHeight(nbLevel);
     float trueHeightDelta = abs(nbTierH - ownTierH);
 
-    // Strategy 3: flat hex top + sharp transition near edge. Narrower
-    // ramp band (0.08 vs the plan's 0.15) gives each hex a clearer flat
-    // top -- 92% of the hex is flat, only the outer 8% is the cliff
-    // ramp. Critical for "hexes need to look like hexes" -- otherwise
-    // the ramp eats too much of the hex face.
-    float t = smoothstep(0.0, 0.08, edgeDistNorm);
+    // Strategy 3: flat hex top + sharp transition near edge. The "0.15"
+    // is the plan's edge-band fraction (last 15% of edge distance gets the
+    // ramp).
+    float t = smoothstep(0.0, 0.15, edgeDistNorm);
     float strategyH = mix(nbH, ownH, t);
     float h = strategyH;
 
@@ -396,7 +394,7 @@ vec2 phase5AndPhase6Displacement(vec3 P, float ownLevel) {
     // get nothing, single-tier-step (delta=0.005) gets ~63% activity,
     // double-tier-step (delta=0.010) saturates. Audit-flagged: the prior
     // 0.012 underrepresented single-tier transitions.
-    float cliffness = 1.0 - smoothstep(0.0, 0.08, edgeDistNorm);
+    float cliffness = 1.0 - smoothstep(0.0, 0.15, edgeDistNorm);
     // Use the tier-table delta (not the post-flatten delta) so coastlines
     // (water tier 0/1 -> land tier 2/3/4) trigger cliff noise even though
     // both sides display at h=0.
@@ -408,16 +406,7 @@ vec2 phase5AndPhase6Displacement(vec3 P, float ownLevel) {
         float n =  snoise(nP)         * 0.55
                  + snoise(nP * 2.07)   * 0.30
                  + snoise(nP * 4.13)   * 0.15;
-        // Scale noise amplitude by heightDelta so cliff bumpiness is
-        // proportional to the actual cliff drop. Without this, a 32 km
-        // tier-2-to-tier-3 cliff was getting 64 km of noise -- bigger than
-        // the cliff itself, which read as wild bumps not matching geometry.
-        // Scale factor: heightDelta in units of fraction-of-radius, max
-        // ~0.030 (deepest water to highest mountain). So at max delta,
-        // noise can be at most cliffNoiseAmp * 0.030 / 0.030 = cliffNoiseAmp.
-        // Keeps noise <= ~ heightDelta in magnitude.
-        float deltaScale = clamp(trueHeightDelta / 0.030, 0.0, 1.0);
-        h += cliffActivity * n * cliffNoiseAmp * deltaScale;
+        h += cliffActivity * n * cliffNoiseAmp;
 
         // Stratification: horizontal rock layers banded at *constant
         // altitude*. The audit caught the prior code projecting onto cliff
@@ -434,21 +423,6 @@ vec2 phase5AndPhase6Displacement(vec3 P, float ownLevel) {
             strata *= snoise(P * cliffNoiseFreq * 0.45) * 0.5 + 0.7;
             h += cliffActivity * (strata - 0.5) * cliffStrataAmp;
         }
-    }
-
-    // Hard clamps relative to the water sphere (positioned at -0.0005R,
-    // see globe.ts shaderWaterSphere):
-    //   * Land must NEVER dip below the water sphere -- otherwise water
-    //     bleeds through and looks like scattered ponds on the continent.
-    //   * Water hexes must NEVER rise above the water sphere -- otherwise
-    //     the seafloor breaks through and looks like islands in the
-    //     ocean.
-    // Buffer of 0.0002R (~1.3 km) on each side prevents z-fighting with
-    // the water sphere itself.
-    if (!ownIsWater) {
-        h = max(h, -0.0003);  // land >= -0.0003, water sphere at -0.0005
-    } else {
-        h = min(h, -0.0007);  // water <= -0.0007, water sphere at -0.0005
     }
 
     return vec2(h, edgeDistNorm);
@@ -532,16 +506,10 @@ void main() {
     computeHexLookup(normPos);
     float h = (length(displaced0) - planetRadius) / planetRadius;
 
-    // Smooth normal from cross product of surface tangents. Fallback to
-    // the radial-out direction when the cross-product magnitude is too
-    // small (tangent samples landed on a perfectly flat surface, or
-    // numerical precision collapsed). Without the fallback, normalize
-    // produced NaN/0 -> "black dots" in the rendered terrain.
+    // Smooth normal from cross product of surface tangents.
     vec3 surfT1 = displaced_a - displaced0;
     vec3 surfT2 = displaced_b - displaced0;
-    vec3 N_cross = cross(surfT1, surfT2);
-    float crossMag2 = dot(N_cross, N_cross);
-    vec3 N = (crossMag2 > 1e-10) ? N_cross / sqrt(crossMag2) : normPos;
+    vec3 N = normalize(cross(surfT1, surfT2));
     if (dot(N, normPos) < 0.0) N = -N; // ensure outward orientation
 
     vec4 wp = world * vec4(displaced0, 1.0);
@@ -637,16 +605,19 @@ void main() {
         procColor = vec3(0.0);
     } else {
         // Perturb the hex lookup position with a small noise displacement
-        // so biome boundaries don't follow the perfect 60-degree hex
-        // edges. Amp 0.003 unit-sphere = ~25% of hex apothem -- enough to
-        // visibly bend the boundaries; the water-sphere overlay handles
-        // the visible coastline on its own so we don't need amp larger.
+        // so coast and biome boundaries don't follow the perfect 60-degree
+        // hex edges. The noise amplitude must stay below the hex apothem
+        // in unit-sphere terms (~ 0.5/(res+1) = 0.012 at res=40) so most
+        // fragments still land in their own hex; only fragments within
+        // ~AMP of an edge see the noise potentially flip them to the
+        // neighbor. Result: coastlines, biome borders, and cliff lines
+        // are all wavy rather than hex-aligned.
         vec3 boundaryNoise = vec3(
             snoise(P * 80.0),
             snoise(P * 80.0 + vec3(100.0, 0.0, 0.0)),
             snoise(P * 80.0 + vec3(0.0, 100.0, 0.0))
         );
-        vec3 P_lookup = normalize(P + boundaryNoise * 0.003);
+        vec3 P_lookup = normalize(P + boundaryNoise * 0.004);
 
         computeHexLookup(P_lookup);
         float hexIdF = g_hexId;
@@ -763,11 +734,39 @@ void main() {
 `;
 
 // ── GLSL_WATER_OVERRIDE_LAST ────────────────────────────────
-// Empty in the current build: the water sphere overlay handles water
-// rendering (see globe.ts:shaderWaterSphere). The shader-globe paints
-// the underwater seafloor (sand/gravel via computeTerrainColor on water
-// terrain types) -- the water-sphere covers it.
-const GLSL_WATER_OVERRIDE_LAST = /* glsl */ ``;
+// Injected at the end of the else block (between BEACH_OVERLAY's body
+// and its closing brace) so cliff and beach branches don't overwrite
+// the water hex's surface with rock textures. Sharp coast boundary --
+// water-water cross-blend only, no water-land blend.
+const GLSL_WATER_OVERRIDE_LAST = /* glsl */ `
+        if (selfIsWater) {
+            vec3 viewDir = normalize(cameraPos - vWorldPos);
+            float fresnel = pow(1.0 - max(0.0, dot(N, viewDir)), 2.0);
+            vec3 selfWater;
+            if (terrainId == 0) selfWater = mix(deepColor, shallowColor, fresnel * 0.3 + 0.1);
+            else if (terrainId == 1) selfWater = mix(deepColor, shallowColor, fresnel * 0.3 + 0.4);
+            else if (terrainId == 3) selfWater = mix(deepColor, shallowColor, fresnel * 0.3 + 0.3) + vec3(-0.02, 0.02, 0.03);
+            else selfWater = mix(deepColor, shallowColor, fresnel * 0.3 + 0.2);
+
+            vec3 waterCol = selfWater;
+            bool nbIsWater = (neighborId == 0 || neighborId == 1 || neighborId == 3);
+            if (hasCrossBlend && nbIsWater) {
+                vec3 nbWater;
+                if (neighborId == 0) nbWater = mix(deepColor, shallowColor, fresnel * 0.3 + 0.1);
+                else if (neighborId == 1) nbWater = mix(deepColor, shallowColor, fresnel * 0.3 + 0.4);
+                else nbWater = mix(deepColor, shallowColor, fresnel * 0.3 + 0.3) + vec3(-0.02, 0.02, 0.03);
+                float n1 = snoise(vWorldPos * 0.004) * 0.22;
+                float n2 = snoise(vWorldPos * 0.012) * 0.10;
+                float threshold = max(0.35 + n1 + n2, 0.08);
+                float blend = (1.0 - smoothstep(0.0, threshold, distToBorder)) * 0.45;
+                waterCol = mix(selfWater, nbWater, blend);
+            }
+            float wave = snoise(vWorldPos * 0.012 + vec3(time * 0.3, 0.0, 0.0)) * 0.012
+                       + snoise(vWorldPos * 0.04  + vec3(0.0, time * 0.2, 0.0)) * 0.006;
+            waterCol += vec3(wave);
+            procColor = waterCol;
+        }
+`;
 
 // Strip the trailing `}` (closes the else) from GLSL_BEACH_OVERLAY so we
 // can inject the water override before that close. The legacy chunk's
@@ -798,22 +797,23 @@ const FRAGMENT =
 // 1 / cliffStrataFreq fraction of planetRadius. freq=300 gives bands
 // every ~21 km, so ~5-10 visible bands across a tier transition.
 const PHASE6_DEFAULTS = {
-	// Cliff noise: amp scaled by heightDelta inside the shader so the
-	// effective amplitude is at most ~ heightDelta. Base amp 0.003R
-	// gives ~19 km peak noise at the largest cliffs (full water-to-
-	// mountain delta), proportionally less for smaller cliffs. Freq 40
-	// gives period ~25 km so noise varies within the 8% cliff band.
-	cliffNoiseAmp: 0.003,
+	// Cliff noise frequency must be HIGH enough that the noise varies
+	// meaningfully within the 12 km cliff transition band (15% of hex
+	// apothem). At freq=6 the noise period was 169 km -- the whole cliff
+	// band shifted uniformly per region, so coastlines stayed hex-aligned.
+	// Freq=40 -> period ~25 km, half a cycle across the cliff band ->
+	// visible per-hex boundary wiggle. Amp bumped 0.005 -> 0.010 so the
+	// coastline-shift effect (horizontal shift = vert noise / cliff slope)
+	// is visible at planet-scale views.
+	cliffNoiseAmp: 0.010,
 	cliffNoiseFreq: 40.0,
-	// Stratification subtle by default; user can dial up via the API.
-	cliffStrataAmp: 0.0006,
+	cliffStrataAmp: 0.0008,
 	cliffStrataFreq: 300.0,
-	// Interior noise: gentle and low-frequency for smooth rolling hills.
-	// Lower freq (12 vs 35 in legacy) gives bigger valleys / hills rather
-	// than fine-grained roughness; lower amp (0.0015) keeps the surface
-	// readable as continuous terrain rather than choppy.
-	interiorNoiseAmp: 0.0015,
-	interiorNoiseFreq: 12.0,
+	// Interior noise stays gentle so dFdx/dFdy normals don't see every
+	// per-triangle slope as a cliff. 0.0025R / freq 20 keeps the surface
+	// readable as bumpy plains without lighting up the slab-rock branch.
+	interiorNoiseAmp: 0.0025,
+	interiorNoiseFreq: 20.0,
 };
 
 export interface ShaderGlobeMaterialOptions {
