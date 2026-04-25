@@ -35,7 +35,7 @@ import { assignTerrain } from '$lib/engine/terrain-gen';
 import { TERRAIN_TYPES, type TerrainTypeId, type TerrainSettings } from '$lib/world/terrain-types';
 
 /** Icosphere resolution — controls hex count. Total ~ 10 * res² + 2 */
-const ICO_RESOLUTION = 20;
+const ICO_RESOLUTION = 40;
 
 export interface GlobeEngine {
 	dispose(): void;
