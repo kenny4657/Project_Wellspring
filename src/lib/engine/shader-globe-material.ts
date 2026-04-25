@@ -593,26 +593,49 @@ void main() {
         // ~AMP of an edge see the noise potentially flip them to the
         // neighbor. Result: coastlines, biome borders, and cliff lines
         // are all wavy rather than hex-aligned.
-        // Unperturbed lookup FIRST -- captures the clean geometric distance
-        // to the real hex edge. We need this for the cliff gate because
-        // boundary-noise amp (0.004) is wider than the rock band width (15%
-        // of apothem ~ 0.0018 unit sphere). If the cliff gate is computed
-        // off the noise-perturbed lookup, the rock band gets dragged around
-        // by the noise field and degenerates into thin meandering ribbons.
+        // Unperturbed lookup FIRST -- captures clean distance to the closest
+        // CLIFF-TRANSITION edge specifically. Two reasons we have to do
+        // this in unperturbed-P space and only consider cliff edges:
+        //
+        //   1. Boundary-noise amp (0.004) is wider than the rock band width
+        //      (15% of apothem). Computing edge distance off the perturbed
+        //      lookup makes the rock band wander with the noise field
+        //      instead of following the real hex edge.
+        //
+        //   2. We can't just take "distance to closest hex edge of any kind"
+        //      either. A fragment well inside a cliff hex but close to a
+        //      same-tier neighbor edge would falsely register as a wall
+        //      fragment. The gate must specifically measure "distance to
+        //      the nearest edge that has a real height-tier transition".
+        //
+        // Same cliff-classifier rules as legacy hex-borders.ts:classifyEdge:
+        //   water<->land where land tier > 2  OR  land<->land delta >= 2
         // Color/biome lookups still use the perturbed P below so coastlines
-        // and biome edges remain wavy.
+        // and biome edges stay wavy.
         computeHexLookup(P);
         float cleanCliffEdgeDistN = 1.0;
-        {
+        if (g_hexId >= 0.0) {
+            int cleanLvl = int(sampleHexData(g_hexId).y);
+            bool cleanW = (cleanLvl <= 1);
             float rClean = 0.5 / (resolution + 1.0);
-            float minEd = 1e30;
+            float minCliffEd = 1e30;
             for (int k = 0; k < 6; k++) {
                 float ang = float(k) * (3.14159265 / 3.0);
                 vec2 nrm = vec2(cos(ang), sin(ang));
                 float ed = rClean - dot(g_P2D - g_self_2d, nrm);
-                if (ed < minEd) minEd = ed;
+                float ndN = neighborIdAtEdge(k);
+                if (ndN < 0.0) continue;
+                int nH = int(sampleHexData(ndN).y);
+                bool nIsW = (nH <= 1);
+                bool isCliff = false;
+                if (cleanW && !nIsW) isCliff = (nH > 2);
+                else if (!cleanW && nIsW) isCliff = (cleanLvl > 2);
+                else if (!cleanW && !nIsW) isCliff = (abs(nH - cleanLvl) >= 2);
+                if (isCliff && ed < minCliffEd) minCliffEd = ed;
             }
-            cleanCliffEdgeDistN = clamp(minEd / rClean, 0.0, 1.0);
+            if (minCliffEd < 1e29) {
+                cleanCliffEdgeDistN = clamp(minCliffEd / rClean, 0.0, 1.0);
+            }
         }
 
         vec3 boundaryNoise = vec3(
