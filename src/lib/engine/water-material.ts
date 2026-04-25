@@ -92,6 +92,12 @@ uniform vec3 shallowColor;
 uniform float cameraNear;
 uniform float cameraFar;
 uniform sampler2D depthSampler;
+// When 1.0, the depth-sampler-based discard runs (legacy mode -- where
+// the depth renderer captures the legacy hex-prism mesh). When 0.0, skip
+// it; rely on natural WebGL depth-test instead. Used by shader-preview
+// where Babylon's depth renderer can't capture the displaced shader-globe
+// (its vertex shader doesn't run displacement).
+uniform float useDepthSamplerDiscard;
 
 varying vec3 vWorldPos;
 varying vec3 vWorldNormal;
@@ -129,14 +135,20 @@ void main() {
     vec2 screenUV = (vScreenPos.xy / vScreenPos.w) * 0.5 + 0.5;
     float sceneDepth = texture2D(depthSampler, screenUV).r;
 
-    if (sceneDepth < vLinearDepth + 0.00015) {
-        discard;
+    if (useDepthSamplerDiscard > 0.5) {
+        if (sceneDepth < vLinearDepth + 0.00015) {
+            discard;
+        }
     }
 
     vec3 N = normalize(vWorldNormal);
     vec3 V = normalize(cameraPos - vWorldPos);
 
-    float depthDiff = max(sceneDepth - vLinearDepth, 0.0);
+    // depthDiff drives foam at coastal edges. With useDepthSamplerDiscard
+    // off, we don't have meaningful sceneDepth, so skip foam (foamEdge=0
+    // below). Phase 8 work could re-add foam via a custom displacement-
+    // aware depth pass.
+    float depthDiff = (useDepthSamplerDiscard > 0.5) ? max(sceneDepth - vLinearDepth, 0.0) : 0.0;
 
     // Fresnel
     float fresnel = 1.0 - max(dot(N, V), 0.0);
@@ -186,13 +198,22 @@ void main() {
     float spec2 = pow(max(dot(waveN, halfVec), 0.0), 32.0);
     waterCol += vec3(0.6, 0.75, 0.9) * spec2 * 0.03;
 
-    float alpha = 0.85 + fresnel * 0.15;
+    // Alpha: legacy mode uses 0.85 + fresnel * 0.15 so the underwater
+    // sandy seafloor blends through (the legacy mesh renders the
+    // seafloor first; alpha lets it tint water). In shader-preview we
+    // disable the depth-sampler discard, and the seafloor underneath is
+    // also rendered by shader-globe-material's terrain palette -- but
+    // there it's a visible sand color, so any transparency reads as
+    // blotchy "patches" through the water. Force opaque (alpha=1) when
+    // useDepthSamplerDiscard is off.
+    float alpha = (useDepthSamplerDiscard > 0.5) ? (0.85 + fresnel * 0.15) : 1.0;
 
     gl_FragColor = vec4(waterCol, alpha);
 }
 `;
 
-export function createWaterMaterial(scene: Scene, depthTexture: BaseTexture): ShaderMaterial {
+export function createWaterMaterial(scene: Scene, depthTexture: BaseTexture, opts?: { opaque?: boolean }): ShaderMaterial {
+	const opaque = opts?.opaque ?? false;
 	ShaderStore.ShadersStore['waterSurfaceVertexShader'] = VERTEX;
 	ShaderStore.ShadersStore['waterSurfaceFragmentShader'] = FRAGMENT;
 
@@ -206,10 +227,14 @@ export function createWaterMaterial(scene: Scene, depthTexture: BaseTexture): Sh
 			'sunDir', 'cameraPos', 'time',
 			'deepColor', 'shallowColor',
 			'cameraNear', 'cameraFar',
-			'waveAmp', 'waveFreq'
+			'waveAmp', 'waveFreq',
+			'useDepthSamplerDiscard',
 		],
 		samplers: ['depthSampler'],
-		needAlphaBlending: true,
+		// In opaque mode (shader-preview), disable alpha blending so the
+		// material participates in normal depth-write and the seafloor
+		// underneath isn't visible through the water surface.
+		needAlphaBlending: !opaque,
 	});
 
 	mat.setVector3('sunDir', new Vector3(1, -0.5, -0.3).normalize());
@@ -227,6 +252,10 @@ export function createWaterMaterial(scene: Scene, depthTexture: BaseTexture): Sh
 	// Camera
 	mat.setFloat('cameraNear', 1);
 	mat.setFloat('cameraFar', 1);
+
+	// Default to legacy behavior (use depth-sampler discard). globe.ts
+	// flips this to 0 when shader-preview is active.
+	mat.setFloat('useDepthSamplerDiscard', 1.0);
 
 	// Depth texture from scene depth renderer
 	mat.setTexture('depthSampler', depthTexture);

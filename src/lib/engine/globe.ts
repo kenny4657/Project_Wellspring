@@ -270,6 +270,23 @@ export async function createGlobeEngine(
 		debugMat.forceCompilation(shaderGlobe.mesh, done);
 	});
 
+	// ── Shader-preview water sphere ─────────────────────────
+	// Separate from the legacy water sphere -- this one runs without the
+	// depth-sampler discard (Babylon's depth renderer can't capture our
+	// displaced shader-globe). Relies on natural WebGL depth-test:
+	//   land tier 2/3/4 at radius >= planetRadius   --> closer to camera --> wins
+	//   water hexes at planetRadius * 0.999          --> farther --> loses to water sphere
+	// Result: water sphere shows over water hexes, hidden by land hexes.
+	const shaderWaterSphere = MeshBuilder.CreateSphere('shaderWaterSurface', {
+		diameter: EARTH_RADIUS_KM * 2 * 0.9995,
+		segments: 64,
+	}, scene);
+	const shaderWaterMat = createWaterMaterial(scene, depthTexture, { opaque: true });
+	shaderWaterMat.setFloat('useDepthSamplerDiscard', 0.0);
+	shaderWaterSphere.material = shaderWaterMat;
+	shaderWaterSphere.isPickable = false;
+	shaderWaterSphere.setEnabled(false);
+
 	report(`Globe ready: ${cells.length} cells, ${shaderGlobe.vertexCount.toLocaleString()} shader-globe verts (legacy mesh deferred)`);
 
 	// ── Picking / Painting ──────────────────────────────────
@@ -340,35 +357,35 @@ export async function createGlobeEngine(
 	function applyRenderMode(mode: RenderMode) {
 		renderMode = mode;
 		if (mode === 'legacy') {
-			// Lazy build on first switch into legacy mode. ~17 s wait the
-			// first time; cached on subsequent switches.
+			// Lazy build on first switch into legacy mode.
 			ensureLegacyBuilt();
 			if (!legacy) return;
 			legacy.mesh.setEnabled(true);
 			legacy.waterSphere.setEnabled(true);
 			shaderGlobe.mesh.setEnabled(false);
+			shaderWaterSphere.setEnabled(false);
 			depthTexture.renderList = [legacy.mesh];
 			camera.attachPostProcess(fxaa);
 		} else if (mode === 'shader-debug') {
-			// shader-debug renders raw bit-encoded IDs in mode 3; FXAA would
-			// average those bytes and corrupt the verifier output. Water
-			// sphere off so the bit-encoded debug colors aren't masked.
+			// shader-debug renders raw bit-encoded IDs in mode 3; FXAA + water
+			// sphere would mask the bytes the verifier needs to read.
 			if (legacy) { legacy.mesh.setEnabled(false); legacy.waterSphere.setEnabled(false); }
 			shaderGlobe.mesh.setEnabled(true);
 			shaderGlobe.mesh.material = debugMat;
+			shaderWaterSphere.setEnabled(false);
 			depthTexture.renderList = [];
 			camera.detachPostProcess(fxaa);
 		} else {
-			// shader-preview: real biome rendering with Phase 5/6 displacement.
-			// Water sphere stays OFF: Babylon's depth renderer uses a
-			// default vertex shader that doesn't apply our displacement,
-			// so water-sphere depth-occlusion would see the un-displaced
-			// sphere and discard everywhere. A displacement-aware custom
-			// depth material is Phase 8 work; for now water is rendered
-			// inline by shader-globe-material with a sharp coast boundary.
+			// shader-preview: real biome rendering with Phase 5/6 displacement
+			// PLUS the water sphere on top (uses natural WebGL depth test --
+			// shader-globe land hexes at radius >= planetRadius are closer to
+			// the camera than the water sphere at 0.9995R, so they win the
+			// depth test naturally; water hexes at 0.999R are farther, water
+			// sphere wins. No custom depth material needed.
 			if (legacy) { legacy.mesh.setEnabled(false); legacy.waterSphere.setEnabled(false); }
 			shaderGlobe.mesh.setEnabled(true);
 			shaderGlobe.mesh.material = shaderGlobeMat;
+			shaderWaterSphere.setEnabled(true);
 			depthTexture.renderList = [];
 			camera.attachPostProcess(fxaa);
 		}
@@ -411,6 +428,13 @@ export async function createGlobeEngine(
 			legacy.waterMat.setFloat('cameraNear', camera.minZ);
 			legacy.waterMat.setFloat('cameraFar', camera.maxZ);
 		}
+
+		// Shader-preview water sphere: same uniforms as legacy water-mat.
+		shaderWaterMat.setFloat('time', waterTime);
+		shaderWaterMat.setVector3('cameraPos', camPos);
+		shaderWaterMat.setVector3('sunDir', sunDirVec);
+		shaderWaterMat.setFloat('cameraNear', camera.minZ);
+		shaderWaterMat.setFloat('cameraFar', camera.maxZ);
 		// Phase 4 biome-shaded material: same per-frame uniforms as the
 		// legacy terrain material so legacy and shader-preview produce
 		// matching colors at every camera state.

@@ -436,6 +436,21 @@ vec2 phase5AndPhase6Displacement(vec3 P, float ownLevel) {
         }
     }
 
+    // Hard clamps relative to the water sphere (positioned at -0.0005R,
+    // see globe.ts shaderWaterSphere):
+    //   * Land must NEVER dip below the water sphere -- otherwise water
+    //     bleeds through and looks like scattered ponds on the continent.
+    //   * Water hexes must NEVER rise above the water sphere -- otherwise
+    //     the seafloor breaks through and looks like islands in the
+    //     ocean.
+    // Buffer of 0.0002R (~1.3 km) on each side prevents z-fighting with
+    // the water sphere itself.
+    if (!ownIsWater) {
+        h = max(h, -0.0003);  // land >= -0.0003, water sphere at -0.0005
+    } else {
+        h = min(h, -0.0007);  // water <= -0.0007, water sphere at -0.0005
+    }
+
     return vec2(h, edgeDistNorm);
 }
 `;
@@ -622,18 +637,16 @@ void main() {
         procColor = vec3(0.0);
     } else {
         // Perturb the hex lookup position with a small noise displacement
-        // so coast and biome boundaries don't follow the perfect 60-degree
-        // hex edges. Amp 0.0015 unit-sphere = ~12% of hex apothem -- enough
-        // to soften coast edges (the user's "blurry intersection" was the
-        // OPPOSITE problem at amp 0.004) but small enough that inland hex
-        // shapes stay clearly hex-readable. Higher freq (120) gives finer
-        // coast wavelets rather than wide boundary deformation.
+        // so biome boundaries don't follow the perfect 60-degree hex
+        // edges. Amp 0.003 unit-sphere = ~25% of hex apothem -- enough to
+        // visibly bend the boundaries; the water-sphere overlay handles
+        // the visible coastline on its own so we don't need amp larger.
         vec3 boundaryNoise = vec3(
-            snoise(P * 120.0),
-            snoise(P * 120.0 + vec3(100.0, 0.0, 0.0)),
-            snoise(P * 120.0 + vec3(0.0, 100.0, 0.0))
+            snoise(P * 80.0),
+            snoise(P * 80.0 + vec3(100.0, 0.0, 0.0)),
+            snoise(P * 80.0 + vec3(0.0, 100.0, 0.0))
         );
-        vec3 P_lookup = normalize(P + boundaryNoise * 0.0015);
+        vec3 P_lookup = normalize(P + boundaryNoise * 0.003);
 
         computeHexLookup(P_lookup);
         float hexIdF = g_hexId;
@@ -750,39 +763,11 @@ void main() {
 `;
 
 // ── GLSL_WATER_OVERRIDE_LAST ────────────────────────────────
-// Injected at the end of the else block (between BEACH_OVERLAY's body
-// and its closing brace) so cliff and beach branches don't overwrite
-// the water hex's surface with rock textures. Sharp coast boundary --
-// water-water cross-blend only, no water-land blend.
-const GLSL_WATER_OVERRIDE_LAST = /* glsl */ `
-        if (selfIsWater) {
-            vec3 viewDir = normalize(cameraPos - vWorldPos);
-            float fresnel = pow(1.0 - max(0.0, dot(N, viewDir)), 2.0);
-            vec3 selfWater;
-            if (terrainId == 0) selfWater = mix(deepColor, shallowColor, fresnel * 0.3 + 0.1);
-            else if (terrainId == 1) selfWater = mix(deepColor, shallowColor, fresnel * 0.3 + 0.4);
-            else if (terrainId == 3) selfWater = mix(deepColor, shallowColor, fresnel * 0.3 + 0.3) + vec3(-0.02, 0.02, 0.03);
-            else selfWater = mix(deepColor, shallowColor, fresnel * 0.3 + 0.2);
-
-            vec3 waterCol = selfWater;
-            bool nbIsWater = (neighborId == 0 || neighborId == 1 || neighborId == 3);
-            if (hasCrossBlend && nbIsWater) {
-                vec3 nbWater;
-                if (neighborId == 0) nbWater = mix(deepColor, shallowColor, fresnel * 0.3 + 0.1);
-                else if (neighborId == 1) nbWater = mix(deepColor, shallowColor, fresnel * 0.3 + 0.4);
-                else nbWater = mix(deepColor, shallowColor, fresnel * 0.3 + 0.3) + vec3(-0.02, 0.02, 0.03);
-                float n1 = snoise(vWorldPos * 0.004) * 0.22;
-                float n2 = snoise(vWorldPos * 0.012) * 0.10;
-                float threshold = max(0.35 + n1 + n2, 0.08);
-                float blend = (1.0 - smoothstep(0.0, threshold, distToBorder)) * 0.45;
-                waterCol = mix(selfWater, nbWater, blend);
-            }
-            float wave = snoise(vWorldPos * 0.012 + vec3(time * 0.3, 0.0, 0.0)) * 0.012
-                       + snoise(vWorldPos * 0.04  + vec3(0.0, time * 0.2, 0.0)) * 0.006;
-            waterCol += vec3(wave);
-            procColor = waterCol;
-        }
-`;
+// Empty in the current build: the water sphere overlay handles water
+// rendering (see globe.ts:shaderWaterSphere). The shader-globe paints
+// the underwater seafloor (sand/gravel via computeTerrainColor on water
+// terrain types) -- the water-sphere covers it.
+const GLSL_WATER_OVERRIDE_LAST = /* glsl */ ``;
 
 // Strip the trailing `}` (closes the else) from GLSL_BEACH_OVERLAY so we
 // can inject the water override before that close. The legacy chunk's
