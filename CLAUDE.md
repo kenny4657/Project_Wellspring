@@ -56,10 +56,13 @@ legacy quality"). Five structural fixes landed:
    varying, fragment uses it. ~3x vertex shader cost; need to verify FPS holds.
    See the queued todo from the last session.
 
-2. **Water sphere not reattached.** Babylon's depth renderer uses an
-   un-displaced vertex shader, so water-sphere depth-occlusion would discard
-   everywhere. Phase 8 work — write a custom displacement-aware depth
-   material. Documented in `globe.ts:applyRenderMode` shader-preview branch.
+2. ~~**Water sphere not reattached.**~~ DONE in commit 3a68ce6. We reattach
+   via natural WebGL depth-test (no custom depth renderer needed) by adding
+   `useDepthSamplerDiscard` and `opts.opaque` to `water-material.ts` and
+   building a second water sphere bound to shader-preview mode. Phase 5
+   displacement clamps in `phase5AndPhase6Displacement` keep land h >=
+   -0.0003 and water h <= -0.0007 so the water sphere at -0.0005 sits
+   cleanly between them.
 
 3. **Phase 7 click-reconciliation not done.** GLSL face-grid lookup
    disagrees with CPU `pickHex` (nearest-center) at ~18% of fragments —
