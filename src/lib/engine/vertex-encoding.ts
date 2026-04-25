@@ -132,12 +132,18 @@ export function encodeTopVertexColor(
 		}
 		// In mixed hexes (both steep + gentle edges), suppress
 		// cliff proximity near gentle edges so the shader doesn't
-		// draw cliff texture on the gentle-slope faces
+		// draw cliff texture on the gentle-slope faces. Clamped to
+		// a minimum of 0.5 so flat hexes adjacent to cliffs (e.g. a
+		// beach hex bordering a cliff hex) keep enough cliffProx for
+		// the beach overlay to blend toward rock at the shared edge.
+		// Cliff TEXTURE rendering is gated separately by steepness >
+		// 0.003 in the shader, so flat slopes still won't get rock
+		// texture even with elevated cliffProx.
 		if (cliffProx > 0 && borderInfo.hasGentleLandEdge) {
 			const gd = distToGentleLandEdge(vx, vy, vz, cell, borderInfo);
 			const gt = Math.min(gd / (hexRadius * 0.35), 1.0);
 			const gentleFade = gt * gt * (3 - 2 * gt);
-			cliffProx *= gentleFade;
+			cliffProx *= Math.max(0.5, gentleFade);
 		}
 	}
 
