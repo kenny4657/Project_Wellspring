@@ -50,7 +50,12 @@ void main() {
 // in sequence; the preamble (precision, uniforms, varyings) lives at the top
 // of GLSL_NOISE so order matters.
 
-const GLSL_NOISE = /* glsl */ `
+// Export the chunks so the new shader-globe-material (Phase 4) can re-use
+// them verbatim. The plan said: "Keep palette logic, blend curves, beach
+// overlay math, lighting — change only the data sources." Reusing the same
+// strings keeps the legacy and the new renderer pixel-comparable until
+// every sub-phase has been screenshot-diffed.
+export const GLSL_NOISE = /* glsl */ `
 precision highp float;
 
 uniform vec3 sunDir;
@@ -145,7 +150,7 @@ vec3 slabMap(vec2 uv, float warp) {
 }
 `;
 
-const GLSL_SCRATCHY = /* glsl */ `
+export const GLSL_SCRATCHY = /* glsl */ `
 // ── Scratchy organic texture (matches Sota's tileable textures) ──
 
 float scratchyPattern(vec2 uv) {
@@ -169,7 +174,7 @@ float triplanarScratchy(vec3 worldPos, vec3 normal, float scale) {
 }
 `;
 
-const GLSL_PALETTE = /* glsl */ `
+export const GLSL_PALETTE = /* glsl */ `
 // ── Per-terrain palette lookup ──────────────────────────────
 // terrainPalette[id*4+0] = shore, [id*4+1] = grass, [id*4+2] = hill, [id*4+3] = snow
 
@@ -349,7 +354,7 @@ void main() {
 // cliff-foot-sand blend is active — quick way to verify the code path
 // runs and the threshold is hitting the right vertices.
 
-const GLSL_COASTAL_CONSTANTS = /* glsl */ `
+export const GLSL_COASTAL_CONSTANTS = /* glsl */ `
 // Cliff foot range: heightAboveR thresholds in fractions of planetRadius.
 // Coastal cliff foot sits at midTierH = (tierH + neighborTierH) / 2 ≈ 0.005R
 // (cliff at level 4, low-land at level 2). Inland cliffs sit higher and
@@ -367,7 +372,7 @@ const GLSL_COASTAL_CONSTANTS = /* glsl */ `
 #define COASTAL_DEBUG_TINT 0
 `;
 
-const GLSL_CLIFF_RENDERING = /* glsl */ `
+export const GLSL_CLIFF_RENDERING = /* glsl */ `
         // ── Surface steepness (used by erosion blend below) ──
         float steepness = 1.0 - dot(N, normalize(vWorldPos));
 
@@ -447,7 +452,7 @@ const GLSL_CLIFF_RENDERING = /* glsl */ `
         }
 `;
 
-const GLSL_BEACH_OVERLAY = /* glsl */ `
+export const GLSL_BEACH_OVERLAY = /* glsl */ `
         // ── (c) Beach overlay ──
         // Coastal land paints sand on the top face. Near a cliff, beach
         // color blends toward actual cliff ROCK color (same palette the
@@ -485,7 +490,7 @@ const GLSL_BEACH_OVERLAY = /* glsl */ `
     }
 `;
 
-const GLSL_LIGHTING = /* glsl */ `
+export const GLSL_LIGHTING = /* glsl */ `
     // ── Lighting ──
     float ambient = 0.55;
     float sun  = max(0.0, dot(N, sunDir))  * 0.45;

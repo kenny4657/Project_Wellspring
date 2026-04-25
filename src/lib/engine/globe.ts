@@ -39,7 +39,7 @@ import { createHexIdLookup, pickHexByFaceGrid } from '$lib/engine/hex-id-lookup'
 import { createShaderGlobeDebugMaterial, setShaderGlobeDebugMode, type ShaderGlobeDebugMode } from '$lib/engine/shader-globe-debug-material';
 import { createHexDataTextures, updateHex as updateHexDataTextures, disposeHexDataTextures } from '$lib/engine/hex-data-textures';
 import { createShaderGlobeMesh } from '$lib/engine/shader-globe-mesh';
-import { createShaderGlobeMaterial } from '$lib/engine/shader-globe-material';
+import { createShaderGlobeMaterial, applyShaderGlobeSettings } from '$lib/engine/shader-globe-material';
 
 /** Icosphere resolution — controls hex count. Total ~ 10 * res² + 2 */
 const ICO_RESOLUTION = 40;
@@ -364,10 +364,12 @@ export async function createGlobeEngine(
 		waterMat.setVector3('sunDir', sunDirVec);
 		waterMat.setFloat('cameraNear', camera.minZ);
 		waterMat.setFloat('cameraFar', camera.maxZ);
-		// Phase 3 material: pure flat color, no per-frame uniforms required.
-		// Phase 4 will start pushing sunDir / cameraPos here when the biome
-		// shading port lands -- the slots are already declared in the
-		// material's uniform list.
+		// Phase 4 biome-shaded material: same per-frame uniforms as the
+		// legacy terrain material so legacy and shader-preview produce
+		// matching colors at every camera state.
+		shaderGlobeMat.setVector3('sunDir', sunDirVec);
+		shaderGlobeMat.setVector3('cameraPos', camPos);
+		shaderGlobeMat.setFloat('time', waterTime);
 		scene.render();
 		gpuTimer?.end();
 	});
@@ -472,6 +474,7 @@ export async function createGlobeEngine(
 
 		setTerrainSettings(settings: TerrainSettings) {
 			applyTerrainSettings(terrainMat, settings);
+			applyShaderGlobeSettings(shaderGlobeMat, settings);
 		},
 
 		get hexCount() { return cells.length; },
