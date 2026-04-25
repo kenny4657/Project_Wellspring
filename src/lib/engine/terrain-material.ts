@@ -370,9 +370,7 @@ void main() {
                              + snoise(vWorldPos * 0.015) * 0.06;
             float beachStart = 0.35 + coastNoise;
             float beachBlend = smoothstep(beachStart, 1.0, coastProximity);
-            // Aggressive beach suppression: fully zero by cliffProximity 0.2
-            // so beach doesn't tint the cliff zone with sandy washout
-            beachBlend *= (1.0 - smoothstep(0.0, 0.2, cliffProximity));
+            beachBlend *= (1.0 - cliffProximity);
             procColor = mix(procColor, beachColor, beachBlend);
         }
     }
