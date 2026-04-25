@@ -459,62 +459,39 @@ GLSL_HEX_HELPERS +
 // Used 3x in main() to derive smooth per-vertex normals via finite
 // difference of the displacement function at tangent offsets.
 //
-// NOTE: this CLOBBERS the g_* globals each call; the caller must re-run
-// computeHexLookup(normPos) before reading them downstream. main() does.
-vec3 displacedWorld(vec3 normPos) {
-    computeHexLookup(normPos);
-    float ownLevel = (g_hexId >= 0.0) ? sampleHexData(g_hexId).y : 2.0;
-    vec2 disp = phase5AndPhase6Displacement(normPos, ownLevel);
-    return normPos * (planetRadius * (1.0 + disp.x));
-}
-
 void main() {
     // Mesh vertex sits at radius planetRadius (CreateIcoSphere). Normalize
     // to unit sphere for the hex lookup, then re-extrude after computing
     // displacement.
     vec3 normPos = normalize(position);
-
-    // ── Smooth per-vertex normal via finite-difference of displacement ──
-    // The previous implementation passed a radial-out normal and let the
-    // fragment recompute via dFdx/dFdy, which gives PER-TRIANGLE FACET
-    // normals (low-poly look). Smooth shading needs PER-VERTEX normals
-    // so adjacent triangles within a hex face share continuous shading.
-    //
-    // Approach: sample the displacement function at two tangent-offset
-    // positions, take cross product of the surface tangent vectors. Cost
-    // is 3x phase5AndPhase6Displacement per vertex (~3x vertex shader
-    // work) -- still well under the GPU's vertex throughput at 600k verts.
-    //
-    // DELTA = 0.0008 unit-sphere ~ 5 km on planetRadius -- small enough
-    // to capture the noise gradient locally, large enough that we don't
-    // lose precision in the cross product.
-    vec3 up = abs(normPos.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
-    vec3 t1 = normalize(cross(up, normPos));
-    vec3 t2 = cross(normPos, t1);
-    const float DELTA = 0.0008;
-    vec3 normPos_t1 = normalize(normPos + t1 * DELTA);
-    vec3 normPos_t2 = normalize(normPos + t2 * DELTA);
-
-    // Compute displaced world positions at all three sample points.
-    vec3 displaced0  = displacedWorld(normPos);
-    vec3 displaced_a = displacedWorld(normPos_t1);
-    vec3 displaced_b = displacedWorld(normPos_t2);
-
-    // Restore the g_* globals to MATCH normPos so any downstream code that
-    // reads g_hexId / g_face / g_i / g_j sees the original vertex's hex.
-    // (No downstream reader yet, but defensive against future additions.)
     computeHexLookup(normPos);
-    float h = (length(displaced0) - planetRadius) / planetRadius;
+    float ownLevel = (g_hexId >= 0.0) ? sampleHexData(g_hexId).y : 2.0;
+    vec2 disp = phase5AndPhase6Displacement(normPos, ownLevel);
+    float h = disp.x;
 
-    // Smooth normal from cross product of surface tangents.
-    vec3 surfT1 = displaced_a - displaced0;
-    vec3 surfT2 = displaced_b - displaced0;
-    vec3 N = normalize(cross(surfT1, surfT2));
-    if (dot(N, normPos) < 0.0) N = -N; // ensure outward orientation
+    vec3 displaced = normPos * (planetRadius * (1.0 + h));
 
-    vec4 wp = world * vec4(displaced0, 1.0);
+    vec4 wp = world * vec4(displaced, 1.0);
     vWorldPos = wp.xyz;
-    vWorldNormal = normalize((world * vec4(N, 0.0)).xyz);
+    // Pass mesh-native radial-out normal. Babylon's CreateIcoSphere gives
+    // us perfectly smooth per-vertex normals; interpolating these across
+    // triangles produces smooth shading on hex tops with NO low-poly facet
+    // appearance and NO NaN dots.
+    //
+    // Why not finite-difference smooth normals: the displacement function
+    // is discontinuous at hex edges (Strategy 3 produces sharp height
+    // step) and at face/pentagon seams. A 3-sample cross product near
+    // those boundaries classifies the offsets into different regions,
+    // generates extreme gradients, and the cross product collapses or
+    // flips -> NaN normalize -> visible black dots scattered across the
+    // terrain. Mesh-native normals are NaN-free.
+    //
+    // Cliff-rock texture firing: the legacy cliff branch gates on
+    // steepness > 0.003. With a radial-out normal that gate never fires,
+    // so we override steepness in the fragment via dFdx of heightAboveR
+    // (a per-fragment scalar gradient that doesn't suffer cross-product
+    // collapse). See GLSL_MAIN_SETUP_NEW.
+    vWorldNormal = normalize((world * vec4(normalize(displaced), 0.0)).xyz);
     vSpherePos = normPos;
     vColor = vec4(0.0);
     gl_Position = viewProjection * wp;
@@ -587,18 +564,26 @@ const GLSL_MAIN_SETUP_NEW = /* glsl */ `
 void main() {
     vec3 P = normalize(vSpherePos);
 
-    // Smooth per-vertex normal computed in the VERTEX shader via
-    // finite-difference of the displacement function. Using this directly
-    // (instead of dFdx/dFdy) gives smooth shading across adjacent
-    // triangles within a hex face -- terrain reads as rolling valleys
-    // rather than low-poly facets. Cliff faces still get the legacy slab
-    // texture: their tangent samples land on different tier heights, so
-    // the resulting normal tilts sideways and steepness > 0.003 fires.
+    // Smooth per-vertex radial-out normal from the mesh, used for lighting.
+    // Stays NaN-free (no finite-difference cross product) and gives smooth
+    // shading across triangles within a hex face -- no low-poly facets,
+    // no scattered black dots.
     vec3 N = normalize(vWorldNormal);
 
     bool isWall = false;  // smooth sphere -- no walls
     float distFromCenter = length(vWorldPos);
     float heightAboveR = distFromCenter - planetRadius;
+
+    // Cliff steepness: per-fragment scalar gradient of heightAboveR
+    // computed via screen-space derivatives. The legacy cliff chunk
+    // gates the slab-rock branch on steepness > 0.003. We compute it
+    // from how rapidly the displaced height is changing across this
+    // pixel, which fires at actual cliff faces without needing a
+    // displacement-aware normal.
+    float dh_dx = dFdx(heightAboveR);
+    float dh_dy = dFdy(heightAboveR);
+    float cliffSteepness = clamp(sqrt(dh_dx * dh_dx + dh_dy * dh_dy) * 0.05, 0.0, 1.0);
+
     vec3 procColor;
 
     if (isWall) {
@@ -774,6 +759,22 @@ const GLSL_WATER_OVERRIDE_LAST = /* glsl */ `
 // block; the very last `}` is the else-block close.
 const GLSL_BEACH_OVERLAY_NO_CLOSE = GLSL_BEACH_OVERLAY.replace(/\}\s*$/, '');
 
+// Patch GLSL_CLIFF_RENDERING: the legacy chunk computes
+//   steepness = 1.0 - dot(N, normalize(vWorldPos));
+// which is correct for the per-hex-prism mesh whose vertex normals
+// reflect actual face orientation. For the smooth icosphere, vWorldNormal
+// is radial-out (passed by the vertex shader to avoid NaN dots), so that
+// formula always yields ~0 and the slab-rock branch never fires.
+//
+// Replace with `cliffSteepness`, a per-fragment value computed in
+// GLSL_MAIN_SETUP_NEW from dFdx/dFdy of heightAboveR. That gives a real
+// "how fast is height changing at this pixel" signal that fires on actual
+// cliff faces without depending on the normal vector.
+const GLSL_CLIFF_RENDERING_PATCHED = GLSL_CLIFF_RENDERING.replace(
+	'float steepness = 1.0 - dot(N, normalize(vWorldPos));',
+	'float steepness = cliffSteepness;',
+);
+
 const FRAGMENT =
 	GLSL_NOISE +
 	GLSL_PHASE4_UNIFORMS +
@@ -782,7 +783,7 @@ const FRAGMENT =
 	GLSL_PALETTE +
 	GLSL_HEX_HELPERS +
 	GLSL_MAIN_SETUP_NEW +
-	GLSL_CLIFF_RENDERING +
+	GLSL_CLIFF_RENDERING_PATCHED +
 	GLSL_BEACH_OVERLAY_NO_CLOSE +
 	GLSL_WATER_OVERRIDE_LAST +
 	'\n}\n' +              // close the else block
