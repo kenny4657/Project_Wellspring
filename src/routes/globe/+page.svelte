@@ -26,6 +26,27 @@
 	let perf = $state({ fps: 0, frameMs: 0, gpuFrameMs: 0, drawCalls: 0, vertexCount: 0, meshBuildMs: 0, totalBuildMs: 0 });
 	let perfTimer: ReturnType<typeof setInterval> | null = null;
 
+	// Phase 0/2 — render mode + benchmark UI state
+	let renderMode = $state<'legacy' | 'shader-preview'>('legacy');
+	let shaderDebugMode = $state<0 | 1 | 2>(0);
+	let benchProgress = $state<number | null>(null);
+	let benchResult = $state<null | { frames: number; minMs: number; medianMs: number; p99Ms: number; meanMs: number; gpuMedianMs: number }>(null);
+
+	function onRenderModeChange() {
+		engine?.setRenderMode(renderMode);
+	}
+	function onShaderDebugChange() {
+		engine?.setShaderDebugMode(shaderDebugMode);
+	}
+	async function startBenchmark() {
+		if (!engine || benchProgress !== null) return;
+		benchResult = null;
+		benchProgress = 0;
+		const r = await engine.runBenchmark({ onProgress: (t) => { benchProgress = t; } });
+		benchResult = r;
+		benchProgress = null;
+	}
+
 	onMount(async () => {
 		try {
 			const { createGlobeEngine } = await import('$lib/engine/globe');
@@ -33,6 +54,11 @@
 				loadingMessage = msg;
 			});
 			hexCount = engine.hexCount;
+			// Expose for the Phase 2 verifier (scripts/phase2-verify.mjs).
+			// Only when ?ref=1 — production users never see this handle.
+			if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('ref') === '1') {
+				(window as unknown as { __globeEngine: typeof engine }).__globeEngine = engine;
+			}
 
 			engine.onHexClick = (cellIndex: number) => {
 				if (inspectMode) {
@@ -129,7 +155,44 @@
 				<input type="checkbox" bind:checked={inspectMode} class="accent-[#C4A96A]" />
 				Inspect mode (click hex for ID)
 			</label>
-			<div class="flex gap-1 flex-wrap mt-1">
+
+			<!-- Render mode (Phase 0): Legacy vs Shader (preview).
+			     Shader (preview) shows the Phase 2 hex-ID heat map. -->
+			<label class="block text-xs mt-2">
+				<span class="text-[#A09890]">Render mode</span>
+				<select bind:value={renderMode} onchange={onRenderModeChange}
+					class="block w-full mt-0.5 px-1 py-0.5 bg-[#1E1B18] border border-[rgba(255,255,255,0.1)] text-[#E8DFD0] text-xs rounded">
+					<option value="legacy">Legacy</option>
+					<option value="shader-preview">Shader (preview)</option>
+				</select>
+			</label>
+			{#if renderMode === 'shader-preview'}
+				<label class="block text-xs">
+					<span class="text-[#A09890]">Heat-map output</span>
+					<select bind:value={shaderDebugMode} onchange={onShaderDebugChange}
+						class="block w-full mt-0.5 px-1 py-0.5 bg-[#1E1B18] border border-[rgba(255,255,255,0.1)] text-[#E8DFD0] text-xs rounded">
+						<option value={0}>Hex ID hash</option>
+						<option value={1}>Face index (0-19)</option>
+						<option value={2}>(i, j) heatmap</option>
+					</select>
+				</label>
+			{/if}
+
+			<button class="tool-btn mt-2" onclick={startBenchmark} disabled={benchProgress !== null}>
+				{#if benchProgress !== null}Benchmark… {(benchProgress * 100).toFixed(0)}%{:else}Run benchmark (16s){/if}
+			</button>
+			{#if benchResult}
+				<div class="text-[10px] text-[#A09890] mt-1 leading-tight">
+					<div>frames {benchResult.frames}</div>
+					<div>median {benchResult.medianMs.toFixed(2)} ms · p99 {benchResult.p99Ms.toFixed(2)} ms</div>
+					<div>min {benchResult.minMs.toFixed(2)} · mean {benchResult.meanMs.toFixed(2)}</div>
+					{#if benchResult.gpuMedianMs > 0}
+						<div>GPU median {benchResult.gpuMedianMs.toFixed(2)} ms</div>
+					{/if}
+				</div>
+			{/if}
+
+			<div class="flex gap-1 flex-wrap mt-2">
 				<button class="tool-btn" onclick={() => engine?.flyTo(48.86, 2.35, 500)}>Paris</button>
 				<button class="tool-btn" onclick={() => engine?.flyTo(40.71, -74.01, 500)}>NYC</button>
 				<button class="tool-btn" onclick={() => engine?.flyTo(35.68, 139.69, 500)}>Tokyo</button>

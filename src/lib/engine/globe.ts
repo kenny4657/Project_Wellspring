@@ -26,16 +26,22 @@ import '@babylonjs/core/Culling/ray';
 import '@babylonjs/core/Rendering/depthRendererSceneComponent';
 
 import { EARTH_RADIUS_KM, latLngToWorld } from '$lib/geo/coords';
-import { generateIcoHexGrid, type HexCell } from '$lib/engine/icosphere';
+import { generateIcoHexGridWithFaces, type HexCell } from '$lib/engine/icosphere';
 import { buildGlobeMesh, buildHexEdgeLines, updateCellTerrain } from '$lib/engine/globe-mesh';
 import { createTerrainMaterial, applyTerrainSettings } from '$lib/engine/terrain-material';
 import { createWaterMaterial } from '$lib/engine/water-material';
 // picking is inlined below using the lightweight pickSphere
 import { assignTerrain } from '$lib/engine/terrain-gen';
 import { TERRAIN_TYPES, type TerrainTypeId, type TerrainSettings } from '$lib/world/terrain-types';
+import { createGpuFrameTimer, type GpuFrameTimer } from '$lib/engine/perf-gpu-timer';
+import { runBenchmark, type BenchmarkResult } from '$lib/engine/benchmark';
+import { createHexIdLookup, pickHexByFaceGrid } from '$lib/engine/hex-id-lookup';
+import { createShaderGlobeDebugMaterial, setShaderGlobeDebugMode } from '$lib/engine/shader-globe-debug-material';
 
 /** Icosphere resolution — controls hex count. Total ~ 10 * res² + 2 */
 const ICO_RESOLUTION = 40;
+
+export type RenderMode = 'legacy' | 'shader-preview';
 
 export interface GlobeEngine {
 	dispose(): void;
@@ -43,8 +49,21 @@ export interface GlobeEngine {
 	setHexTerrain(cellIndex: number, terrain: TerrainTypeId): void;
 	setGridVisible(visible: boolean): void;
 	setTerrainSettings(settings: TerrainSettings): void;
+	/** Switch which renderer is showing. Phase 0/2 — only legacy is fully featured.
+	 *  shader-preview shows the Phase 2 hex-ID heat map on a smooth sphere. */
+	setRenderMode(mode: RenderMode): void;
+	/** Set heat-map output mode for shader-preview:
+	 *  0 = id hash, 1 = face index, 2 = (i,j), 3 = raw ID bits (for verification). */
+	setShaderDebugMode(mode: 0 | 1 | 2 | 3): void;
+	/** Run the 8-waypoint benchmark and resolve with min/median/p99 frame ms. */
+	runBenchmark(opts?: { onProgress?: (t: number) => void }): Promise<BenchmarkResult>;
+	/** CPU-side hex pick for the current pointer pos (nearest cell.center). */
+	pickHexAt(sx: number, sy: number): number;
+	/** CPU mirror of GLSL face-grid lookup. Used by phase2-verify.mjs. */
+	pickHexByFaceGridAt(sx: number, sy: number): number;
 	readonly hexCount: number;
 	readonly cells: HexCell[];
+	readonly renderMode: RenderMode;
 	onHexClick: ((cellIndex: number) => void) | null;
 	// Performance instrumentation
 	readonly perf: {
@@ -115,14 +134,17 @@ export async function createGlobeEngine(
 	camera.attachControl();
 
 	// ── FXAA Anti-Aliasing ──────────────────────────────────
-	// Smooths sub-pixel hairline artifacts at hex mesh boundaries
-	new FxaaPostProcess('fxaa', 1.0, camera);
+	// Smooths sub-pixel hairline artifacts at hex mesh boundaries.
+	// Disabled in shader-preview because FXAA averages pixel colors and
+	// destroys the raw-ID bit encoding used by phase2-verify.mjs.
+	const fxaa = new FxaaPostProcess('fxaa', 1.0, camera);
 
 	// ── Generate Icosahedral Hex Grid ────────────────────────
 	report('Generating icosahedral hex grid...');
 	await tick();
 
-	const cells = generateIcoHexGrid(ICO_RESOLUTION);
+	const grid = generateIcoHexGridWithFaces(ICO_RESOLUTION);
+	const cells = grid.cells;
 	report(`Generated ${cells.length} hex cells`);
 	await tick();
 
@@ -170,6 +192,23 @@ export async function createGlobeEngine(
 	const edgeLines = buildHexEdgeLines(cells, EARTH_RADIUS_KM, scene);
 	edgeLines.setEnabled(false); // off by default — Sota style uses geometry, not grid lines
 
+	// ── Phase 2 spike: shader-preview hex-ID heat map ───────
+	// Builds a (face, i, j) → cellId lookup texture and a smooth sphere
+	// rendered with the debug material. Hidden until setRenderMode('shader-preview').
+	report('Building Phase 2 hex-ID lookup...');
+	await tick();
+	const hexLookup = createHexIdLookup(grid, scene);
+	const debugMat = createShaderGlobeDebugMaterial(scene, { lookup: hexLookup, resolution: ICO_RESOLUTION });
+	// Slightly larger than mean planet radius so it's visible when toggled on
+	// without depth-fighting the legacy mesh (which we hide anyway in shader-preview).
+	const debugSphere = MeshBuilder.CreateSphere('shaderDebugSphere', {
+		diameter: EARTH_RADIUS_KM * 2 * 1.001,
+		segments: 96,
+	}, scene);
+	debugSphere.material = debugMat;
+	debugSphere.isPickable = false;
+	debugSphere.setEnabled(false);
+
 	report(`Globe ready: ${cells.length} cells, ${globeMesh.getTotalVertices().toLocaleString()} vertices`);
 
 	// ── Picking / Painting ──────────────────────────────────
@@ -207,12 +246,22 @@ export async function createGlobeEngine(
 	});
 
 	// ── Performance instrumentation ──────────────────────────
-	// Earlier we used EngineInstrumentation/SceneInstrumentation, but
-	// captureGPUFrameTime wraps each frame in gl.beginQuery/endQuery via
-	// EXT_disjoint_timer_query, and that broke rendering entirely on this
-	// machine (blank canvas, no error). Stick to the lightweight, observer-free
-	// metrics: engine.getFps() / engine.getDeltaTime() and a per-frame moving
-	// average — never touches the GL query state machine.
+	// Default path: lightweight, observer-free CPU+GPU wall time via
+	// engine.getDeltaTime(). Babylon's EngineInstrumentation broke rendering
+	// on this machine because its captureGPUFrameTime hook leaked GL query
+	// state into the next frame.
+	//
+	// Optional GPU timing: enable via ?gputime=1. Uses our own wrapper around
+	// EXT_disjoint_timer_query_webgl2 with begin/end issued at the very start
+	// and end of scene.render — no observer chain, results lag ~2 frames.
+	const params = typeof window !== 'undefined'
+		? new URLSearchParams(window.location.search)
+		: new URLSearchParams();
+	const gpuTimerEnabled = params.get('gputime') === '1';
+	const gpuTimer: GpuFrameTimer | null = gpuTimerEnabled ? createGpuFrameTimer(canvas) : null;
+	if (gpuTimerEnabled && !gpuTimer) {
+		console.warn('[Globe] ?gputime=1 set but EXT_disjoint_timer_query_webgl2 unavailable.');
+	}
 	let frameMsAvg = 0;
 	scene.onAfterRenderObservable.add(() => {
 		// Babylon updates engine.getDeltaTime() each frame; smooth it for the
@@ -222,9 +271,43 @@ export async function createGlobeEngine(
 	});
 	const totalBuildMs = performance.now() - totalBuildStart;
 
+	// ── Render mode ─────────────────────────────────────────
+	let renderMode: RenderMode = 'legacy';
+	function applyRenderMode(mode: RenderMode) {
+		renderMode = mode;
+		if (mode === 'legacy') {
+			globeMesh.setEnabled(true);
+			waterSphere.setEnabled(true);
+			debugSphere.setEnabled(false);
+			// Re-attach FXAA. attachPostProcess is idempotent.
+			camera.attachPostProcess(fxaa);
+		} else {
+			// shader-preview: hide legacy land + water; show only the debug sphere.
+			// Detach FXAA so the raw ID bits in mode-3 pixels aren't averaged
+			// into neighbors — phase2-verify.mjs needs unfiltered output.
+			globeMesh.setEnabled(false);
+			waterSphere.setEnabled(false);
+			debugSphere.setEnabled(true);
+			camera.detachPostProcess(fxaa);
+		}
+	}
+	applyRenderMode('legacy');
+
+	// ── ?ref=1 hook for snapshot-references.mjs ─────────────
+	if (typeof window !== 'undefined' && params.get('ref') === '1') {
+		(window as unknown as { __setCam: (lat: number, lng: number, radius: number, pitch: number, yaw: number) => void }).__setCam =
+			(lat, lng, radius, pitch, yaw) => {
+				camera.center = latLngToWorld(lat, lng, EARTH_RADIUS_KM);
+				camera.radius = radius;
+				camera.pitch = pitch;
+				camera.yaw = yaw;
+			};
+	}
+
 	// ── Render Loop ─────────────────────────────────────────
 	let waterTime = 0;
 	engine.runRenderLoop(() => {
+		gpuTimer?.begin();
 		const camPos = camera.position;
 		terrainMat.setVector3('cameraPos', camPos);
 		// Sun follows camera: direction from origin toward camera, offset slightly upward
@@ -242,6 +325,7 @@ export async function createGlobeEngine(
 		waterMat.setFloat('cameraNear', camera.minZ);
 		waterMat.setFloat('cameraFar', camera.maxZ);
 		scene.render();
+		gpuTimer?.end();
 	});
 
 	const onResize = () => engine.resize();
@@ -251,9 +335,32 @@ export async function createGlobeEngine(
 	return {
 		dispose() {
 			window.removeEventListener('resize', onResize);
+			gpuTimer?.dispose();
 			scene.dispose();
 			engine.dispose();
 		},
+
+		setRenderMode(mode: RenderMode) { applyRenderMode(mode); },
+		setShaderDebugMode(mode: 0 | 1 | 2 | 3) { setShaderGlobeDebugMode(debugMat, mode); },
+		runBenchmark(opts) {
+			return new Promise<BenchmarkResult>((resolve) => {
+				runBenchmark({
+					camera,
+					getFrameMs: () => engine.getDeltaTime(),
+					getGpuFrameMs: gpuTimer ? () => gpuTimer.lastMs : undefined,
+					onComplete: resolve,
+					onProgress: opts?.onProgress,
+				});
+			});
+		},
+		pickHexAt(sx: number, sy: number) { return pickHex(sx, sy); },
+		pickHexByFaceGridAt(sx: number, sy: number) {
+			const result = scene.pick(sx, sy, (m) => m === pickSphere);
+			if (!result?.hit || !result.pickedPoint) return -1;
+			const p = result.pickedPoint;
+			return pickHexByFaceGrid({ x: p.x, y: p.y, z: p.z }, hexLookup, ICO_RESOLUTION, grid);
+		},
+		get renderMode() { return renderMode; },
 
 		flyTo(lat: number, lng: number, altitude: number = EARTH_RADIUS_KM * 0.5) {
 			const targetCenter = latLngToWorld(lat, lng, EARTH_RADIUS_KM);
@@ -283,7 +390,7 @@ export async function createGlobeEngine(
 			return {
 				fps: engine.getFps(),
 				frameMs: frameMsAvg,
-				gpuFrameMs: 0, // intentionally unavailable — see comment above
+				gpuFrameMs: gpuTimer ? gpuTimer.lastMs : 0,
 				drawCalls: scene.getActiveMeshes().length,
 				vertexCount: globeMesh.getTotalVertices(),
 				meshBuildMs,

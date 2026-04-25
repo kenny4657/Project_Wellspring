@@ -81,11 +81,63 @@ function discreteKey(v: Vector3, step: number): string {
 	return `${Math.round(v.x / step)},${Math.round(v.y / step)},${Math.round(v.z / step)}`;
 }
 
+// ── Face data exposed for GLSL hex lookup ──
+
+/**
+ * Per-face data needed to reconstruct (face, i, j) → cellId in a shader.
+ * The shader projects a sphere point onto a face's planar triangle, recovers
+ * planar barycentric coords, converts to face-local 2D (x, z), then to (i, j).
+ *
+ * v0/v1/v2 are the icosahedron's *unit-sphere* vertices for this face, in the
+ * canonical [i0, i1, i2] order from icoIndices(). Order matters — barycentric
+ * coords (l1, l2, l3) align to (v0, v1, v2) and the inverse map below is
+ * derived from this ordering.
+ */
+export interface IcoFaceData {
+	v0: { x: number; y: number; z: number };
+	v1: { x: number; y: number; z: number };
+	v2: { x: number; y: number; z: number };
+}
+
+export interface IcoGridWithFaces {
+	cells: HexCell[];
+	faces: IcoFaceData[];
+	/**
+	 * Flat lookup grid: faceGrid[face * stride + i * (res+2) + j] = cellId, or -1.
+	 * stride = (res+2) * (res+2). 20 faces.
+	 */
+	faceGrid: Int32Array;
+	resolution: number;
+}
+
+/** Constants for the face-local 2D grid. Mirror these in GLSL. */
+export function faceGridParams(resolution: number) {
+	const r = (1.0 / 2) / (resolution + 1);
+	const R = r * 2 / Math.sqrt(3);
+	const diameter = 2 * R;
+	return {
+		r,                           // small hex radius (apothem)
+		R,                           // large hex radius (circumradius)
+		startX: -0.5,
+		rowStep: diameter * 3.0 / 4.0, // cz step between rows
+		colStep: 2 * r,                // cx step between cols
+		oddRowOffset: r,               // cx += r when i is odd
+		gridSize: resolution + 2,      // (i, j) range
+	};
+}
+
 // ── Generation ──
 
 export function generateIcoHexGrid(resolution: number): HexCell[] {
+	return generateIcoHexGridWithFaces(resolution).cells;
+}
+
+export function generateIcoHexGridWithFaces(resolution: number): IcoGridWithFaces {
 	const icoVerts = icoPoints();
 	const icoTris = icoIndices();
+	const gridSize = resolution + 2;
+	const faceGrid = new Int32Array(20 * gridSize * gridSize).fill(-1);
+	const faces: IcoFaceData[] = [];
 
 	const r = (1.0 / 2) / (resolution + 1);
 	const R = r * 2 / Math.sqrt(3);
@@ -112,6 +164,18 @@ export function generateIcoHexGrid(resolution: number): HexCell[] {
 		const v1 = icoVerts[i1];
 		const v2 = icoVerts[i2];
 
+		// Record this face's sphere-normalized triangle vertices for the GLSL
+		// inverse-map. Match the (v0, v1, v2) order the barycentric() function
+		// assumes — l1↔v0, l2↔v1, l3↔v2.
+		const v0n = v0.clone().normalize();
+		const v1n = v1.clone().normalize();
+		const v2n = v2.clone().normalize();
+		faces.push({
+			v0: { x: v0n.x, y: v0n.y, z: v0n.z },
+			v1: { x: v1n.x, y: v1n.y, z: v1n.z },
+			v2: { x: v2n.x, y: v2n.y, z: v2n.z },
+		});
+
 		const patchCells = new Map<string, number>();
 
 		for (let i = 0; i < resolution + 2; i++) {
@@ -137,6 +201,7 @@ export function generateIcoHexGrid(resolution: number): HexCell[] {
 				const cellId = cellKeyToId.get(key)!;
 				const cell = cellMap.get(key)!;
 				patchCells.set(`${i},${j}`, cellId);
+				faceGrid[t * gridSize * gridSize + i * gridSize + j] = cellId;
 
 				// Generate corners — only project those within the triangle
 				// Corners outside this triangle will be contributed by adjacent triangles
@@ -222,5 +287,5 @@ export function generateIcoHexGrid(resolution: number): HexCell[] {
 		});
 	}
 
-	return cells;
+	return { cells, faces, faceGrid, resolution };
 }
