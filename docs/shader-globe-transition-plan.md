@@ -388,17 +388,42 @@ Cliffs tab can drive the look without code changes.
   Use `RawTexture.update()` with the modified subarray. Single-texel
   updates cost almost nothing — well under 1 ms even with the GPU upload
   pipeline.
-- `pickHex(sx, sy)`: unchanged. Already picks against `pickSphere`, gets a
-  world point, then runs `pickHex` math on the CPU. Same result.
+- **Reconcile `pickHex` with the GLSL face-grid lookup. (Carried over from
+  the Phase 2 spike — see `docs/phase2-spike-result.md`.)** Today's CPU
+  `pickHex` does a brute-force nearest-cell-center search (Voronoi). The
+  Phase 2 GLSL uses face-grid lookup. The two algorithms agree at hex
+  centers but disagree at boundaries — the spike measured ~18% of fragments
+  picking a different cell ID than `pickHex` would, by 2+ cells. If
+  unresolved, clicking a hex paints one cell while the renderer shows a
+  different cell at the same pixel — boundary clicks "miss" their target.
+  Two acceptable resolutions, pick one:
+    - **(a)** Switch CPU `pickHex` to face-grid lookup via
+      `pickHexByFaceGrid()` (already exists in `hex-id-lookup.ts`). Cheap
+      — same algorithm both sides — but boundary clicks bind to face-grid
+      cells, which can be 1–2 cells off from the Voronoi-nearest cell. May
+      feel slightly "off" if the user expects nearest-center.
+    - **(b)** Add a 6-neighbor refinement step to the GLSL: after the
+      face-grid hit, fetch the cell + its 6 neighbor centers from a
+      RGBA32F centers texture and pick the closest to P. ~6 extra texture
+      fetches per fragment (effectively free); needs a per-cell-center
+      texture (~256 KB at 16k hexes, ~16 MB at 1M hexes — still fine) and
+      a per-cell neighbor-list texture. CPU `pickHex` stays as-is.
+  Decide based on whether you'd rather pay storage (b) or accept "click
+  paints the face-grid cell, not the nearest center" (a). My recommendation
+  is **(b)** — the storage cost is trivial and "click paints the cell I'm
+  visibly looking at" is the intuitive behavior.
 - Hex grid wireframe overlay: today this is a separate `LinesMesh`. With the
   new approach, draw hex outlines in the fragment shader (line at
   `distanceToHexEdge < 0.005`, painted on top of terrain). Toggleable.
   Removes another mesh from the scene.
 
-**Visual regression:** paint a hex, confirm it changes color exactly as
-before; toggle grid, confirm outlines match old.
+**Visual regression:** paint a hex at the planet's equator, then at a
+boundary near a face seam, then at one of the 12 pentagons; confirm each
+click paints exactly the cell visible at the click point. Toggle grid,
+confirm outlines match old.
 
-**Deliverable:** all editor functions work in shader mode. No regression.
+**Deliverable:** all editor functions work in shader mode. No click→render
+mismatch at hex boundaries. Pentagons paint correctly.
 
 ---
 
@@ -479,6 +504,7 @@ classification still useful but consumed differently.
 | Tessellation shader unreliable in WebGL2 | medium | Multi-LOD mesh fallback decided at Phase 3 end. |
 | Pentagon edge cases break hex math | medium | Dedicated unit tests for the 12 pentagons in CPU `pickHex` first; mirror in GLSL. |
 | Mesh build never gets faster because we forget to remove old code | low | Feature-flag enforced throughout. Final cleanup in Phase 8 acceptance. |
+| Click→render mismatch at hex boundaries (face-grid GLSL vs Voronoi CPU pickHex) | **confirmed in Phase 2 spike (~18% of fragments)** | Phase 7 must reconcile. See Phase 7 task list and `docs/phase2-spike-result.md`. |
 
 ---
 
