@@ -7,7 +7,7 @@
  */
 import { Engine } from '@babylonjs/core/Engines/engine';
 import { Scene } from '@babylonjs/core/scene';
-import { Vector3, Color3, Color4 } from '@babylonjs/core/Maths/math';
+import { Vector3, Matrix, Color3, Color4 } from '@babylonjs/core/Maths/math';
 import { MeshBuilder } from '@babylonjs/core/Meshes/meshBuilder';
 // StandardMaterial import is a required side-effect — pickSphere needs
 // a default material to be pickable via scene.pick()
@@ -101,7 +101,8 @@ export async function createGlobeEngine(
 	camera.minZ = 1;
 	camera.maxZ = EARTH_RADIUS_KM * 20;
 
-	camera.attachControl();
+	// camera.attachControl() is intentionally NOT called — inputs are handled
+	// below with a custom sphere-trackball drag (see Camera Controls section).
 
 	// ── FXAA Anti-Aliasing ──────────────────────────────────
 	// Smooths sub-pixel hairline artifacts at hex mesh boundaries
@@ -159,11 +160,70 @@ export async function createGlobeEngine(
 
 	report(`Globe ready: ${cells.length} cells, ${globeMesh.getTotalVertices().toLocaleString()} vertices`);
 
-	// ── Picking / Painting ──────────────────────────────────
-	// Pick against the lightweight pickSphere instead of the 5M-vertex globe mesh.
-	// Only fire on click (not drag) so left-click-drag camera orbit still works.
-	let onHexClickCallback: ((cellIndex: number) => void) | null = null;
+	// ── Camera Controls (MapLibre-style sphere trackball) ───────
+	// Each drag frame computes the quaternion rotation from the previous
+	// sphere hit point to the current one, then applies it to camera.center.
+	// This keeps the grabbed globe point anchored under the cursor with no
+	// drag-plane approximation and no coherence drift on wide sweeps.
+	let dragPrev: Vector3 | null = null;
 	let pointerDownPos: { x: number; y: number } | null = null;
+
+	canvas.addEventListener('pointerdown', (e) => {
+		if (e.button !== 0) return;
+		pointerDownPos = { x: e.clientX, y: e.clientY };
+		const pick = scene.pick(scene.pointerX, scene.pointerY, m => m === pickSphere);
+		if (pick?.pickedPoint) {
+			dragPrev = pick.pickedPoint.clone();
+			canvas.setPointerCapture(e.pointerId);
+		}
+	});
+
+	canvas.addEventListener('pointermove', () => {
+		if (!dragPrev) return;
+		const pick = scene.pick(scene.pointerX, scene.pointerY, m => m === pickSphere);
+		if (!pick?.pickedPoint) return;
+
+		const curr = pick.pickedPoint;
+		const fromN = curr.clone().normalize();
+		const toN   = dragPrev.clone().normalize();
+		const cosA  = Math.max(-1, Math.min(1, Vector3.Dot(fromN, toN)));
+		if (cosA < 0.9999999) {
+			const axis = Vector3.Cross(fromN, toN).normalize();
+			const rot  = Matrix.RotationAxis(axis, Math.acos(cosA));
+			camera.center = Vector3.TransformCoordinates(
+				camera.center.clone().normalize(), rot
+			).scale(EARTH_RADIUS_KM);
+		}
+		dragPrev = curr.clone();
+	});
+
+	canvas.addEventListener('pointerup', (e) => {
+		if (e.button !== 0) return;
+		dragPrev = null;
+		try { canvas.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+		if (pointerDownPos) {
+			const dx = e.clientX - pointerDownPos.x;
+			const dy = e.clientY - pointerDownPos.y;
+			if (Math.sqrt(dx * dx + dy * dy) < 5) {
+				const idx = pickHex(scene.pointerX, scene.pointerY);
+				if (idx >= 0) onHexClickCallback?.(idx);
+			}
+			pointerDownPos = null;
+		}
+	});
+
+	// Exponential scroll zoom — feel stays consistent at all altitudes
+	canvas.addEventListener('wheel', (e) => {
+		e.preventDefault();
+		camera.radius = Math.max(
+			camera.limits.radiusMin,
+			Math.min(camera.limits.radiusMax, camera.radius * Math.pow(1.001, e.deltaY))
+		);
+	}, { passive: false });
+
+	// ── Picking / Painting ──────────────────────────────────────
+	// Pick against the lightweight pickSphere instead of the 5M-vertex globe mesh.
+	let onHexClickCallback: ((cellIndex: number) => void) | null = null;
 
 	function pickHex(sx: number, sy: number): number {
 		const result = scene.pick(sx, sy, (m) => m === pickSphere);
@@ -176,22 +236,6 @@ export async function createGlobeEngine(
 		}
 		return bestIdx;
 	}
-
-	canvas.addEventListener('pointerdown', (e) => {
-		if (e.button === 0) pointerDownPos = { x: e.clientX, y: e.clientY };
-	});
-
-	canvas.addEventListener('pointerup', (e) => {
-		if (e.button === 0 && pointerDownPos) {
-			const dx = e.clientX - pointerDownPos.x;
-			const dy = e.clientY - pointerDownPos.y;
-			if (Math.sqrt(dx * dx + dy * dy) < 5) {
-				const idx = pickHex(scene.pointerX, scene.pointerY);
-				if (idx >= 0) onHexClickCallback?.(idx);
-			}
-			pointerDownPos = null;
-		}
-	});
 
 	// ── Render Loop ─────────────────────────────────────────
 	let waterTime = 0;
