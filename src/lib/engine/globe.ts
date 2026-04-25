@@ -179,53 +179,56 @@ export async function createGlobeEngine(
 
 	// ── MapLibre-style sphere-trackball pan ────────────────────
 	// Replace Babylon's drag-plane pan (which drifts when the camera is tilted,
-	// because the tangent plane orientation depends on camera pose). Each frame
-	// we compute the quaternion that rotates the previous sphere hit to the
-	// current one and apply it to camera.center. Because this is pure sphere
-	// rotation in world space, it is independent of pitch/yaw and stable across
-	// any combination of left-drag and right-drag tilt.
+	// because the tangent plane orientation depends on camera pose) with a pure
+	// world-space sphere rotation. Each pointermove computes the quaternion that
+	// rotates the previous globe hit point to the current one and applies it to
+	// camera.center. Because the rotation is computed in world space, it is
+	// independent of pitch/yaw and stable across any mix of left-drag pan and
+	// right-drag tilt.
 	//
-	// GeospatialCameraPointersInput stays attached, so it routes pointer events
-	// to startDrag/handleDrag/stopDrag (left button) and _handleTilt via
-	// rotationAccumulatedPixels (right button). We DO NOT call the originals —
-	// that way _hitPointRadius stays undefined, panAccumulatedPixels stays zero,
-	// and _applyGeocentricTranslation is never invoked to fight our rotation.
+	// GeospatialCameraPointersInput stays attached so right-drag tilt continues
+	// to work (it writes to rotationAccumulatedPixels, which we don't touch).
+	// Babylon's left-drag pan also still runs and writes to panAccumulatedPixels,
+	// but we zero those out each pointermove so _applyGeocentricTranslation is
+	// never invoked. Net effect: Babylon's pan is neutralized, ours wins.
 	let sphereDragPrev: Vector3 | null = null;
 
-	camera.movement.startDrag = (pointerX: number, pointerY: number) => {
-		const pick = scene.pick(pointerX, pointerY, (m) => m === pickSphere);
-		sphereDragPrev = pick?.pickedPoint?.clone() ?? null;
-	};
-
-	camera.movement.handleDrag = (pointerX: number, pointerY: number) => {
-		if (!sphereDragPrev) return;
-		const pick = scene.pick(pointerX, pointerY, (m) => m === pickSphere);
-		if (!pick?.pickedPoint) return;
-		const curr = pick.pickedPoint;
-		const fromN = curr.clone().normalize();
-		const toN = sphereDragPrev.clone().normalize();
-		const cosA = Math.max(-1, Math.min(1, Vector3.Dot(fromN, toN)));
-		if (cosA < 0.9999999) {
-			const axis = Vector3.Cross(fromN, toN).normalize();
-			const rot = Matrix.RotationAxis(axis, Math.acos(cosA));
-			camera.center = Vector3.TransformCoordinates(
-				camera.center.clone().normalize(),
-				rot
-			).scale(EARTH_RADIUS_KM);
-		}
-		sphereDragPrev = curr.clone();
-	};
-
-	camera.movement.stopDrag = () => {
-		sphereDragPrev = null;
-	};
-
 	canvas.addEventListener('pointerdown', (e) => {
-		if (e.button === 0) pointerDownPos = { x: e.clientX, y: e.clientY };
+		if (e.button !== 0) return;
+		pointerDownPos = { x: e.clientX, y: e.clientY };
+		const pick = scene.pick(scene.pointerX, scene.pointerY, (m) => m === pickSphere);
+		sphereDragPrev = pick?.pickedPoint?.clone() ?? null;
+	});
+
+	canvas.addEventListener('pointermove', () => {
+		if (!sphereDragPrev) return;
+		const pick = scene.pick(scene.pointerX, scene.pointerY, (m) => m === pickSphere);
+		if (pick?.pickedPoint) {
+			const curr = pick.pickedPoint;
+			const fromN = curr.clone().normalize();
+			const toN = sphereDragPrev.clone().normalize();
+			const cosA = Math.max(-1, Math.min(1, Vector3.Dot(fromN, toN)));
+			if (cosA < 0.9999999) {
+				const axis = Vector3.Cross(fromN, toN).normalize();
+				const rot = Matrix.RotationAxis(axis, Math.acos(cosA));
+				camera.center = Vector3.TransformCoordinates(
+					camera.center.clone().normalize(),
+					rot
+				).scale(EARTH_RADIUS_KM);
+			}
+			sphereDragPrev = curr.clone();
+		}
+		// Neutralize Babylon's pan: it added to panAccumulatedPixels in its own
+		// pointermove handler (registered earlier, runs first); zeroing here
+		// means computeCurrentFrameDeltas sees 0 and _applyGeocentricTranslation
+		// never fires to fight our rotation.
+		camera.movement.panAccumulatedPixels.setAll(0);
 	});
 
 	canvas.addEventListener('pointerup', (e) => {
-		if (e.button === 0 && pointerDownPos) {
+		if (e.button !== 0) return;
+		sphereDragPrev = null;
+		if (pointerDownPos) {
 			const dx = e.clientX - pointerDownPos.x;
 			const dy = e.clientY - pointerDownPos.y;
 			if (Math.sqrt(dx * dx + dy * dy) < 5) {
