@@ -46,6 +46,16 @@ export interface GlobeEngine {
 	readonly hexCount: number;
 	readonly cells: HexCell[];
 	onHexClick: ((cellIndex: number) => void) | null;
+	// Performance instrumentation
+	readonly perf: {
+		fps: number;          // averaged frames-per-second from Babylon's performanceMonitor
+		frameMs: number;      // last frame CPU+GPU wall time in ms
+		gpuFrameMs: number;   // last frame GPU time in ms (0 if extension unavailable)
+		drawCalls: number;    // draw calls last frame
+		vertexCount: number;  // total vertices in globe mesh
+		meshBuildMs: number;  // wall time spent in buildGlobeMesh at startup
+		totalBuildMs: number; // wall time of full createGlobeEngine
+	};
 }
 
 export async function createGlobeEngine(
@@ -53,6 +63,7 @@ export async function createGlobeEngine(
 	onProgress?: (message: string) => void
 ): Promise<GlobeEngine> {
 	const report = onProgress ?? (() => {});
+	const totalBuildStart = performance.now();
 
 	// ── Engine & Scene ──────────────────────────────────────
 	report('Initializing Babylon.js...');
@@ -124,8 +135,10 @@ export async function createGlobeEngine(
 	report('Building globe mesh...');
 	await tick();
 
+	const meshBuildStart = performance.now();
 	const { mesh: globeMesh, vertexStarts, totalVerticesPerCell, colorsBuffer, positionsBuffer } =
 		buildGlobeMesh(cells, EARTH_RADIUS_KM, scene);
+	const meshBuildMs = performance.now() - meshBuildStart;
 
 	// Procedural terrain ShaderMaterial
 	const terrainMat = createTerrainMaterial(scene);
@@ -193,6 +206,22 @@ export async function createGlobeEngine(
 		}
 	});
 
+	// ── Performance instrumentation ──────────────────────────
+	// Earlier we used EngineInstrumentation/SceneInstrumentation, but
+	// captureGPUFrameTime wraps each frame in gl.beginQuery/endQuery via
+	// EXT_disjoint_timer_query, and that broke rendering entirely on this
+	// machine (blank canvas, no error). Stick to the lightweight, observer-free
+	// metrics: engine.getFps() / engine.getDeltaTime() and a per-frame moving
+	// average — never touches the GL query state machine.
+	let frameMsAvg = 0;
+	scene.onAfterRenderObservable.add(() => {
+		// Babylon updates engine.getDeltaTime() each frame; smooth it for the
+		// overlay so the readout is stable instead of jittering frame-to-frame.
+		const dt = engine.getDeltaTime();
+		frameMsAvg = frameMsAvg * 0.9 + dt * 0.1;
+	});
+	const totalBuildMs = performance.now() - totalBuildStart;
+
 	// ── Render Loop ─────────────────────────────────────────
 	let waterTime = 0;
 	engine.runRenderLoop(() => {
@@ -248,7 +277,19 @@ export async function createGlobeEngine(
 		get cells() { return cells; },
 
 		set onHexClick(cb: ((cellIndex: number) => void) | null) { onHexClickCallback = cb; },
-		get onHexClick() { return onHexClickCallback; }
+		get onHexClick() { return onHexClickCallback; },
+
+		get perf() {
+			return {
+				fps: engine.getFps(),
+				frameMs: frameMsAvg,
+				gpuFrameMs: 0, // intentionally unavailable — see comment above
+				drawCalls: scene.getActiveMeshes().length,
+				vertexCount: globeMesh.getTotalVertices(),
+				meshBuildMs,
+				totalBuildMs,
+			};
+		}
 	};
 }
 
