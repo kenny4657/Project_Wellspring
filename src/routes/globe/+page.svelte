@@ -11,6 +11,8 @@
 	let selectedTerrain = $state<TerrainTypeId>('plains');
 	let hexCount = $state(0);
 	let gridVisible = $state(false);
+	let inspectMode = $state(false);
+	let inspectedHex = $state<{ id: number; terrain: number; heightLevel: number; isPentagon: boolean; neighborCount: number; lat: number; lng: number } | null>(null);
 
 	// Tab: 'paint', 'colors', or 'cliffs'
 	let activeTab = $state<'paint' | 'colors' | 'cliffs'>('paint');
@@ -30,7 +32,22 @@
 			hexCount = engine.hexCount;
 
 			engine.onHexClick = (cellIndex: number) => {
-				engine!.setHexTerrain(cellIndex, selectedTerrain);
+				if (inspectMode) {
+					const cell = engine!.cells[cellIndex];
+					const c = cell.center;
+					const lat = Math.asin(c.y / Math.sqrt(c.x * c.x + c.y * c.y + c.z * c.z)) * 180 / Math.PI;
+					const lng = Math.atan2(c.z, c.x) * 180 / Math.PI;
+					inspectedHex = {
+						id: cell.id,
+						terrain: cell.terrain,
+						heightLevel: cell.heightLevel,
+						isPentagon: cell.isPentagon,
+						neighborCount: cell.neighbors.size,
+						lat, lng,
+					};
+				} else {
+					engine!.setHexTerrain(cellIndex, selectedTerrain);
+				}
 			};
 
 			loading = false;
@@ -298,6 +315,10 @@
 				<input type="checkbox" bind:checked={gridVisible} onchange={() => engine?.setGridVisible(gridVisible)} class="accent-[#C4A96A]" />
 				Hex grid
 			</label>
+			<label class="flex items-center gap-2 text-xs cursor-pointer">
+				<input type="checkbox" bind:checked={inspectMode} class="accent-[#C4A96A]" />
+				Inspect mode (click hex for ID)
+			</label>
 			<div class="flex gap-1 flex-wrap mt-1">
 				<button class="tool-btn" onclick={() => engine?.flyTo(48.86, 2.35, 500)}>Paris</button>
 				<button class="tool-btn" onclick={() => engine?.flyTo(40.71, -74.01, 500)}>NYC</button>
@@ -313,6 +334,21 @@
 
 	<main class="flex-1 relative">
 		<canvas bind:this={canvasEl} class="w-full h-full block"></canvas>
+
+		{#if inspectedHex}
+			<div class="absolute top-3 right-3 bg-[#1E1B18]/95 border border-[#C4A96A]/30 text-[#E8DFD0] text-xs font-mono rounded px-3 py-2 z-20 shadow-lg">
+				<div class="flex items-center justify-between gap-4 mb-1">
+					<span class="text-[#C4A96A] font-semibold">Hex Inspector</span>
+					<button class="text-[#706860] hover:text-[#E8DFD0]" onclick={() => inspectedHex = null}>✕</button>
+				</div>
+				<div>ID: <span class="text-[#C4A96A]">{inspectedHex.id}</span></div>
+				<div>Terrain: {inspectedHex.terrain}</div>
+				<div>Height: {inspectedHex.heightLevel}</div>
+				<div>Pent: {inspectedHex.isPentagon ? 'yes' : 'no'}</div>
+				<div>Neighbors: {inspectedHex.neighborCount}</div>
+				<div>Lat/Lng: {inspectedHex.lat.toFixed(2)}, {inspectedHex.lng.toFixed(2)}</div>
+			</div>
+		{/if}
 
 		{#if loading}
 			<div class="absolute inset-0 flex flex-col items-center justify-center bg-[#1E1B18]/90 z-10">
