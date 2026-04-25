@@ -72,10 +72,14 @@ legacy quality"). Five structural fixes landed:
 ### Render modes
 
 Three render modes selectable via `engine.setRenderMode()`:
-- **`legacy`** — original per-hex-prism mesh + water-sphere. Bit-for-bit
-  unchanged through this rewrite.
-- **`shader-preview`** — Phase 3 smooth icosphere with the full Phase 4–6
-  shader. The "production" target of the rewrite.
+- **`shader-preview`** — DEFAULT. Phase 3 smooth icosphere with the full
+  Phase 4–6 shader. Page lands here out of the box. Builds in ~3 s.
+- **`legacy`** — original per-hex-prism mesh + water-sphere. **LAZY-BUILT**
+  on first switch (`ensureLegacyBuilt()`); ~17 s extra wait the first
+  time, cached after. Until built, `legacy` is null and the per-frame
+  uniform pushes / `setHexTerrain` / `setGridVisible` / `setTerrainSettings`
+  / perf overlay all short-circuit. Bit-for-bit unchanged through this
+  rewrite once built.
 - **`shader-debug`** — same icosphere with `shader-globe-debug-material`.
   Used by `scripts/phase2-verify.mjs` for hex-ID verification (raw-bit
   encoded pixels). FXAA off in this mode so the verifier can read pixels.
