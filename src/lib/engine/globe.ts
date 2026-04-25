@@ -319,16 +319,23 @@ export async function createGlobeEngine(
 			waterSphere.setEnabled(true);
 			shaderGlobe.mesh.setEnabled(false);
 			camera.attachPostProcess(fxaa);
-		} else {
-			// shader-preview / shader-debug both render the new sphere only.
-			// FXAA off in either case: the debug material's mode-3 raw ID bits
-			// must not be filtered, and the Phase 3 flat color benefits from
-			// crisp edges while we're confirming the mesh shape.
+		} else if (mode === 'shader-debug') {
+			// shader-debug renders raw bit-encoded IDs in mode 3; FXAA would
+			// average those bytes and corrupt the verifier output.
 			globeMesh.setEnabled(false);
 			waterSphere.setEnabled(false);
 			shaderGlobe.mesh.setEnabled(true);
-			shaderGlobe.mesh.material = (mode === 'shader-debug') ? debugMat : shaderGlobeMat;
+			shaderGlobe.mesh.material = debugMat;
 			camera.detachPostProcess(fxaa);
+		} else {
+			// shader-preview: real biome rendering with Phase 5/6 displacement.
+			// FXAA on -- without it the cliff-edge transitions read as harsh
+			// stair-steps in the silhouette.
+			globeMesh.setEnabled(false);
+			waterSphere.setEnabled(false);
+			shaderGlobe.mesh.setEnabled(true);
+			shaderGlobe.mesh.material = shaderGlobeMat;
+			camera.attachPostProcess(fxaa);
 		}
 	}
 	applyRenderMode('legacy');
