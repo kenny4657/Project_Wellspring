@@ -463,11 +463,34 @@ void main() {
     // to unit sphere for the hex lookup, then re-extrude after computing
     // displacement.
     vec3 normPos = normalize(position);
-    computeHexLookup(normPos);
+
+    // Geometry-noise perturbation. Without this, vertex hex affiliation
+    // is determined by perfect hex-edge polygons -- the wall geometry
+    // sits on those polygons and forms hex-angle zigzags at hex vertices
+    // (segments meet at 60 degrees). Adding a small noise to the lookup
+    // direction breaks the alignment so the wall wiggles within each hex
+    // edge instead of running perfectly straight. Amp 0.0012 (~10% of
+    // apothem) is small enough that wall and rock paint don't disagree
+    // by more than ~half the wall band width. Fragment shader uses the
+    // SAME noise (same offsets, same freq, same amp) for the cliff-edge
+    // scan so paint and geometry stay aligned. This is independent of
+    // the 0.004-amp color-biome perturbation in fragment (which makes
+    // coastlines wavy at a much larger scale).
+    vec3 geomNoise = vec3(
+        snoise(normPos * 120.0 + 500.0),
+        snoise(normPos * 120.0 + 600.0),
+        snoise(normPos * 120.0 + 700.0)
+    );
+    vec3 P_geom = normalize(normPos + geomNoise * 0.0012);
+
+    computeHexLookup(P_geom);
     float ownLevel = (g_hexId >= 0.0) ? sampleHexData(g_hexId).y : 2.0;
-    vec2 disp = phase5AndPhase6Displacement(normPos, ownLevel);
+    vec2 disp = phase5AndPhase6Displacement(P_geom, ownLevel);
     float h = disp.x;
 
+    // Re-extrude from the original mesh direction so the vertex stays at
+    // its mesh position; only the HEIGHT comes from the noise-perturbed
+    // hex lookup.
     vec3 displaced = normPos * (planetRadius * (1.0 + h));
 
     vec4 wp = world * vec4(displaced, 1.0);
@@ -611,7 +634,21 @@ void main() {
         //   water<->land where land tier > 2  OR  land<->land delta >= 2
         // Color/biome lookups still use the perturbed P below so coastlines
         // and biome edges stay wavy.
-        computeHexLookup(P);
+        //
+        // Geometry-noise perturbation (matches the vertex shader's
+        // identical noise field): without this the cliff edge sits on
+        // perfect hex polygons and the wall silhouette zigzags at hex
+        // vertices. Amp 0.0012 wiggles the edge within each hex side
+        // without breaking the rock band. Vertex shader uses the SAME
+        // noise so geometry and paint stay aligned.
+        vec3 geomNoise = vec3(
+            snoise(P * 120.0 + 500.0),
+            snoise(P * 120.0 + 600.0),
+            snoise(P * 120.0 + 700.0)
+        );
+        vec3 P_geom = normalize(P + geomNoise * 0.0012);
+
+        computeHexLookup(P_geom);
         float cleanCliffEdgeDistN = 1.0;
         if (g_hexId >= 0.0) {
             int cleanLvl = int(sampleHexData(g_hexId).y);
