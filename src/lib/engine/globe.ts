@@ -22,6 +22,10 @@ import '@babylonjs/core/Animations/animatable';
 import { FxaaPostProcess } from '@babylonjs/core/PostProcesses/fxaaPostProcess';
 import { EngineInstrumentation } from '@babylonjs/core/Instrumentation/engineInstrumentation';
 import { SceneInstrumentation } from '@babylonjs/core/Instrumentation/sceneInstrumentation';
+// Side-effect import: adds engine.captureGPUFrameTime / startTimeQuery / etc.
+// to the engine prototype. Without this import EngineInstrumentation throws
+// "this.engine.captureGPUFrameTime is not a function" the moment we enable it.
+import '@babylonjs/core/Engines/Extensions/engine.query';
 // Side-effect imports needed for camera pointer input system
 import '@babylonjs/core/Events/pointerEvents';
 import '@babylonjs/core/Culling/ray';
@@ -213,7 +217,15 @@ export async function createGlobeEngine(
 	// EXT_disjoint_timer_query WebGL extension. It works in Chrome/Edge on
 	// most modern hardware; if unavailable we just report 0 for gpuFrameMs.
 	const engineInst = new EngineInstrumentation(engine);
-	engineInst.captureGPUFrameTime = true;
+	// Wrapped in try/catch in case EXT_disjoint_timer_query is unavailable on
+	// the user's GPU/driver — we still want the rest of the perf overlay.
+	let gpuTimingAvailable = false;
+	try {
+		engineInst.captureGPUFrameTime = true;
+		gpuTimingAvailable = true;
+	} catch (err) {
+		console.warn('[Globe] GPU frame timing unavailable:', err);
+	}
 	const sceneInst = new SceneInstrumentation(scene);
 	sceneInst.captureRenderTime = true;
 	const totalBuildMs = performance.now() - totalBuildStart;
@@ -279,7 +291,9 @@ export async function createGlobeEngine(
 			return {
 				fps: engine.performanceMonitor.averageFPS,
 				frameMs: sceneInst.renderTimeCounter.lastSecAverage,
-				gpuFrameMs: engineInst.gpuFrameTimeCounter.lastSecAverage / 1e6, // ns→ms
+				gpuFrameMs: gpuTimingAvailable
+					? engineInst.gpuFrameTimeCounter.lastSecAverage / 1e6 // ns → ms
+					: 0,
 				drawCalls: scene.getActiveMeshes().length,
 				vertexCount: globeMesh.getTotalVertices(),
 				meshBuildMs,
