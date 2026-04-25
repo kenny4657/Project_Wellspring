@@ -454,25 +454,67 @@ GLSL_PHASE4_UNIFORMS +
 GLSL_NOISE_VERTEX_SUBSET() +
 GLSL_HEX_HELPERS +
 /* glsl */ `
+// Helper: compute the displaced world position for a given unit-sphere
+// point. Internally calls computeHexLookup + phase5AndPhase6Displacement.
+// Used 3x in main() to derive smooth per-vertex normals via finite
+// difference of the displacement function at tangent offsets.
+//
+// NOTE: this CLOBBERS the g_* globals each call; the caller must re-run
+// computeHexLookup(normPos) before reading them downstream. main() does.
+vec3 displacedWorld(vec3 normPos) {
+    computeHexLookup(normPos);
+    float ownLevel = (g_hexId >= 0.0) ? sampleHexData(g_hexId).y : 2.0;
+    vec2 disp = phase5AndPhase6Displacement(normPos, ownLevel);
+    return normPos * (planetRadius * (1.0 + disp.x));
+}
+
 void main() {
     // Mesh vertex sits at radius planetRadius (CreateIcoSphere). Normalize
     // to unit sphere for the hex lookup, then re-extrude after computing
     // displacement.
     vec3 normPos = normalize(position);
-    computeHexLookup(normPos);
-    float ownLevel = (g_hexId >= 0.0) ? sampleHexData(g_hexId).y : 2.0;
-    vec2 disp = phase5AndPhase6Displacement(normPos, ownLevel);
-    float h = disp.x;
 
-    vec3 displaced = normPos * (planetRadius * (1.0 + h));
-    vec4 wp = world * vec4(displaced, 1.0);
+    // ── Smooth per-vertex normal via finite-difference of displacement ──
+    // The previous implementation passed a radial-out normal and let the
+    // fragment recompute via dFdx/dFdy, which gives PER-TRIANGLE FACET
+    // normals (low-poly look). Smooth shading needs PER-VERTEX normals
+    // so adjacent triangles within a hex face share continuous shading.
+    //
+    // Approach: sample the displacement function at two tangent-offset
+    // positions, take cross product of the surface tangent vectors. Cost
+    // is 3x phase5AndPhase6Displacement per vertex (~3x vertex shader
+    // work) -- still well under the GPU's vertex throughput at 600k verts.
+    //
+    // DELTA = 0.0008 unit-sphere ~ 5 km on planetRadius -- small enough
+    // to capture the noise gradient locally, large enough that we don't
+    // lose precision in the cross product.
+    vec3 up = abs(normPos.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 t1 = normalize(cross(up, normPos));
+    vec3 t2 = cross(normPos, t1);
+    const float DELTA = 0.0008;
+    vec3 normPos_t1 = normalize(normPos + t1 * DELTA);
+    vec3 normPos_t2 = normalize(normPos + t2 * DELTA);
+
+    // Compute displaced world positions at all three sample points.
+    vec3 displaced0  = displacedWorld(normPos);
+    vec3 displaced_a = displacedWorld(normPos_t1);
+    vec3 displaced_b = displacedWorld(normPos_t2);
+
+    // Restore the g_* globals to MATCH normPos so any downstream code that
+    // reads g_hexId / g_face / g_i / g_j sees the original vertex's hex.
+    // (No downstream reader yet, but defensive against future additions.)
+    computeHexLookup(normPos);
+    float h = (length(displaced0) - planetRadius) / planetRadius;
+
+    // Smooth normal from cross product of surface tangents.
+    vec3 surfT1 = displaced_a - displaced0;
+    vec3 surfT2 = displaced_b - displaced0;
+    vec3 N = normalize(cross(surfT1, surfT2));
+    if (dot(N, normPos) < 0.0) N = -N; // ensure outward orientation
+
+    vec4 wp = world * vec4(displaced0, 1.0);
     vWorldPos = wp.xyz;
-    // Surface normal: with displacement the radial-out normal is no longer
-    // exact at hex-edge transitions, but it's close enough for shading
-    // (each hex top is flat -- only the narrow edge band has curvature).
-    // Phase 8 could compute analytic normals from neighbour heights if it
-    // becomes a visible artifact.
-    vWorldNormal = normalize((world * vec4(normalize(displaced), 0.0)).xyz);
+    vWorldNormal = normalize((world * vec4(N, 0.0)).xyz);
     vSpherePos = normPos;
     vColor = vec4(0.0);
     gl_Position = viewProjection * wp;
@@ -545,18 +587,14 @@ const GLSL_MAIN_SETUP_NEW = /* glsl */ `
 void main() {
     vec3 P = normalize(vSpherePos);
 
-    // Analytic surface normal from screen-space derivatives of the
-    // *displaced* world position. The vertex shader sets vWorldNormal
-    // to the radial-out direction, but on cliff faces (where the Phase 5
-    // ramp tilts the surface 45-90deg sideways) that's wrong. Using
-    // dFdx/dFdy of vWorldPos gives the actual triangle's facet normal,
-    // including all the displacement noise. Result: legacy GLSL_CLIFF_
-    // RENDERING's steepness > 0.003 gate fires correctly on cliff faces,
-    // unlocking the slab-map rock texture.
-    vec3 ddxP = dFdx(vWorldPos);
-    vec3 ddyP = dFdy(vWorldPos);
-    vec3 N = normalize(cross(ddxP, ddyP));
-    if (dot(N, vWorldPos) < 0.0) N = -N;  // ensure outward orientation
+    // Smooth per-vertex normal computed in the VERTEX shader via
+    // finite-difference of the displacement function. Using this directly
+    // (instead of dFdx/dFdy) gives smooth shading across adjacent
+    // triangles within a hex face -- terrain reads as rolling valleys
+    // rather than low-poly facets. Cliff faces still get the legacy slab
+    // texture: their tangent samples land on different tier heights, so
+    // the resulting normal tilts sideways and steepness > 0.003 fires.
+    vec3 N = normalize(vWorldNormal);
 
     bool isWall = false;  // smooth sphere -- no walls
     float distFromCenter = length(vWorldPos);
