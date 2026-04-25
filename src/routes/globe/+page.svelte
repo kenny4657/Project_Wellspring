@@ -27,7 +27,7 @@
 	let perfTimer: ReturnType<typeof setInterval> | null = null;
 
 	// Phase 0/1/2/3 — render mode + benchmark UI state
-	let renderMode = $state<'legacy' | 'shader-preview' | 'shader-debug'>('legacy');
+	let renderMode = $state<'legacy' | 'shader-preview' | 'shader-debug'>('shader-preview');
 	let shaderDebugMode = $state<0 | 1 | 2 | 3 | 4 | 5>(0);
 	let benchProgress = $state<number | null>(null);
 	let benchResult = $state<null | { frames: number; minMs: number; medianMs: number; p99Ms: number; meanMs: number; gpuMedianMs: number }>(null);

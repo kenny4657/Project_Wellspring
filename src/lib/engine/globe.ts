@@ -32,7 +32,7 @@ import { createTerrainMaterial, applyTerrainSettings } from '$lib/engine/terrain
 import { createWaterMaterial } from '$lib/engine/water-material';
 // picking is inlined below using the lightweight pickSphere
 import { assignTerrain } from '$lib/engine/terrain-gen';
-import { TERRAIN_TYPES, type TerrainTypeId, type TerrainSettings } from '$lib/world/terrain-types';
+import { TERRAIN_TYPES, loadTerrainSettings, type TerrainTypeId, type TerrainSettings } from '$lib/world/terrain-types';
 import { createGpuFrameTimer, type GpuFrameTimer } from '$lib/engine/perf-gpu-timer';
 import { runBenchmark, type BenchmarkResult } from '$lib/engine/benchmark';
 import { createHexIdLookup, pickHexByFaceGrid } from '$lib/engine/hex-id-lookup';
@@ -166,44 +166,66 @@ export async function createGlobeEngine(
 	await tick();
 	assignTerrain(cells);
 
-	// ── Build Globe Mesh ────────────────────────────────────
-	report('Building globe mesh...');
-	await tick();
-
-	const meshBuildStart = performance.now();
-	const { mesh: globeMesh, vertexStarts, totalVerticesPerCell, colorsBuffer, positionsBuffer } =
-		buildGlobeMesh(cells, EARTH_RADIUS_KM, scene);
-	const meshBuildMs = performance.now() - meshBuildStart;
-
-	// Procedural terrain ShaderMaterial
-	const terrainMat = createTerrainMaterial(scene);
-	globeMesh.material = terrainMat;
-	globeMesh.hasVertexAlpha = false;
-	globeMesh.isPickable = false; // picking uses the lightweight pickSphere instead
-
-
-	// ── Depth Renderer + Water Surface ─────────────────────
-	// Depth renderer captures terrain depth. Water shader samples it
-	// to discard fragments where terrain is closer → land occludes water.
+	// ── Depth Renderer (always created -- empty renderList by default) ──
 	const depthRenderer = scene.enableDepthRenderer(camera, false);
 	const depthTexture = depthRenderer.getDepthMap();
-	// Force renderList to terrain only — depth renderer defaults to null (all meshes)
 	depthTexture.renderList = [];
-	depthTexture.renderList.push(globeMesh);
 
-	const waterSphere = MeshBuilder.CreateSphere('waterSurface', {
-		diameter: EARTH_RADIUS_KM * 2 * 0.9995,
-		segments: 64
-	}, scene);
-	const waterMat = createWaterMaterial(scene, depthTexture);
-	waterSphere.material = waterMat;
-	waterSphere.isPickable = false;
+	// ── Lazy legacy mesh build ──────────────────────────────
+	// Building the per-hex prism mesh costs ~16 s for 16k hexes (it's the
+	// pre-Phase-3 architecture). The shader-preview default doesn't need
+	// it, so defer until the user explicitly switches into legacy mode.
+	// This drops first-paint from ~17 s to ~1 s.
+	type LegacyMeshHandle = {
+		mesh: ReturnType<typeof buildGlobeMesh>['mesh'];
+		vertexStarts: number[];
+		totalVerticesPerCell: number[];
+		colorsBuffer: Float32Array;
+		positionsBuffer: Float32Array;
+		terrainMat: ReturnType<typeof createTerrainMaterial>;
+		waterSphere: ReturnType<typeof MeshBuilder.CreateSphere>;
+		waterMat: ReturnType<typeof createWaterMaterial>;
+		edgeLines: ReturnType<typeof buildHexEdgeLines>;
+	};
+	let legacy: LegacyMeshHandle | null = null;
+	let meshBuildMs = 0;
+	function ensureLegacyBuilt(progress?: (msg: string) => void) {
+		if (legacy) return;
+		const log = progress ?? (() => {});
+		log('Building legacy globe mesh (~17 s for 16k hexes)...');
+		const t0 = performance.now();
+		const { mesh, vertexStarts, totalVerticesPerCell, colorsBuffer, positionsBuffer } =
+			buildGlobeMesh(cells, EARTH_RADIUS_KM, scene);
+		meshBuildMs = performance.now() - t0;
 
-	// ── Hex Edge Wireframe ──────────────────────────────────
-	report('Building hex grid overlay...');
-	await tick();
-	const edgeLines = buildHexEdgeLines(cells, EARTH_RADIUS_KM, scene);
-	edgeLines.setEnabled(false); // off by default — Sota style uses geometry, not grid lines
+		const terrainMat = createTerrainMaterial(scene);
+		mesh.material = terrainMat;
+		mesh.hasVertexAlpha = false;
+		mesh.isPickable = false;
+		mesh.setEnabled(false); // current renderMode handles toggling
+
+		const waterSphere = MeshBuilder.CreateSphere('waterSurface', {
+			diameter: EARTH_RADIUS_KM * 2 * 0.9995,
+			segments: 64,
+		}, scene);
+		const waterMat = createWaterMaterial(scene, depthTexture);
+		waterSphere.material = waterMat;
+		waterSphere.isPickable = false;
+		waterSphere.setEnabled(false);
+
+		log('Building hex grid overlay...');
+		const edgeLines = buildHexEdgeLines(cells, EARTH_RADIUS_KM, scene);
+		edgeLines.setEnabled(false);
+
+		legacy = { mesh, vertexStarts, totalVerticesPerCell, colorsBuffer, positionsBuffer, terrainMat, waterSphere, waterMat, edgeLines };
+
+		// Push current settings into the just-built legacy material so the
+		// user's color edits don't visually snap when switching modes.
+		applyTerrainSettings(terrainMat, currentSettings);
+	}
+
+	// Track latest applied settings so a lazy legacy build picks them up.
+	let currentSettings = loadTerrainSettings();
 
 	// ── Phase 1: per-hex data textures ──────────────────────
 	// Three RGBA8 textures (terrain / height / owner) keyed by hexId. The
@@ -248,7 +270,7 @@ export async function createGlobeEngine(
 		debugMat.forceCompilation(shaderGlobe.mesh, done);
 	});
 
-	report(`Globe ready: ${cells.length} cells, ${globeMesh.getTotalVertices().toLocaleString()} legacy verts, ${shaderGlobe.vertexCount.toLocaleString()} shader-globe verts`);
+	report(`Globe ready: ${cells.length} cells, ${shaderGlobe.vertexCount.toLocaleString()} shader-globe verts (legacy mesh deferred)`);
 
 	// ── Picking / Painting ──────────────────────────────────
 	// Pick against the lightweight pickSphere instead of the 5M-vertex globe mesh.
@@ -311,22 +333,27 @@ export async function createGlobeEngine(
 	const totalBuildMs = performance.now() - totalBuildStart;
 
 	// ── Render mode ─────────────────────────────────────────
-	let renderMode: RenderMode = 'legacy';
+	// Default: shader-preview. The legacy per-hex-prism mesh is large
+	// (~16 s build for 16k hexes) and not needed unless the user explicitly
+	// switches into legacy mode -- ensureLegacyBuilt() handles that lazily.
+	let renderMode: RenderMode = 'shader-preview';
 	function applyRenderMode(mode: RenderMode) {
 		renderMode = mode;
 		if (mode === 'legacy') {
-			globeMesh.setEnabled(true);
-			waterSphere.setEnabled(true);
+			// Lazy build on first switch into legacy mode. ~17 s wait the
+			// first time; cached on subsequent switches.
+			ensureLegacyBuilt();
+			if (!legacy) return;
+			legacy.mesh.setEnabled(true);
+			legacy.waterSphere.setEnabled(true);
 			shaderGlobe.mesh.setEnabled(false);
-			// Legacy depth list = legacy mesh.
-			depthTexture.renderList = [globeMesh];
+			depthTexture.renderList = [legacy.mesh];
 			camera.attachPostProcess(fxaa);
 		} else if (mode === 'shader-debug') {
 			// shader-debug renders raw bit-encoded IDs in mode 3; FXAA would
 			// average those bytes and corrupt the verifier output. Water
 			// sphere off so the bit-encoded debug colors aren't masked.
-			globeMesh.setEnabled(false);
-			waterSphere.setEnabled(false);
+			if (legacy) { legacy.mesh.setEnabled(false); legacy.waterSphere.setEnabled(false); }
 			shaderGlobe.mesh.setEnabled(true);
 			shaderGlobe.mesh.material = debugMat;
 			depthTexture.renderList = [];
@@ -339,15 +366,14 @@ export async function createGlobeEngine(
 			// sphere and discard everywhere. A displacement-aware custom
 			// depth material is Phase 8 work; for now water is rendered
 			// inline by shader-globe-material with a sharp coast boundary.
-			globeMesh.setEnabled(false);
-			waterSphere.setEnabled(false);
+			if (legacy) { legacy.mesh.setEnabled(false); legacy.waterSphere.setEnabled(false); }
 			shaderGlobe.mesh.setEnabled(true);
 			shaderGlobe.mesh.material = shaderGlobeMat;
 			depthTexture.renderList = [];
 			camera.attachPostProcess(fxaa);
 		}
 	}
-	applyRenderMode('legacy');
+	applyRenderMode('shader-preview');
 
 	// ── ?ref=1 hook for snapshot-references.mjs ─────────────
 	if (typeof window !== 'undefined' && params.get('ref') === '1') {
@@ -365,21 +391,26 @@ export async function createGlobeEngine(
 	engine.runRenderLoop(() => {
 		gpuTimer?.begin();
 		const camPos = camera.position;
-		terrainMat.setVector3('cameraPos', camPos);
 		// Sun follows camera: direction from origin toward camera, offset slightly upward
 		const cx = camPos.x, cy = camPos.y, cz = camPos.z;
 		const cl = Math.sqrt(cx * cx + cy * cy + cz * cz) || 1;
 		const sx = cx / cl + 0.3, sy = cy / cl + 0.5, sz = cz / cl;
 		const sl = Math.sqrt(sx * sx + sy * sy + sz * sz) || 1;
 		const sunDirVec = new Vector3(sx / sl, sy / sl, sz / sl);
-		terrainMat.setVector3('sunDir', sunDirVec);
 		waterTime += engine.getDeltaTime() * 0.001;
-		terrainMat.setFloat('time', waterTime);
-		waterMat.setFloat('time', waterTime);
-		waterMat.setVector3('cameraPos', camPos);
-		waterMat.setVector3('sunDir', sunDirVec);
-		waterMat.setFloat('cameraNear', camera.minZ);
-		waterMat.setFloat('cameraFar', camera.maxZ);
+
+		// Legacy material uniforms only matter when legacy mode is active
+		// (and only after the lazy build has run).
+		if (legacy) {
+			legacy.terrainMat.setVector3('cameraPos', camPos);
+			legacy.terrainMat.setVector3('sunDir', sunDirVec);
+			legacy.terrainMat.setFloat('time', waterTime);
+			legacy.waterMat.setFloat('time', waterTime);
+			legacy.waterMat.setVector3('cameraPos', camPos);
+			legacy.waterMat.setVector3('sunDir', sunDirVec);
+			legacy.waterMat.setFloat('cameraNear', camera.minZ);
+			legacy.waterMat.setFloat('cameraFar', camera.maxZ);
+		}
 		// Phase 4 biome-shaded material: same per-frame uniforms as the
 		// legacy terrain material so legacy and shader-preview produce
 		// matching colors at every camera state.
@@ -477,19 +508,24 @@ export async function createGlobeEngine(
 		setHexTerrain(cellIndex: number, terrain: TerrainTypeId) {
 			const c = cells[cellIndex];
 			c.terrain = TERRAIN_TYPES[terrain];
-			// Legacy mesh: re-encode the cell's vertex range with the new color.
-			updateCellTerrain(globeMesh, cells, cellIndex, vertexStarts, totalVerticesPerCell, EARTH_RADIUS_KM, colorsBuffer, positionsBuffer);
-			// Phase 1 textures: one texel write (currently a full re-upload;
-			// see hex-data-textures.ts for the Phase 7 sub-rect upgrade note).
+			// Legacy mesh update only if it's been built.
+			if (legacy) {
+				updateCellTerrain(legacy.mesh, cells, cellIndex, legacy.vertexStarts, legacy.totalVerticesPerCell, EARTH_RADIUS_KM, legacy.colorsBuffer, legacy.positionsBuffer);
+			}
+			// Phase 1 textures always update -- shader-preview reads from them.
 			updateHexDataTextures(hexData, c.id, c.terrain, c.heightLevel);
 		},
 
 		setGridVisible(visible: boolean) {
-			edgeLines.setEnabled(visible);
+			// Edge wireframe only exists once legacy is built. Force the
+			// build if user toggles grid before ever switching to legacy.
+			if (visible) ensureLegacyBuilt();
+			if (legacy) legacy.edgeLines.setEnabled(visible);
 		},
 
 		setTerrainSettings(settings: TerrainSettings) {
-			applyTerrainSettings(terrainMat, settings);
+			currentSettings = settings;
+			if (legacy) applyTerrainSettings(legacy.terrainMat, settings);
 			applyShaderGlobeSettings(shaderGlobeMat, settings);
 		},
 
@@ -505,7 +541,7 @@ export async function createGlobeEngine(
 				frameMs: frameMsAvg,
 				gpuFrameMs: gpuTimer ? gpuTimer.lastMs : 0,
 				drawCalls: scene.getActiveMeshes().length,
-				vertexCount: globeMesh.getTotalVertices(),
+				vertexCount: legacy ? legacy.mesh.getTotalVertices() : shaderGlobe.vertexCount,
 				meshBuildMs,
 				totalBuildMs,
 			};
