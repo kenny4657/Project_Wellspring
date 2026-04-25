@@ -574,15 +574,11 @@ void main() {
     float distFromCenter = length(vWorldPos);
     float heightAboveR = distFromCenter - planetRadius;
 
-    // Cliff steepness: per-fragment scalar gradient of heightAboveR
-    // computed via screen-space derivatives. The legacy cliff chunk
-    // gates the slab-rock branch on steepness > 0.003. We compute it
-    // from how rapidly the displaced height is changing across this
-    // pixel, which fires at actual cliff faces without needing a
-    // displacement-aware normal.
-    float dh_dx = dFdx(heightAboveR);
-    float dh_dy = dFdy(heightAboveR);
-    float cliffSteepness = clamp(sqrt(dh_dx * dh_dx + dh_dy * dh_dy) * 0.05, 0.0, 1.0);
+    // Steepness override happens via GLSL_CLIFF_RENDERING_PATCHED, which
+    // replaces the legacy 1 - dot(N, radial) (always ~0 with the radial
+    // smooth normal) with cliffProximity from the 6-neighbor scan below
+    // -- a clean geometric "near a real tier edge" signal that conforms
+    // to hex transitions.
 
     vec3 procColor;
 
@@ -766,13 +762,20 @@ const GLSL_BEACH_OVERLAY_NO_CLOSE = GLSL_BEACH_OVERLAY.replace(/\}\s*$/, '');
 // is radial-out (passed by the vertex shader to avoid NaN dots), so that
 // formula always yields ~0 and the slab-rock branch never fires.
 //
-// Replace with `cliffSteepness`, a per-fragment value computed in
-// GLSL_MAIN_SETUP_NEW from dFdx/dFdy of heightAboveR. That gives a real
-// "how fast is height changing at this pixel" signal that fires on actual
-// cliff faces without depending on the normal vector.
+// Earlier attempt: dFdx/dFdy of heightAboveR. Lit up every fragment where
+// height was changing -- including interior noise -- producing smeared
+// swirling brown blobs that didn't follow hex tier edges.
+//
+// Use cliffProximity instead. It's computed in GLSL_MAIN_SETUP_NEW from
+// the 6-neighbor scan: =1.0 right at a real tier-transition edge between
+// adjacent hexes, falls linearly to 0 toward the hex interior. That's
+// exactly the geometric "is this fragment on a cliff face" signal the
+// legacy steepness was approximating with the prism-wall normal trick.
+// Result: slab-rock texture fires on real hex-tier-transition cliff
+// faces (matching legacy crisp rocky walls), not on interior bumps.
 const GLSL_CLIFF_RENDERING_PATCHED = GLSL_CLIFF_RENDERING.replace(
 	'float steepness = 1.0 - dot(N, normalize(vWorldPos));',
-	'float steepness = cliffSteepness;',
+	'float steepness = cliffProximity;',
 );
 
 const FRAGMENT =
