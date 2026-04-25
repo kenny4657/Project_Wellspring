@@ -33,6 +33,10 @@
  * or every cliff and water hex will render at the wrong height tier.
  */
 import { TERRAIN_PROFILES } from '$lib/world/terrain-types';
+import type { HexCell } from './icosphere';
+import type { HexBorderInfo } from './hex-borders';
+import { findNeighborAcrossEdge } from './hex-borders';
+import { distToSegment, distToCoast, distToGentleLandEdge } from './hex-distance-fields';
 
 /** Wall vertex color: terrain profile RGB (used by textureWall for blue-detection). */
 export function getTerrainColor(idx: number): [number, number, number] {
@@ -55,4 +59,79 @@ export function getTopFaceColor(terrainIdx: number, heightLevel: number, neighbo
 	const nId = neighborTerrainId >= 0 ? neighborTerrainId : terrainIdx;
 	const g = (nId + Math.min(blendFactor, 0.99)) / 10.0;
 	return [r, g, b];
+}
+
+/**
+ * Compute the full RGBA top-face vertex color for a single vertex.
+ *
+ * Encapsulates the per-vertex logic shared between `buildGlobeMesh` (initial
+ * mesh build) and `updateCellTerrain` (paint-time recolor):
+ *   - cliffProximity from the nearest steep-cliff edge (with gentle-land fade)
+ *   - cliff-neighbor terrain swap into the G channel for water hexes
+ *   - alpha from coast proximity
+ *   - RGB packing via `getTopFaceColor`
+ *
+ * Caller computes `chosenNeighborTerrainId` and `crossBlendFactor` per-triangle
+ * (so all 3 verts of a triangle agree on the neighborId — see comments in
+ * `buildGlobeMesh` about GPU interpolation artifacts).
+ */
+export function encodeTopVertexColor(
+	cell: HexCell,
+	vx: number,
+	vy: number,
+	vz: number,
+	borderInfo: HexBorderInfo,
+	cellById: Map<number, HexCell>,
+	hexRadius: number,
+	chosenNeighborTerrainId: number,
+	crossBlendFactor: number,
+): [number, number, number, number] {
+	const n = cell.corners.length;
+	const isWaterHex = cell.heightLevel <= 1;
+
+	// Per-vertex cliff proximity + cliff neighbor terrain for water hexes
+	let cliffProx = 0;
+	let cliffNbTerrain = -1;
+	if (borderInfo.hasSteepCliff) {
+		let minCliffDist = Infinity;
+		for (let ei = 0; ei < n; ei++) {
+			if (!borderInfo.steepCliffEdges[ei]) continue;
+			const ea = cell.corners[ei];
+			const eb = cell.corners[(ei + 1) % n];
+			const d = distToSegment(vx, vy, vz, ea.x, ea.y, ea.z, eb.x, eb.y, eb.z);
+			if (d < minCliffDist) {
+				minCliffDist = d;
+				if (isWaterHex) {
+					const cliffNb = findNeighborAcrossEdge(cell, ei, cellById);
+					if (cliffNb) cliffNbTerrain = cliffNb.terrain;
+				}
+			}
+		}
+		if (Number.isFinite(minCliffDist)) {
+			cliffProx = Math.max(0, 1.0 - minCliffDist / (hexRadius * 0.3));
+		}
+		// In mixed hexes (both steep + gentle edges), suppress
+		// cliff proximity near gentle edges so the shader doesn't
+		// draw cliff texture on the gentle-slope faces
+		if (cliffProx > 0 && borderInfo.hasGentleLandEdge) {
+			const gd = distToGentleLandEdge(vx, vy, vz, cell, borderInfo);
+			const gt = Math.min(gd / (hexRadius * 0.35), 1.0);
+			const gentleFade = gt * gt * (3 - 2 * gt);
+			cliffProx *= gentleFade;
+		}
+	}
+
+	// Coast proximity in alpha
+	let alpha = 1.0;
+	if (borderInfo.hasCoast) {
+		const cd = distToCoast(vx, vy, vz, cell, borderInfo);
+		alpha = 0.5 + 0.5 * Math.min(cd / hexRadius, 1.0);
+	}
+
+	// For water hexes with cliff proximity, encode cliff neighbor's terrain
+	// in G channel so shader uses correct cliff palette
+	const effectiveNId = (isWaterHex && cliffProx > 0 && cliffNbTerrain >= 0) ? cliffNbTerrain : chosenNeighborTerrainId;
+	const effectiveBF = (isWaterHex && cliffProx > 0 && cliffNbTerrain >= 0) ? 0.01 : crossBlendFactor;
+	const topColor = getTopFaceColor(cell.terrain, cell.heightLevel, effectiveNId, effectiveBF, cliffProx);
+	return [topColor[0], topColor[1], topColor[2], alpha];
 }

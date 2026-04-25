@@ -45,7 +45,7 @@ import {
 	computeHeightWithCliffErosion,
 	cornerPatchHeight,
 } from './hex-heights';
-import { getTerrainColor, getTopFaceColor } from './vertex-encoding';
+import { getTerrainColor, getTopFaceColor, encodeTopVertexColor } from './vertex-encoding';
 import {
 	SUBDIVISIONS,
 	subdivTriangle,
@@ -178,52 +178,13 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 					const vy = triVerts[j + k * 3 + 1];
 					const vz = triVerts[j + k * 3 + 2];
 
-					// Per-vertex cliff proximity + cliff neighbor terrain for water hexes
-					let cliffProx = 0;
-					let cliffNbTerrain = -1;
-					if (borderInfo.hasSteepCliff) {
-						let minCliffDist = Infinity;
-						for (let ei = 0; ei < n; ei++) {
-							if (!borderInfo.steepCliffEdges[ei]) continue;
-							const ea = cell.corners[ei];
-							const eb = cell.corners[(ei + 1) % n];
-							const d = distToSegment(vx, vy, vz, ea.x, ea.y, ea.z, eb.x, eb.y, eb.z);
-							if (d < minCliffDist) {
-								minCliffDist = d;
-								if (isWaterHex) {
-									const cliffNb = findNeighborAcrossEdge(cell, ei, cellById);
-									if (cliffNb) cliffNbTerrain = cliffNb.terrain;
-								}
-							}
-						}
-						if (Number.isFinite(minCliffDist)) {
-							cliffProx = Math.max(0, 1.0 - minCliffDist / (hexRadius * 0.3));
-						}
-						// In mixed hexes (both steep + gentle edges), suppress
-						// cliff proximity near gentle edges so the shader doesn't
-						// draw cliff texture on the gentle-slope faces
-						if (cliffProx > 0 && borderInfo.hasGentleLandEdge) {
-							const gd = distToGentleLandEdge(vx, vy, vz, cell, borderInfo);
-							const gt = Math.min(gd / (hexRadius * 0.35), 1.0);
-							const gentleFade = gt * gt * (3 - 2 * gt);
-							cliffProx *= gentleFade;
-						}
-					}
-
-					// Coast proximity in alpha
-					let alpha = 1.0;
-					if (borderInfo.hasCoast) {
-						const cd = distToCoast(vx, vy, vz, cell, borderInfo);
-						alpha = 0.5 + 0.5 * Math.min(cd / hexRadius, 1.0);
-					}
-					// For water hexes with cliff proximity, encode cliff neighbor's
-					// terrain in G channel so shader uses correct cliff palette
-					const effectiveNId = (isWaterHex && cliffProx > 0 && cliffNbTerrain >= 0) ? cliffNbTerrain : chosenNId;
-					const effectiveBF = (isWaterHex && cliffProx > 0 && cliffNbTerrain >= 0) ? 0.01 : triBFs[k];
-					const topColor = getTopFaceColor(cell.terrain, cell.heightLevel, effectiveNId, effectiveBF, cliffProx);
+					const rgba = encodeTopVertexColor(
+						cell, vx, vy, vz, borderInfo, cellById, hexRadius,
+						chosenNId, triBFs[k]
+					);
 					positions.push(displaced[k * 3], displaced[k * 3 + 1], displaced[k * 3 + 2]);
 					normals.push(nx, ny, nz);
-					colors.push(topColor[0], topColor[1], topColor[2], alpha);
+					colors.push(rgba[0], rgba[1], rgba[2], rgba[3]);
 					indices.push(vOff++);
 				}
 			}
@@ -597,16 +558,14 @@ export function updateCellTerrain(
 				}
 				for (let k = 0; k < 3; k++) {
 					const vi = (start + i + k) * 4;
-					let alpha = 1.0;
-					if (borderInfo.hasCoast) {
-						const cd = distToCoast(triUVs[k][0], triUVs[k][1], triUVs[k][2], c, borderInfo);
-						alpha = 0.5 + 0.5 * Math.min(cd / hexRadius, 1.0);
-					}
-					const topColor = getTopFaceColor(c.terrain, c.heightLevel, chosenNId, triBFs[k]);
-					colorsBuffer[vi] = topColor[0];
-					colorsBuffer[vi + 1] = topColor[1];
-					colorsBuffer[vi + 2] = topColor[2];
-					colorsBuffer[vi + 3] = alpha;
+					const rgba = encodeTopVertexColor(
+						c, triUVs[k][0], triUVs[k][1], triUVs[k][2],
+						borderInfo, cellById, hexRadius, chosenNId, triBFs[k]
+					);
+					colorsBuffer[vi] = rgba[0];
+					colorsBuffer[vi + 1] = rgba[1];
+					colorsBuffer[vi + 2] = rgba[2];
+					colorsBuffer[vi + 3] = rgba[3];
 				}
 				i += 3;
 			}
