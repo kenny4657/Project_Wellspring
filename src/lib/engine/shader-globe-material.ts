@@ -454,44 +454,76 @@ GLSL_PHASE4_UNIFORMS +
 GLSL_NOISE_VERTEX_SUBSET() +
 GLSL_HEX_HELPERS +
 /* glsl */ `
-// Helper: compute the displaced world position for a given unit-sphere
-// point. Internally calls computeHexLookup + phase5AndPhase6Displacement.
-// Used 3x in main() to derive smooth per-vertex normals via finite
-// difference of the displacement function at tangent offsets.
-//
+// Sample the displacement function at a unit-sphere point. Used by main()
+// to compute analytic face normals via finite difference at tangent offsets.
+// Mutates the g_* globals as a side effect; main() re-runs computeHexLookup
+// at the actual vertex point at the end so any downstream readers see the
+// vertex's own state (currently none, but defensive).
+vec3 sampleDisplaced(vec3 nP) {
+    computeHexLookup(nP);
+    float lvl = (g_hexId >= 0.0) ? sampleHexData(g_hexId).y : 2.0;
+    vec2 d = phase5AndPhase6Displacement(nP, lvl);
+    return nP * (planetRadius * (1.0 + d.x));
+}
+
 void main() {
     // Mesh vertex sits at radius planetRadius (CreateIcoSphere). Normalize
     // to unit sphere for the hex lookup, then re-extrude after computing
     // displacement.
     vec3 normPos = normalize(position);
-    computeHexLookup(normPos);
-    float ownLevel = (g_hexId >= 0.0) ? sampleHexData(g_hexId).y : 2.0;
-    vec2 disp = phase5AndPhase6Displacement(normPos, ownLevel);
-    float h = disp.x;
 
-    vec3 displaced = normPos * (planetRadius * (1.0 + h));
+    // Build a tangent frame around normPos. tan1/tan2 are two orthogonal
+    // unit vectors tangent to the sphere at normPos. Choosing the auxiliary
+    // up-axis based on |normPos.y| avoids cross-product collapse near the
+    // poles.
+    vec3 up = abs(normPos.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 tan1 = normalize(cross(normPos, up));
+    vec3 tan2 = cross(normPos, tan1);
+
+    // Finite-difference offset on the unit sphere. Must be small enough that
+    // tangent samples stay inside the same hex for interior vertices (so the
+    // computed normal is roughly radial there) but large enough to span the
+    // edge ramp on cliff vertices (so the normal tilts tangentially across
+    // the wall and steepness fires). Hex apothem on unit sphere at res=40 is
+    // ~0.012; eps=0.001 stays well inside that.
+    float eps = 0.001;
+
+    // Three samples: own vertex + two tangent offsets.
+    vec3 displaced  = sampleDisplaced(normPos);
+    vec3 displaced1 = sampleDisplaced(normalize(normPos + tan1 * eps));
+    vec3 displaced2 = sampleDisplaced(normalize(normPos + tan2 * eps));
+
+    // Re-run computeHexLookup at the real vertex position so any later
+    // reads of g_* state reflect this vertex (not the second tangent
+    // sample). Currently there are no such readers, but cheap insurance.
+    computeHexLookup(normPos);
+
+    // Cross product of finite-difference tangents = unnormalized surface
+    // normal of the displaced surface at this vertex.
+    //
+    // NaN safety: at hex/face/pentagon seams the displacement function is
+    // discontinuous, which can make the two tangent samples land in
+    // different cells. The resulting cross product can shrink to ~0
+    // (samples landed at heights that produced near-parallel tangents) or
+    // flip direction across the seam. Guard with a length check; fall back
+    // to radial when the cross product is degenerate. Earlier sessions hit
+    // visible black dots from naive cross/normalize without this guard.
+    vec3 e1 = displaced1 - displaced;
+    vec3 e2 = displaced2 - displaced;
+    vec3 nrm = cross(e1, e2);
+    float nrmLen = length(nrm);
+    vec3 faceN = (nrmLen > 1e-8) ? (nrm / nrmLen) : normalize(displaced);
+    // Force outward orientation -- cross-product sign depends on tan1/tan2
+    // chirality which can flip near the auxiliary-axis switch.
+    if (dot(faceN, normPos) < 0.0) faceN = -faceN;
 
     vec4 wp = world * vec4(displaced, 1.0);
     vWorldPos = wp.xyz;
-    // Pass mesh-native radial-out normal. Babylon's CreateIcoSphere gives
-    // us perfectly smooth per-vertex normals; interpolating these across
-    // triangles produces smooth shading on hex tops with NO low-poly facet
-    // appearance and NO NaN dots.
-    //
-    // Why not finite-difference smooth normals: the displacement function
-    // is discontinuous at hex edges (Strategy 3 produces sharp height
-    // step) and at face/pentagon seams. A 3-sample cross product near
-    // those boundaries classifies the offsets into different regions,
-    // generates extreme gradients, and the cross product collapses or
-    // flips -> NaN normalize -> visible black dots scattered across the
-    // terrain. Mesh-native normals are NaN-free.
-    //
-    // Cliff-rock texture firing: the legacy cliff branch gates on
-    // steepness > 0.003. With a radial-out normal that gate never fires,
-    // so we override steepness in the fragment via dFdx of heightAboveR
-    // (a per-fragment scalar gradient that doesn't suffer cross-product
-    // collapse). See GLSL_MAIN_SETUP_NEW.
-    vWorldNormal = normalize((world * vec4(normalize(displaced), 0.0)).xyz);
+    // Analytic face normal of the displaced surface. Hex interiors -> ~radial
+    // (steepness ~0, no cliff paint). Edge-ramp / cliff-wall fragments ->
+    // strongly tangential (steepness ~1, slab rock paints). This restores
+    // the legacy cliff-branch behavior on a smooth icosphere.
+    vWorldNormal = normalize((world * vec4(faceN, 0.0)).xyz);
     vSpherePos = normPos;
     vColor = vec4(0.0);
     gl_Position = viewProjection * wp;
@@ -564,21 +596,17 @@ const GLSL_MAIN_SETUP_NEW = /* glsl */ `
 void main() {
     vec3 P = normalize(vSpherePos);
 
-    // Smooth per-vertex radial-out normal from the mesh, used for lighting.
-    // Stays NaN-free (no finite-difference cross product) and gives smooth
-    // shading across triangles within a hex face -- no low-poly facets,
-    // no scattered black dots.
+    // Analytic face normal of the displaced surface (computed in the
+    // vertex shader via finite-difference at tangent offsets, with a
+    // length-guard radial fallback at seams to avoid NaN dots). This is
+    // ~radial on hex tops and tilts strongly tangential through the edge
+    // ramp -- exactly the behavior the legacy cliff branch expects from
+    // its steepness = 1 - dot(N, radial) gate.
     vec3 N = normalize(vWorldNormal);
 
     bool isWall = false;  // smooth sphere -- no walls
     float distFromCenter = length(vWorldPos);
     float heightAboveR = distFromCenter - planetRadius;
-
-    // Steepness override happens via GLSL_CLIFF_RENDERING_PATCHED, which
-    // replaces the legacy 1 - dot(N, radial) (always ~0 with the radial
-    // smooth normal) with cliffProximity from the 6-neighbor scan below
-    // -- a clean geometric "near a real tier edge" signal that conforms
-    // to hex transitions.
 
     vec3 procColor;
 
@@ -755,28 +783,12 @@ const GLSL_WATER_OVERRIDE_LAST = /* glsl */ `
 // block; the very last `}` is the else-block close.
 const GLSL_BEACH_OVERLAY_NO_CLOSE = GLSL_BEACH_OVERLAY.replace(/\}\s*$/, '');
 
-// Patch GLSL_CLIFF_RENDERING: the legacy chunk computes
-//   steepness = 1.0 - dot(N, normalize(vWorldPos));
-// which is correct for the per-hex-prism mesh whose vertex normals
-// reflect actual face orientation. For the smooth icosphere, vWorldNormal
-// is radial-out (passed by the vertex shader to avoid NaN dots), so that
-// formula always yields ~0 and the slab-rock branch never fires.
-//
-// Earlier attempt: dFdx/dFdy of heightAboveR. Lit up every fragment where
-// height was changing -- including interior noise -- producing smeared
-// swirling brown blobs that didn't follow hex tier edges.
-//
-// Use cliffProximity instead. It's computed in GLSL_MAIN_SETUP_NEW from
-// the 6-neighbor scan: =1.0 right at a real tier-transition edge between
-// adjacent hexes, falls linearly to 0 toward the hex interior. That's
-// exactly the geometric "is this fragment on a cliff face" signal the
-// legacy steepness was approximating with the prism-wall normal trick.
-// Result: slab-rock texture fires on real hex-tier-transition cliff
-// faces (matching legacy crisp rocky walls), not on interior bumps.
-const GLSL_CLIFF_RENDERING_PATCHED = GLSL_CLIFF_RENDERING.replace(
-	'float steepness = 1.0 - dot(N, normalize(vWorldPos));',
-	'float steepness = cliffProximity;',
-);
+// Use legacy GLSL_CLIFF_RENDERING verbatim. The vertex shader now passes
+// the analytic face normal of the displaced surface as vWorldNormal, so
+// the legacy `steepness = 1 - dot(N, radial)` formula works exactly as
+// intended: ~0 on hex tops (N=radial), ~1 on cliff-wall fragments
+// (N=tangential through the edge ramp). Slab-rock paints only the wall.
+const GLSL_CLIFF_RENDERING_PATCHED = GLSL_CLIFF_RENDERING;
 
 const FRAGMENT =
 	GLSL_NOISE +
