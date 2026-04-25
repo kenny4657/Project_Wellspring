@@ -69,9 +69,6 @@ import type { HexDataTextures } from './hex-data-textures';
 // vertex via GLSL_VERTEX_NOISE_SUBSET below).
 const GLSL_PHASE4_UNIFORMS = /* glsl */ `
 varying vec3 vSpherePos;
-// Per-vertex cliff-wall mask, computed in vertex shader inside
-// phase5AndPhase6Displacement. Drives rock paint in fragment.
-varying float vWallness;
 
 // Phase 1 data textures, keyed by hexId (x = id % size, y = floor(id / size)).
 uniform sampler2D terrainTex;
@@ -318,13 +315,8 @@ float tierHeight(float level) {
 //   edgeDistNorm = distance to closest edge / apothem (in [0, 1] inside hex)
 // Pentagons skip the edge math and just sit at their tier height with no
 // noise -- they're the 12 pole hexes and 0% of fragments in practice.
-// Returns vec3(h, edgeDistNorm, cliffActivity).
-// cliffActivity = (1 - smoothstep(0, 0.15, edgeDistNorm)) *
-//                  smoothstep(0, 0.008, |neighborTierH - ownTierH|)
-// i.e. >0 only on cliff-ramp vertices that face a real tier-transition
-// neighbor. Passed through to fragment as vWallness for rock paint.
-vec3 phase5AndPhase6Displacement(vec3 P, float ownLevel) {
-    if (g_hexId < 0.0) return vec3(0.0, 1.0, 0.0); // safe fallback
+vec2 phase5AndPhase6Displacement(vec3 P, float ownLevel) {
+    if (g_hexId < 0.0) return vec2(0.0, 1.0); // safe fallback
 
     // Water hexes (heightLevel 0 or 1) collapse to a single uniform depth
     // just below sea level. Two reasons:
@@ -346,7 +338,7 @@ vec3 phase5AndPhase6Displacement(vec3 P, float ownLevel) {
     float ownH = ownIsWater ? WATER_FLAT_DEPTH : tierHeight(ownLevel);
 
     if (g_isPentagon) {
-        return vec3(ownH, 1.0, 0.0);
+        return vec2(ownH, 1.0);
     }
 
     float r = 0.5 / (resolution + 1.0);
@@ -433,7 +425,7 @@ vec3 phase5AndPhase6Displacement(vec3 P, float ownLevel) {
         }
     }
 
-    return vec3(h, edgeDistNorm, cliffActivity);
+    return vec2(h, edgeDistNorm);
 }
 `;
 
@@ -456,13 +448,17 @@ varying vec3 vWorldNormal;
 // vSpherePos is declared in GLSL_PHASE4_UNIFORMS; vColor is declared in
 // GLSL_NOISE_VERTEX_SUBSET via the legacy varying alias. Both must be
 // matched in vertex and fragment for the WebGL2 link to succeed.
-// vWallness is declared in GLSL_PHASE4_UNIFORMS (shared with fragment).
 varying vec4 vColor;
 ` +
 GLSL_PHASE4_UNIFORMS +
 GLSL_NOISE_VERTEX_SUBSET() +
 GLSL_HEX_HELPERS +
 /* glsl */ `
+// Helper: compute the displaced world position for a given unit-sphere
+// point. Internally calls computeHexLookup + phase5AndPhase6Displacement.
+// Used 3x in main() to derive smooth per-vertex normals via finite
+// difference of the displacement function at tangent offsets.
+//
 void main() {
     // Mesh vertex sits at radius planetRadius (CreateIcoSphere). Normalize
     // to unit sphere for the hex lookup, then re-extrude after computing
@@ -470,17 +466,31 @@ void main() {
     vec3 normPos = normalize(position);
     computeHexLookup(normPos);
     float ownLevel = (g_hexId >= 0.0) ? sampleHexData(g_hexId).y : 2.0;
-    vec3 disp = phase5AndPhase6Displacement(normPos, ownLevel);
+    vec2 disp = phase5AndPhase6Displacement(normPos, ownLevel);
     float h = disp.x;
-    vWallness = disp.z;
 
     vec3 displaced = normPos * (planetRadius * (1.0 + h));
 
     vec4 wp = world * vec4(displaced, 1.0);
     vWorldPos = wp.xyz;
-    // Mesh-native radial-out normal. Smooth across triangles, NaN-free.
-    // The cliff-rock paint no longer depends on a steepness signal in
-    // fragment; the per-vertex vWallness varying drives it directly.
+    // Pass mesh-native radial-out normal. Babylon's CreateIcoSphere gives
+    // us perfectly smooth per-vertex normals; interpolating these across
+    // triangles produces smooth shading on hex tops with NO low-poly facet
+    // appearance and NO NaN dots.
+    //
+    // Why not finite-difference smooth normals: the displacement function
+    // is discontinuous at hex edges (Strategy 3 produces sharp height
+    // step) and at face/pentagon seams. A 3-sample cross product near
+    // those boundaries classifies the offsets into different regions,
+    // generates extreme gradients, and the cross product collapses or
+    // flips -> NaN normalize -> visible black dots scattered across the
+    // terrain. Mesh-native normals are NaN-free.
+    //
+    // Cliff-rock texture firing: the legacy cliff branch gates on
+    // steepness > 0.003. With a radial-out normal that gate never fires,
+    // so we override steepness in the fragment via dFdx of heightAboveR
+    // (a per-fragment scalar gradient that doesn't suffer cross-product
+    // collapse). See GLSL_MAIN_SETUP_NEW.
     vWorldNormal = normalize((world * vec4(normalize(displaced), 0.0)).xyz);
     vSpherePos = normPos;
     vColor = vec4(0.0);
@@ -564,6 +574,12 @@ void main() {
     float distFromCenter = length(vWorldPos);
     float heightAboveR = distFromCenter - planetRadius;
 
+    // Steepness override happens via GLSL_CLIFF_RENDERING_PATCHED, which
+    // replaces the legacy 1 - dot(N, radial) (always ~0 with the radial
+    // smooth normal) with cliffProximity from the 6-neighbor scan below
+    // -- a clean geometric "near a real tier edge" signal that conforms
+    // to hex transitions.
+
     vec3 procColor;
 
     if (isWall) {
@@ -577,6 +593,51 @@ void main() {
         // ~AMP of an edge see the noise potentially flip them to the
         // neighbor. Result: coastlines, biome borders, and cliff lines
         // are all wavy rather than hex-aligned.
+        // Unperturbed lookup FIRST -- captures clean distance to the closest
+        // CLIFF-TRANSITION edge specifically. Two reasons we have to do
+        // this in unperturbed-P space and only consider cliff edges:
+        //
+        //   1. Boundary-noise amp (0.004) is wider than the rock band width
+        //      (15% of apothem). Computing edge distance off the perturbed
+        //      lookup makes the rock band wander with the noise field
+        //      instead of following the real hex edge.
+        //
+        //   2. We can't just take "distance to closest hex edge of any kind"
+        //      either. A fragment well inside a cliff hex but close to a
+        //      same-tier neighbor edge would falsely register as a wall
+        //      fragment. The gate must specifically measure "distance to
+        //      the nearest edge that has a real height-tier transition".
+        //
+        // Same cliff-classifier rules as legacy hex-borders.ts:classifyEdge:
+        //   water<->land where land tier > 2  OR  land<->land delta >= 2
+        // Color/biome lookups still use the perturbed P below so coastlines
+        // and biome edges stay wavy.
+        computeHexLookup(P);
+        float cleanCliffEdgeDistN = 1.0;
+        if (g_hexId >= 0.0) {
+            int cleanLvl = int(sampleHexData(g_hexId).y);
+            bool cleanW = (cleanLvl <= 1);
+            float rClean = 0.5 / (resolution + 1.0);
+            float minCliffEd = 1e30;
+            for (int k = 0; k < 6; k++) {
+                float ang = float(k) * (3.14159265 / 3.0);
+                vec2 nrm = vec2(cos(ang), sin(ang));
+                float ed = rClean - dot(g_P2D - g_self_2d, nrm);
+                float ndN = neighborIdAtEdge(k);
+                if (ndN < 0.0) continue;
+                int nH = int(sampleHexData(ndN).y);
+                bool nIsW = (nH <= 1);
+                bool isCliff = false;
+                if (cleanW && !nIsW) isCliff = (nH > 2);
+                else if (!cleanW && nIsW) isCliff = (cleanLvl > 2);
+                else if (!cleanW && !nIsW) isCliff = (abs(nH - cleanLvl) >= 2);
+                if (isCliff && ed < minCliffEd) minCliffEd = ed;
+            }
+            if (minCliffEd < 1e29) {
+                cleanCliffEdgeDistN = clamp(minCliffEd / rClean, 0.0, 1.0);
+            }
+        }
+
         vec3 boundaryNoise = vec3(
             snoise(P * 80.0),
             snoise(P * 80.0 + vec3(100.0, 0.0, 0.0)),
@@ -735,56 +796,29 @@ const GLSL_WATER_OVERRIDE_LAST = /* glsl */ `
 // block; the very last `}` is the else-block close.
 const GLSL_BEACH_OVERLAY_NO_CLOSE = GLSL_BEACH_OVERLAY.replace(/\}\s*$/, '');
 
-// New cliff chunk -- replaces legacy GLSL_CLIFF_RENDERING entirely.
+// Patch GLSL_CLIFF_RENDERING: legacy steepness = 1 - dot(N, radial) only
+// works on a prism mesh (wall verts have N tangential, top verts have N
+// radial). On a smooth icosphere vWorldNormal is ~radial everywhere, so
+// the formula yields ~0 and the slab-rock branch never fires.
 //
-// Why not the legacy chunk: it gates the rock branch on
-// `steepness = 1 - dot(N, normalize(vWorldPos))`, which assumes a prism
-// mesh whose wall vertices have tangential normals. On a smooth icosphere
-// vWorldNormal is essentially radial everywhere, so legacy steepness is
-// ~0 and the rock never paints. Every fragment-side substitute I tried
-// (dFdx of heightAboveR, cliffProximity, edge-distance, analytic face
-// normal via finite difference) failed: smear, NaN dots, ribbon-shape
-// drift from boundary noise.
+// Goal: paint rock as a thin crisp strip exactly along hex tier-transition
+// edges, never on hex tops. We don't need a real surface-normal signal --
+// the wall is geometrically the last 15% of edge distance (Strategy 3
+// ramp), so gating on edge-distance does the same job and is bulletproof:
+//   - no NaN risk (no cross-products)
+//   - no dFdx smearing (not screen-space)
+//   - rock is structurally confined to the edge band, never spills onto
+//     hex tops the way cliffProximity-based gating did
 //
-// New approach: vertex shader already computes a per-vertex
-// `cliffActivity` inside phase5AndPhase6Displacement -- the product of
-// edge-ramp proximity and tier-transition magnitude. Pass it as the
-// `vWallness` varying, interpolate across triangles. Fragment uses it
-// directly as the rock-paint mask. No NaN, no perturbation interaction,
-// rock stays exactly on the cliff geometry.
-//
-// `waterCliffBlend` is also exposed as a local because GLSL_BEACH_OVERLAY
-// reads it. Same legacy COAST_FOOT_FULL/FADE/AMOUNT constants for the
-// foot-sand blend keep beach-to-cliff continuity consistent with legacy.
-const GLSL_CLIFF_RENDERING_NEW = /* glsl */ `
-        float waterCliffBlend = 0.0;
-        if (vWallness > 0.005) {
-            int cliffPalId = hasCrossBlend ? neighborId : terrainId;
-            vec3 cliffLight = cliffPalette[cliffPalId * 3];
-            vec3 cliffDark  = cliffPalette[cliffPalId * 3 + 1];
-            vec3 cliffPale  = cliffPalette[cliffPalId * 3 + 2];
-
-            float rockN1 = snoise(vWorldPos * 0.012) * 0.5 + 0.5;
-            float rockN2 = snoise(vWorldPos * 0.045) * 0.5 + 0.5;
-            vec3 rockColor = mix(cliffLight, cliffDark, rockN1);
-            rockColor = mix(rockColor, cliffPale, smoothstep(0.62, 0.92, rockN2) * 0.55);
-            rockColor += snoise(vWorldPos * 0.006) * 0.025;
-
-            float footAmt = 1.0 - smoothstep(
-                COAST_FOOT_FULL * planetRadius,
-                COAST_FOOT_FADE * planetRadius,
-                heightAboveR
-            );
-            float footNoise = snoise(vWorldPos * 0.010) * 0.30
-                            + snoise(vWorldPos * 0.035) * 0.15;
-            footAmt = clamp(footAmt + footNoise, 0.0, 1.0);
-            rockColor = mix(rockColor, beachColor * 0.82, footAmt * COAST_FOOT_AMOUNT);
-
-            float rockMix = smoothstep(0.05, 0.45, vWallness);
-            procColor = mix(procColor, rockColor, rockMix);
-            waterCliffBlend = rockMix;
-        }
-`;
+// `cliffEdgeDistN` is computed in GLSL_MAIN_SETUP_NEW above from the 6-
+// neighbor scan -- 0 right at the closest hex edge, 1 at hex center.
+// Steepness becomes 1 at the edge, 0 by the time we're 15% in toward the
+// hex center. The legacy chunk's downstream `cliffProximity > 0.01` gate
+// still ensures we only paint where a real tier transition exists.
+const GLSL_CLIFF_RENDERING_PATCHED = GLSL_CLIFF_RENDERING.replace(
+	'float steepness = 1.0 - dot(N, normalize(vWorldPos));',
+	'float steepness = 1.0 - smoothstep(0.0, 0.18, cleanCliffEdgeDistN);',
+);
 
 const FRAGMENT =
 	GLSL_NOISE +
@@ -794,7 +828,7 @@ const FRAGMENT =
 	GLSL_PALETTE +
 	GLSL_HEX_HELPERS +
 	GLSL_MAIN_SETUP_NEW +
-	GLSL_CLIFF_RENDERING_NEW +
+	GLSL_CLIFF_RENDERING_PATCHED +
 	GLSL_BEACH_OVERLAY_NO_CLOSE +
 	GLSL_WATER_OVERRIDE_LAST +
 	'\n}\n' +              // close the else block
