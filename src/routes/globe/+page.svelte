@@ -26,9 +26,9 @@
 	let perf = $state({ fps: 0, frameMs: 0, gpuFrameMs: 0, drawCalls: 0, vertexCount: 0, meshBuildMs: 0, totalBuildMs: 0 });
 	let perfTimer: ReturnType<typeof setInterval> | null = null;
 
-	// Phase 0/2 — render mode + benchmark UI state
-	let renderMode = $state<'legacy' | 'shader-preview'>('legacy');
-	let shaderDebugMode = $state<0 | 1 | 2>(0);
+	// Phase 0/1/2/3 — render mode + benchmark UI state
+	let renderMode = $state<'legacy' | 'shader-preview' | 'shader-debug'>('legacy');
+	let shaderDebugMode = $state<0 | 1 | 2 | 3 | 4 | 5>(0);
 	let benchProgress = $state<number | null>(null);
 	let benchResult = $state<null | { frames: number; minMs: number; medianMs: number; p99Ms: number; meanMs: number; gpuMedianMs: number }>(null);
 
@@ -156,24 +156,29 @@
 				Inspect mode (click hex for ID)
 			</label>
 
-			<!-- Render mode (Phase 0): Legacy vs Shader (preview).
-			     Shader (preview) shows the Phase 2 hex-ID heat map. -->
+			<!-- Render mode:
+			     Legacy        -- per-hex prism mesh, real biome shading.
+			     Shader        -- Phase 3 smooth icosphere with flat material.
+			     Shader debug  -- same sphere + Phase 2 / Phase 1 visualizations. -->
 			<label class="block text-xs mt-2">
 				<span class="text-[#A09890]">Render mode</span>
 				<select bind:value={renderMode} onchange={onRenderModeChange}
 					class="block w-full mt-0.5 px-1 py-0.5 bg-[#1E1B18] border border-[rgba(255,255,255,0.1)] text-[#E8DFD0] text-xs rounded">
 					<option value="legacy">Legacy</option>
 					<option value="shader-preview">Shader (preview)</option>
+					<option value="shader-debug">Shader (debug)</option>
 				</select>
 			</label>
-			{#if renderMode === 'shader-preview'}
+			{#if renderMode === 'shader-debug'}
 				<label class="block text-xs">
-					<span class="text-[#A09890]">Heat-map output</span>
+					<span class="text-[#A09890]">Debug visualization</span>
 					<select bind:value={shaderDebugMode} onchange={onShaderDebugChange}
 						class="block w-full mt-0.5 px-1 py-0.5 bg-[#1E1B18] border border-[rgba(255,255,255,0.1)] text-[#E8DFD0] text-xs rounded">
 						<option value={0}>Hex ID hash</option>
 						<option value={1}>Face index (0-19)</option>
 						<option value={2}>(i, j) heatmap</option>
+						<option value={4}>Terrain from texture</option>
+						<option value={5}>Height from texture</option>
 					</select>
 				</label>
 			{/if}

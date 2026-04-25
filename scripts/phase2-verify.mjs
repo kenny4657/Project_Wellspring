@@ -41,7 +41,9 @@ await page.goto(URL, { waitUntil: 'networkidle', timeout: 90000 });
 await page.waitForFunction(() => !document.querySelector('.loading-bar'), { timeout: 90000 });
 await page.waitForTimeout(2500);
 
-await page.selectOption('select', 'shader-preview');
+// Phase 3 split: shader-preview now means "Phase 3 flat sphere"; the
+// hex-ID debug material lives behind the "shader-debug" render mode.
+await page.selectOption('select', 'shader-debug');
 await page.evaluate(() => window.__globeEngine.setShaderDebugMode(3));
 await page.waitForTimeout(500);
 

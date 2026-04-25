@@ -36,12 +36,15 @@ import { TERRAIN_TYPES, type TerrainTypeId, type TerrainSettings } from '$lib/wo
 import { createGpuFrameTimer, type GpuFrameTimer } from '$lib/engine/perf-gpu-timer';
 import { runBenchmark, type BenchmarkResult } from '$lib/engine/benchmark';
 import { createHexIdLookup, pickHexByFaceGrid } from '$lib/engine/hex-id-lookup';
-import { createShaderGlobeDebugMaterial, setShaderGlobeDebugMode } from '$lib/engine/shader-globe-debug-material';
+import { createShaderGlobeDebugMaterial, setShaderGlobeDebugMode, type ShaderGlobeDebugMode } from '$lib/engine/shader-globe-debug-material';
+import { createHexDataTextures, updateHex as updateHexDataTextures, disposeHexDataTextures } from '$lib/engine/hex-data-textures';
+import { createShaderGlobeMesh } from '$lib/engine/shader-globe-mesh';
+import { createShaderGlobeMaterial } from '$lib/engine/shader-globe-material';
 
 /** Icosphere resolution — controls hex count. Total ~ 10 * res² + 2 */
 const ICO_RESOLUTION = 40;
 
-export type RenderMode = 'legacy' | 'shader-preview';
+export type RenderMode = 'legacy' | 'shader-preview' | 'shader-debug';
 
 export interface GlobeEngine {
 	dispose(): void;
@@ -49,18 +52,24 @@ export interface GlobeEngine {
 	setHexTerrain(cellIndex: number, terrain: TerrainTypeId): void;
 	setGridVisible(visible: boolean): void;
 	setTerrainSettings(settings: TerrainSettings): void;
-	/** Switch which renderer is showing. Phase 0/2 — only legacy is fully featured.
-	 *  shader-preview shows the Phase 2 hex-ID heat map on a smooth sphere. */
+	/** Switch which renderer is showing.
+	 *  legacy = per-hex prism mesh with biome shading (the original).
+	 *  shader-preview = Phase 3 smooth icosphere with shader-globe-material.
+	 *  shader-debug   = same smooth icosphere with shader-globe-debug-material
+	 *                   (Phase 2 hex ID heat-maps, Phase 1 texture validation). */
 	setRenderMode(mode: RenderMode): void;
-	/** Set heat-map output mode for shader-preview:
-	 *  0 = id hash, 1 = face index, 2 = (i,j), 3 = raw ID bits (for verification). */
-	setShaderDebugMode(mode: 0 | 1 | 2 | 3): void;
+	/** Set heat-map output mode for shader-debug:
+	 *  0 = id hash, 1 = face index, 2 = (i,j), 3 = raw ID bits,
+	 *  4 = terrain from texture, 5 = height from texture. */
+	setShaderDebugMode(mode: ShaderGlobeDebugMode): void;
 	/** Run the 8-waypoint benchmark and resolve with min/median/p99 frame ms. */
 	runBenchmark(opts?: { onProgress?: (t: number) => void }): Promise<BenchmarkResult>;
 	/** CPU-side hex pick for the current pointer pos (nearest cell.center). */
 	pickHexAt(sx: number, sy: number): number;
 	/** CPU mirror of GLSL face-grid lookup. Used by phase2-verify.mjs. */
 	pickHexByFaceGridAt(sx: number, sy: number): number;
+	/** Phase 1 byte-level integrity check; see implementation for details. */
+	_phase1DataIntegrity(): { totalCells: number; mismatches: number };
 	readonly hexCount: number;
 	readonly cells: HexCell[];
 	readonly renderMode: RenderMode;
@@ -192,24 +201,35 @@ export async function createGlobeEngine(
 	const edgeLines = buildHexEdgeLines(cells, EARTH_RADIUS_KM, scene);
 	edgeLines.setEnabled(false); // off by default — Sota style uses geometry, not grid lines
 
-	// ── Phase 2 spike: shader-preview hex-ID heat map ───────
-	// Builds a (face, i, j) → cellId lookup texture and a smooth sphere
-	// rendered with the debug material. Hidden until setRenderMode('shader-preview').
+	// ── Phase 1: per-hex data textures ──────────────────────
+	// Three RGBA8 textures (terrain / height / owner) keyed by hexId. The
+	// shader-driven renderer pulls per-hex info from these instead of from
+	// per-vertex attributes, so painting a hex becomes a single texel write.
+	report('Building Phase 1 hex-data textures...');
+	await tick();
+	const hexData = createHexDataTextures(cells, scene);
+
+	// ── Phase 2: hex-ID lookup texture + face data ──────────
 	report('Building Phase 2 hex-ID lookup...');
 	await tick();
 	const hexLookup = createHexIdLookup(grid, scene);
-	const debugMat = createShaderGlobeDebugMaterial(scene, { lookup: hexLookup, resolution: ICO_RESOLUTION });
-	// Slightly larger than mean planet radius so it's visible when toggled on
-	// without depth-fighting the legacy mesh (which we hide anyway in shader-preview).
-	const debugSphere = MeshBuilder.CreateSphere('shaderDebugSphere', {
-		diameter: EARTH_RADIUS_KM * 2 * 1.001,
-		segments: 96,
-	}, scene);
-	debugSphere.material = debugMat;
-	debugSphere.isPickable = false;
-	debugSphere.setEnabled(false);
 
-	report(`Globe ready: ${cells.length} cells, ${globeMesh.getTotalVertices().toLocaleString()} vertices`);
+	// ── Phase 3: smooth-icosphere mesh + flat-color material ─
+	// Single mesh, two materials. shader-preview uses the production-bound
+	// shader-globe-material (flat color today, full biome shading in Phase 4).
+	// shader-debug swaps in the debug material so we can run hex-ID heat
+	// maps and Phase 1 texture validation on the same geometry.
+	report('Building Phase 3 shader-globe mesh...');
+	await tick();
+	const shaderGlobe = createShaderGlobeMesh(EARTH_RADIUS_KM, scene);
+	const shaderGlobeMat = createShaderGlobeMaterial(scene, { hexLookup, hexData, planetRadiusKm: EARTH_RADIUS_KM });
+	const debugMat = createShaderGlobeDebugMaterial(scene, {
+		lookup: hexLookup,
+		resolution: ICO_RESOLUTION,
+		hexData,
+	});
+
+	report(`Globe ready: ${cells.length} cells, ${globeMesh.getTotalVertices().toLocaleString()} legacy verts, ${shaderGlobe.vertexCount.toLocaleString()} shader-globe verts`);
 
 	// ── Picking / Painting ──────────────────────────────────
 	// Pick against the lightweight pickSphere instead of the 5M-vertex globe mesh.
@@ -278,16 +298,17 @@ export async function createGlobeEngine(
 		if (mode === 'legacy') {
 			globeMesh.setEnabled(true);
 			waterSphere.setEnabled(true);
-			debugSphere.setEnabled(false);
-			// Re-attach FXAA. attachPostProcess is idempotent.
+			shaderGlobe.mesh.setEnabled(false);
 			camera.attachPostProcess(fxaa);
 		} else {
-			// shader-preview: hide legacy land + water; show only the debug sphere.
-			// Detach FXAA so the raw ID bits in mode-3 pixels aren't averaged
-			// into neighbors — phase2-verify.mjs needs unfiltered output.
+			// shader-preview / shader-debug both render the new sphere only.
+			// FXAA off in either case: the debug material's mode-3 raw ID bits
+			// must not be filtered, and the Phase 3 flat color benefits from
+			// crisp edges while we're confirming the mesh shape.
 			globeMesh.setEnabled(false);
 			waterSphere.setEnabled(false);
-			debugSphere.setEnabled(true);
+			shaderGlobe.mesh.setEnabled(true);
+			shaderGlobe.mesh.material = (mode === 'shader-debug') ? debugMat : shaderGlobeMat;
 			camera.detachPostProcess(fxaa);
 		}
 	}
@@ -324,6 +345,11 @@ export async function createGlobeEngine(
 		waterMat.setVector3('sunDir', sunDirVec);
 		waterMat.setFloat('cameraNear', camera.minZ);
 		waterMat.setFloat('cameraFar', camera.maxZ);
+		// Phase 3 material: only sunDir matters today. Push it every frame so
+		// the diffuse term tracks the camera-following light. Use setVector3
+		// (not setFloats) -- setFloats with 3 elements goes to glUniform1fv,
+		// which only works for arrays, not bare vec3 uniforms.
+		shaderGlobeMat.setVector3('sunDir', sunDirVec);
 		scene.render();
 		gpuTimer?.end();
 	});
@@ -336,12 +362,13 @@ export async function createGlobeEngine(
 		dispose() {
 			window.removeEventListener('resize', onResize);
 			gpuTimer?.dispose();
+			disposeHexDataTextures(hexData);
 			scene.dispose();
 			engine.dispose();
 		},
 
 		setRenderMode(mode: RenderMode) { applyRenderMode(mode); },
-		setShaderDebugMode(mode: 0 | 1 | 2 | 3) { setShaderGlobeDebugMode(debugMat, mode); },
+		setShaderDebugMode(mode: ShaderGlobeDebugMode) { setShaderGlobeDebugMode(debugMat, mode); },
 		runBenchmark(opts) {
 			return new Promise<BenchmarkResult>((resolve) => {
 				runBenchmark({
@@ -354,6 +381,18 @@ export async function createGlobeEngine(
 			});
 		},
 		pickHexAt(sx: number, sy: number) { return pickHex(sx, sy); },
+		/** Phase 1 validation hook: returns true iff every cell's terrain and
+		 *  heightLevel match the bytes in the data textures' CPU mirrors. */
+		_phase1DataIntegrity() {
+			let mismatches = 0;
+			for (let i = 0; i < cells.length; i++) {
+				const c = cells[i];
+				const idx = c.id * 4;
+				if (hexData._terrainData[idx] !== c.terrain) mismatches++;
+				if (hexData._heightData[idx] !== c.heightLevel) mismatches++;
+			}
+			return { totalCells: cells.length, mismatches };
+		},
 		pickHexByFaceGridAt(sx: number, sy: number) {
 			const result = scene.pick(sx, sy, (m) => m === pickSphere);
 			if (!result?.hit || !result.pickedPoint) return -1;
@@ -368,8 +407,13 @@ export async function createGlobeEngine(
 		},
 
 		setHexTerrain(cellIndex: number, terrain: TerrainTypeId) {
-			cells[cellIndex].terrain = TERRAIN_TYPES[terrain];
+			const c = cells[cellIndex];
+			c.terrain = TERRAIN_TYPES[terrain];
+			// Legacy mesh: re-encode the cell's vertex range with the new color.
 			updateCellTerrain(globeMesh, cells, cellIndex, vertexStarts, totalVerticesPerCell, EARTH_RADIUS_KM, colorsBuffer, positionsBuffer);
+			// Phase 1 textures: one texel write (currently a full re-upload;
+			// see hex-data-textures.ts for the Phase 7 sub-rect upgrade note).
+			updateHexDataTextures(hexData, c.id, c.terrain, c.heightLevel);
 		},
 
 		setGridVisible(visible: boolean) {

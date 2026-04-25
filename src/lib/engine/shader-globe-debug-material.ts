@@ -31,6 +31,7 @@ import { ShaderMaterial } from '@babylonjs/core/Materials/shaderMaterial';
 import { ShaderStore } from '@babylonjs/core/Engines/shaderStore';
 import type { Scene } from '@babylonjs/core/scene';
 import type { HexIdLookup } from './hex-id-lookup';
+import type { HexDataTextures } from './hex-data-textures';
 
 const VERTEX = /* glsl */ `
 precision highp float;
@@ -72,6 +73,12 @@ uniform float outputMode;
 uniform vec3 pentagonVert[12];
 uniform float pentagonId[12];
 uniform float pentagonThreshold;
+
+// Phase 1 data textures. Output modes 4, 5 sample these so we can confirm
+// the texture layout matches cells[*].terrain / cells[*].heightLevel.
+uniform sampler2D terrainTex;
+uniform sampler2D heightTex;
+uniform float dataTexSize;       // side length of the three data textures
 
 varying vec3 vSpherePos;
 
@@ -233,7 +240,7 @@ void main() {
         return;
     }
 
-    if (outputMode > 2.5) {
+    if (outputMode > 2.5 && outputMode < 3.5) {
         // Mode 3: raw ID bits in RGB. Used by phase2-verify.mjs to compare
         // GLSL output with CPU pickHex *exactly*, bypassing hash precision.
         if (id < 0.0) { gl_FragColor = vec4(1.0, 0.0, 1.0, 1.0); return; }
@@ -241,6 +248,44 @@ void main() {
         float mid = mod(floor(id / 256.0), 256.0);
         float high = floor(id / 65536.0);
         gl_FragColor = vec4(low / 255.0, mid / 255.0, high / 255.0, 1.0);
+        return;
+    }
+
+    if (outputMode > 3.5 && outputMode < 4.5) {
+        // Mode 4 (Phase 1 validation): terrain color from terrain texture.
+        // Sample terrainTex at pixel (id % size, id / size).R = terrain id,
+        // map id 0-9 to a fixed palette so we can spot-check against the
+        // legacy mesh's actual rendering at the same world pixel.
+        if (id < 0.0) { gl_FragColor = vec4(1.0, 0.0, 1.0, 1.0); return; }
+        float fx = (mod(id, dataTexSize) + 0.5) / dataTexSize;
+        float fy = (floor(id / dataTexSize) + 0.5) / dataTexSize;
+        float terrainId = floor(texture2D(terrainTex, vec2(fx, fy)).r * 255.0 + 0.5);
+        // Validation palette -- distinct hues per terrain type. Doesn't have
+        // to match the real biome colors; the point is per-region uniformity.
+        vec3 c = vec3(0.0);
+        if (terrainId < 0.5) c = vec3(0.05, 0.10, 0.40); // 0 deep ocean
+        else if (terrainId < 1.5) c = vec3(0.20, 0.40, 0.70); // 1 shallow ocean
+        else if (terrainId < 2.5) c = vec3(0.30, 0.55, 0.80); // 2 coast
+        else if (terrainId < 3.5) c = vec3(0.50, 0.70, 0.85); // 3 lake
+        else if (terrainId < 4.5) c = vec3(0.45, 0.65, 0.30); // 4 plains
+        else if (terrainId < 5.5) c = vec3(0.30, 0.55, 0.20); // 5 grassland
+        else if (terrainId < 6.5) c = vec3(0.78, 0.70, 0.45); // 6 desert
+        else if (terrainId < 7.5) c = vec3(0.40, 0.50, 0.30); // 7 swamp
+        else if (terrainId < 8.5) c = vec3(0.78, 0.78, 0.85); // 8 tundra
+        else c = vec3(0.55, 0.45, 0.32);                       // 9 hills
+        gl_FragColor = vec4(c, 1.0);
+        return;
+    }
+
+    if (outputMode > 4.5) {
+        // Mode 5 (Phase 1 validation): height level from height texture.
+        // R channel encodes 0..4. Visualize as a blue->red gradient.
+        if (id < 0.0) { gl_FragColor = vec4(1.0, 0.0, 1.0, 1.0); return; }
+        float fx = (mod(id, dataTexSize) + 0.5) / dataTexSize;
+        float fy = (floor(id / dataTexSize) + 0.5) / dataTexSize;
+        float level = floor(texture2D(heightTex, vec2(fx, fy)).r * 255.0 + 0.5);
+        float t = level / 4.0;
+        gl_FragColor = vec4(t, 1.0 - abs(t - 0.5) * 2.0, 1.0 - t, 1.0);
         return;
     }
 
@@ -258,6 +303,7 @@ void main() {
 export interface ShaderGlobeDebugOptions {
 	lookup: HexIdLookup;
 	resolution: number;
+	hexData: HexDataTextures;
 }
 
 export function createShaderGlobeDebugMaterial(scene: Scene, opts: ShaderGlobeDebugOptions): ShaderMaterial {
@@ -275,8 +321,9 @@ export function createShaderGlobeDebugMaterial(scene: Scene, opts: ShaderGlobeDe
 			'outputMode',
 			'faceCentroid', 'faceVertA', 'faceVertB', 'faceVertC',
 			'pentagonVert', 'pentagonId', 'pentagonThreshold',
+			'dataTexSize',
 		],
-		samplers: ['hexLookup'],
+		samplers: ['hexLookup', 'terrainTex', 'heightTex'],
 		needAlphaBlending: false,
 	});
 
@@ -305,12 +352,19 @@ export function createShaderGlobeDebugMaterial(scene: Scene, opts: ShaderGlobeDe
 	mat.setFloats('pentagonId', Array.from(lookup.pentagonIds));
 	mat.setFloat('pentagonThreshold', lookup.pentagonThreshold);
 
+	mat.setTexture('terrainTex', opts.hexData.terrain);
+	mat.setTexture('heightTex', opts.hexData.height);
+	mat.setFloat('dataTexSize', opts.hexData.size);
+
 	mat.backFaceCulling = true;
 	return mat;
 }
 
 /** Switch the heat-map mode at runtime.
- *  0 = id-color hash, 1 = face index, 2 = (i,j) heatmap, 3 = raw ID bits (verifier). */
-export function setShaderGlobeDebugMode(mat: ShaderMaterial, mode: 0 | 1 | 2 | 3): void {
+ *  0 = id-color hash, 1 = face index, 2 = (i,j) heatmap, 3 = raw ID bits,
+ *  4 = terrain from texture (Phase 1 validation),
+ *  5 = height from texture (Phase 1 validation). */
+export type ShaderGlobeDebugMode = 0 | 1 | 2 | 3 | 4 | 5;
+export function setShaderGlobeDebugMode(mat: ShaderMaterial, mode: ShaderGlobeDebugMode): void {
 	mat.setFloat('outputMode', mode);
 }
