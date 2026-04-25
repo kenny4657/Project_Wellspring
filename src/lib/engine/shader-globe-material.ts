@@ -100,6 +100,14 @@ uniform float cliffNoiseAmp;     // peak displacement at cliff edge, fraction of
 uniform float cliffNoiseFreq;    // 3D noise frequency (1/units in normalized sphere space)
 uniform float cliffStrataAmp;    // stratification ridge amplitude
 uniform float cliffStrataFreq;   // stratification frequency along altitude
+
+// Interior surface noise. Legacy globe-mesh applies fbm noise to every
+// vertex (hex-heights.ts: NOISE_AMP=0.008, NOISE_SCALE=35). Without it
+// hex tops are perfectly flat -- visible as "no small variation in
+// height" the user flagged. We replicate it on the smooth sphere so
+// land and water hexes get the same continuous bumpiness as legacy.
+uniform float interiorNoiseAmp;  // peak displacement on hex tops, fraction of planetRadius
+uniform float interiorNoiseFreq; // matches legacy NOISE_SCALE (~35)
 `;
 
 // ── GLSL_HEX_HELPERS ────────────────────────────────────────
@@ -340,6 +348,21 @@ vec2 phase5AndPhase6Displacement(vec3 P, float ownLevel) {
     float t = smoothstep(0.0, 0.15, edgeDistNorm);
     float strategyH = mix(nbH, ownH, t);
     float h = strategyH;
+
+    // Interior surface noise (matches legacy hex-heights.ts). Applied to
+    // every vertex, not just at cliff edges -- gives the small variation
+    // legacy mesh has from fbm displacement on every hex top. 3-octave
+    // simplex; water hexes (level 0/1) use abs() so the noise pushes UP
+    // from the seafloor rather than oscillating sea level; land hexes
+    // bias slightly upward (+0.3) to match legacy's land formula.
+    {
+        vec3 iP = P * interiorNoiseFreq;
+        float iN = snoise(iP)         * 0.55
+                 + snoise(iP * 2.07)   * 0.30
+                 + snoise(iP * 4.13)   * 0.15;
+        float iH = (ownLevel <= 1.5) ? abs(iN) : (iN + 0.3);
+        h += iH * interiorNoiseAmp;
+    }
 
     // Phase 6: cliff-face noise. Active where edge is close AND height
     // delta between own and neighbor is non-trivial. heightDelta is in
@@ -671,6 +694,11 @@ const PHASE6_DEFAULTS = {
 	cliffNoiseFreq: 6.0,
 	cliffStrataAmp: 0.0008,
 	cliffStrataFreq: 300.0,
+	// Interior noise -- matches legacy hex-heights.ts (NOISE_AMP=0.008,
+	// NOISE_SCALE=35). Without this, hex tops are perfectly flat and the
+	// terrain reads as "tile mosaic" instead of "noisy planet surface."
+	interiorNoiseAmp: 0.008,
+	interiorNoiseFreq: 35.0,
 };
 
 export interface ShaderGlobeMaterialOptions {
@@ -699,6 +727,7 @@ export function createShaderGlobeMaterial(scene: Scene, opts: ShaderGlobeMateria
 			'faceCentroid', 'faceVertA', 'faceVertB', 'faceVertC',
 			'pentagonVert', 'pentagonId', 'pentagonThreshold',
 			'cliffNoiseAmp', 'cliffNoiseFreq', 'cliffStrataAmp', 'cliffStrataFreq',
+			'interiorNoiseAmp', 'interiorNoiseFreq',
 		],
 		samplers: ['hexLookup', 'terrainTex', 'heightTex'],
 		needAlphaBlending: false,
@@ -746,6 +775,8 @@ export function createShaderGlobeMaterial(scene: Scene, opts: ShaderGlobeMateria
 	mat.setFloat('cliffNoiseFreq', PHASE6_DEFAULTS.cliffNoiseFreq);
 	mat.setFloat('cliffStrataAmp', PHASE6_DEFAULTS.cliffStrataAmp);
 	mat.setFloat('cliffStrataFreq', PHASE6_DEFAULTS.cliffStrataFreq);
+	mat.setFloat('interiorNoiseAmp', PHASE6_DEFAULTS.interiorNoiseAmp);
+	mat.setFloat('interiorNoiseFreq', PHASE6_DEFAULTS.interiorNoiseFreq);
 
 	mat.backFaceCulling = true;
 	return mat;
@@ -761,16 +792,20 @@ export function applyShaderGlobeSettings(mat: ShaderMaterial, settings: TerrainS
 	}
 }
 
-/** Tune Phase 6 cliff-face noise amplitudes/frequencies at runtime. */
+/** Tune Phase 6 cliff-face noise + interior surface noise at runtime. */
 export interface ShaderGlobeCliffNoiseSettings {
 	cliffNoiseAmp?: number;
 	cliffNoiseFreq?: number;
 	cliffStrataAmp?: number;
 	cliffStrataFreq?: number;
+	interiorNoiseAmp?: number;
+	interiorNoiseFreq?: number;
 }
 export function applyShaderGlobeCliffNoise(mat: ShaderMaterial, s: ShaderGlobeCliffNoiseSettings): void {
 	if (s.cliffNoiseAmp !== undefined) mat.setFloat('cliffNoiseAmp', s.cliffNoiseAmp);
 	if (s.cliffNoiseFreq !== undefined) mat.setFloat('cliffNoiseFreq', s.cliffNoiseFreq);
 	if (s.cliffStrataAmp !== undefined) mat.setFloat('cliffStrataAmp', s.cliffStrataAmp);
 	if (s.cliffStrataFreq !== undefined) mat.setFloat('cliffStrataFreq', s.cliffStrataFreq);
+	if (s.interiorNoiseAmp !== undefined) mat.setFloat('interiorNoiseAmp', s.interiorNoiseAmp);
+	if (s.interiorNoiseFreq !== undefined) mat.setFloat('interiorNoiseFreq', s.interiorNoiseFreq);
 }

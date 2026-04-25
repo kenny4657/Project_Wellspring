@@ -12,7 +12,12 @@
  * "verts ~= triangles / 2." Concretely: subdivisions = N -> 20 * N^2
  * triangles -> 60 * N^2 verts.
  *
- *   N=80  -> 128,000 tri, 384,000 verts.  In the 200-500k band. <-- chosen
+ *   N=80  -> 128,000 tri, 384,000 verts.  In the 200-500k band.
+ *   N=100 -> 200,000 tri, 600,000 verts.  Slightly over the 500k band but
+ *           gains ~1.5x verts in the cliff transition zone, where the
+ *           Phase 5 ramp + Phase 6 noise need fine resolution to read as
+ *           crisp rocky cliffs rather than coarse stair-steps. Real-
+ *           browser FPS still 60. <-- chosen
  *   N=128 -> 327,680 tri, 983,040 verts.  Over budget.
  *   N=160 -> 512,000 tri, 1,536,000 verts. Way over budget.
  *
@@ -27,7 +32,7 @@ import { MeshBuilder } from '@babylonjs/core/Meshes/meshBuilder';
 import type { Mesh } from '@babylonjs/core/Meshes/mesh';
 import type { Scene } from '@babylonjs/core/scene';
 
-export const SHADER_GLOBE_SUBDIVISIONS = 80;
+export const SHADER_GLOBE_SUBDIVISIONS = 100;
 
 export interface ShaderGlobeMesh {
 	mesh: Mesh;
