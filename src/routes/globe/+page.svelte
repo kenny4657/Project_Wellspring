@@ -23,9 +23,6 @@
 	let settings = $state<TerrainSettings>(loadTerrainSettings());
 	let editingIdx = $state(4); // plains by default
 
-	let perf = $state({ fps: 0, frameMs: 0, gpuFrameMs: 0, drawCalls: 0, vertexCount: 0, meshBuildMs: 0, totalBuildMs: 0 });
-	let perfTimer: ReturnType<typeof setInterval> | null = null;
-
 	onMount(async () => {
 		try {
 			const { createGlobeEngine } = await import('$lib/engine/globe');
@@ -54,10 +51,6 @@
 			};
 
 			loading = false;
-
-			// Poll perf at 4 Hz — keeps the overlay readable without thrashing
-			perf = engine.perf;
-			perfTimer = setInterval(() => { if (engine) perf = engine.perf; }, 250);
 		} catch (e) {
 			error = String(e);
 			loading = false;
@@ -66,7 +59,6 @@
 	});
 
 	onDestroy(() => {
-		if (perfTimer) clearInterval(perfTimer);
 		engine?.dispose();
 	});
 
@@ -147,19 +139,6 @@
 
 		<InspectOverlay bind:inspectedHex />
 
-		{#if !loading && !error}
-			<div class="perf-overlay">
-				<div class="perf-row"><span>FPS</span><span class:perf-warn={perf.fps > 0 && perf.fps < 50} class:perf-bad={perf.fps > 0 && perf.fps < 30}>{perf.fps.toFixed(0)}</span></div>
-				<div class="perf-row"><span>Frame</span><span>{perf.frameMs.toFixed(2)} ms</span></div>
-				<div class="perf-row"><span>GPU</span><span>{perf.gpuFrameMs > 0 ? perf.gpuFrameMs.toFixed(2) + ' ms' : 'n/a'}</span></div>
-				<div class="perf-row"><span>Draw calls</span><span>{perf.drawCalls}</span></div>
-				<div class="perf-row"><span>Verts</span><span>{(perf.vertexCount / 1e6).toFixed(2)} M</span></div>
-				<div class="perf-row perf-divider"><span>Hexes</span><span>{hexCount.toLocaleString()}</span></div>
-				<div class="perf-row"><span>Mesh build</span><span>{(perf.meshBuildMs / 1000).toFixed(2)} s</span></div>
-				<div class="perf-row"><span>Total init</span><span>{(perf.totalBuildMs / 1000).toFixed(2)} s</span></div>
-			</div>
-		{/if}
-
 		{#if loading}
 			<div class="absolute inset-0 flex flex-col items-center justify-center bg-[#1E1B18]/90 z-10">
 				<div class="text-xl text-[#C4A96A] mb-2" style="font-family: 'Cormorant Garamond', Georgia, serif;">
@@ -192,11 +171,4 @@
 	.tab-btn { flex: 1; padding: 6px 0; font-size: 11px; font-weight: 500; color: #706860; background: transparent; border: none; cursor: pointer; border-bottom: 2px solid transparent; transition: all 0.15s; }
 	.tab-btn:hover { color: #a09890; }
 	.tab-active { color: #C4A96A; border-bottom-color: #C4A96A; }
-
-	.perf-overlay { position: absolute; top: 8px; right: 8px; padding: 8px 10px; background: rgba(0,0,0,0.6); border: 1px solid rgba(196,169,106,0.25); border-radius: 4px; color: #E8DFD0; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11px; line-height: 1.4; min-width: 150px; pointer-events: none; user-select: none; z-index: 5; }
-	.perf-row { display: flex; justify-content: space-between; gap: 12px; }
-	.perf-row > span:first-child { color: #A09890; }
-	.perf-divider { margin-top: 6px; padding-top: 6px; border-top: 1px solid rgba(255,255,255,0.08); }
-	.perf-warn { color: #E0B870; }
-	.perf-bad { color: #E07070; }
 </style>
