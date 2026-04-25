@@ -455,8 +455,11 @@ const GLSL_BEACH_OVERLAY = /* glsl */ `
         //                       look sandy so it reads continuously with the cliff
         //                       foot sand blend from section (b). Gated on height
         //                       so inland/elevated cliff-adjacent hexes are excluded.
+        // Suppress on steep cliff faces (steepness > 0.015) so the beach overlay
+        // doesn't wash out the rock texture that section (b) just painted there.
         float cliffBaseAct = smoothstep(0.02, 0.5, cliffProximity)
-            * (1.0 - smoothstep(COAST_FOOT_FULL * planetRadius, COAST_FOOT_FADE * planetRadius, heightAboveR));
+            * (1.0 - smoothstep(COAST_FOOT_FULL * planetRadius, COAST_FOOT_FADE * planetRadius, heightAboveR))
+            * (1.0 - smoothstep(0.003, 0.015, steepness));
         float beachActivation = max(coastProximity, cliffBaseAct);
 
         if (beachActivation > 0.01) {
