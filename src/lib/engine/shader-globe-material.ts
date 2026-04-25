@@ -226,9 +226,53 @@ ivec2 neighborOffsetForEdge(int i, int edge) {
     return ivec2(0, 0);
 }
 
+// Look up the cellId of the neighbor across the given edge. If the neighbor
+// is in-grid on the same face, use the lookup texture directly. If the
+// neighbor's (i, j) is OUT of this face's grid -- i.e., across an
+// icosphere face seam -- compute the neighbor's world center via the
+// face-local 2D -> sphere map (linear bary + normalize, gnomonic-style),
+// find which face the world center lies on (max dot vs centroid), then
+// re-project into that face's grid and sample. Without this fallback,
+// every fragment within ~one hex of an icosphere face seam saw nbId = -1
+// and Strategy 3 / Phase 6 noise both no-oped, producing flat patches
+// along the 30 great-circle face seams.
 float neighborIdAtEdge(int edge) {
     ivec2 off = neighborOffsetForEdge(g_i, edge);
-    return sampleLookupFace(g_face, g_i + off.x, g_j + off.y);
+    int nI = g_i + off.x;
+    int nJ = g_j + off.y;
+    float gs = gridSize;
+    if (nI >= 0 && nJ >= 0 && float(nI) < gs && float(nJ) < gs) {
+        return sampleLookupFace(g_face, nI, nJ);
+    }
+    // Out of grid: compute the neighbor's center in face-local 2D, then
+    // project to world via linear bary on the current face's triangle.
+    // The result is approximate (gnomonic projection, not slerp) but
+    // matches what the forward map would produce within the precision
+    // we need to find the right adjacent face.
+    vec2 nb2D = selfCenter2D(nI, nJ);
+    float l3 = nb2D.y * 2.0 / SQRT3_GH;
+    float l2 = nb2D.x + 0.5 * (1.0 - l3);
+    float l1 = 1.0 - l2 - l3;
+    vec3 v0 = faceVertA[g_face];
+    vec3 v1 = faceVertB[g_face];
+    vec3 v2 = faceVertC[g_face];
+    vec3 nbWorld = normalize(l1 * v0 + l2 * v1 + l3 * v2);
+
+    // Find the actual face the neighbor center lies on.
+    int newFace = findFace(nbWorld);
+    vec3 nv0 = faceVertA[newFace];
+    vec3 nv1 = faceVertB[newFace];
+    vec3 nv2 = faceVertC[newFace];
+    vec3 nbBary = baryGnomonic(nbWorld, nv0, nv1, nv2);
+    float nbCz = nbBary.z * SQRT3_GH * 0.5;
+    float nbCx = nbBary.y - 0.5 * (1.0 - nbBary.z);
+    float r = 0.5 / (resolution + 1.0);
+    float diameter = 2.0 * r * 2.0 / SQRT3_GH;
+    float rowStep = diameter * 0.75;
+    int newI = int(floor(nbCz / rowStep + 0.5));
+    float oddOff2 = (mod(float(newI), 2.0) > 0.5) ? r : 0.0;
+    int newJ = int(floor((nbCx + 0.5 - oddOff2) / (2.0 * r) + 0.5));
+    return sampleLookupFace(newFace, newI, newJ);
 }
 
 vec2 sampleHexData(float hexId) {
@@ -294,34 +338,40 @@ vec2 phase5AndPhase6Displacement(vec3 P, float ownLevel) {
     // is the plan's edge-band fraction (last 15% of edge distance gets the
     // ramp).
     float t = smoothstep(0.0, 0.15, edgeDistNorm);
-    float h = mix(nbH, ownH, t);
+    float strategyH = mix(nbH, ownH, t);
+    float h = strategyH;
 
     // Phase 6: cliff-face noise. Active where edge is close AND height
     // delta between own and neighbor is non-trivial. heightDelta is in
-    // fraction-of-planetRadius units; legacy LEVEL_HEIGHTS span 0.030R, so
-    // a "significant" delta is around 0.005R+. Use smoothstep(0, 0.012)
-    // so adjacent same-tier neighbors don't get noise but cliffs do.
+    // fraction-of-planetRadius units; legacy LEVEL_HEIGHTS span 0.030R.
+    // smoothstep(0, 0.008) gates: adjacent same-tier neighbors (delta=0)
+    // get nothing, single-tier-step (delta=0.005) gets ~63% activity,
+    // double-tier-step (delta=0.010) saturates. Audit-flagged: the prior
+    // 0.012 underrepresented single-tier transitions.
     float cliffness = 1.0 - smoothstep(0.0, 0.15, edgeDistNorm);
     float heightDelta = abs(nbH - ownH);
-    float cliffActivity = cliffness * smoothstep(0.0, 0.012, heightDelta);
+    float cliffActivity = cliffness * smoothstep(0.0, 0.008, heightDelta);
     if (cliffActivity > 0.0001) {
-        // 3-octave simplex (snoise comes from GLSL_NOISE).
+        // 3-octave simplex (snoise comes from GLSL_NOISE in fragment, from
+        // GLSL_NOISE_VERTEX_SUBSET in vertex; same Ashima impl in both).
         vec3 nP = P * cliffNoiseFreq;
         float n =  snoise(nP)         * 0.55
                  + snoise(nP * 2.07)   * 0.30
                  + snoise(nP * 4.13)   * 0.15;
         h += cliffActivity * n * cliffNoiseAmp;
 
-        // Stratification: a second term banded along the cliff direction.
-        // Legacy cliff art shows visible horizontal rock layers; project a
-        // sinusoid on (P projected to face-local 2D, dotted with cliff
-        // direction) and modulate by a low-freq noise so layers don't read
-        // as perfect parallel lines. cliffStrataAmp = 0 disables.
+        // Stratification: horizontal rock layers banded at *constant
+        // altitude*. The audit caught the prior code projecting onto cliff
+        // direction in face-local 2D, which produces VERTICAL bands across
+        // the cliff face. Real strata are horizontal (constant altitude)
+        // so the input must be the vertex's altitude itself -- we use
+        // strategyH (the smooth Strategy 3 altitude before cliff noise) so
+        // bands are clean lines rather than tracking the bumpy noise.
+        // cliffStrataAmp = 0 disables.
         if (cliffStrataAmp > 0.0001) {
-            float angS = float(closestEdge) * (3.14159265 / 3.0);
-            vec2 cliffDir = vec2(cos(angS), sin(angS));
-            float along = dot(g_P2D - g_self_2d, cliffDir) * cliffStrataFreq;
-            float strata = sin(along * 6.2831853) * 0.5 + 0.5;
+            float strata = sin(strategyH * cliffStrataFreq * 6.2831853) * 0.5 + 0.5;
+            // Modulate by a low-freq 3D noise so layers don't read as
+            // perfect parallel circles around the planet.
             strata *= snoise(P * cliffNoiseFreq * 0.45) * 0.5 + 0.7;
             h += cliffActivity * (strata - 0.5) * cliffStrataAmp;
         }
@@ -609,14 +659,18 @@ const FRAGMENT =
 	GLSL_LIGHTING;
 
 // Phase 6 default tunables. Cliff noise amplitude is in fraction-of-planet-
-// radius units; AMP=0.0015 means peak displacement of ~0.15% of radius
-// (for our 6371 km planet that's ~9.5 km cliff variation -- comparable to
-// real-world mountain ranges and matching legacy's noise feel).
+// radius units; AMP=0.005 means peak displacement of ~0.5% of radius
+// (~32 km on a 6371 km planet -- enough to break the polar silhouette
+// from a perfect circle, which 0.0015 was too low to do).
+//
+// Stratification: bands at constant altitude; each band period is
+// 1 / cliffStrataFreq fraction of planetRadius. freq=300 gives bands
+// every ~21 km, so ~5-10 visible bands across a tier transition.
 const PHASE6_DEFAULTS = {
-	cliffNoiseAmp: 0.0015,
-	cliffNoiseFreq: 6.0,    // 1/(unit-sphere distance); ~6 means feature size of ~1/6 of a sphere quadrant
+	cliffNoiseAmp: 0.005,
+	cliffNoiseFreq: 6.0,
 	cliffStrataAmp: 0.0008,
-	cliffStrataFreq: 30.0,  // bands per unit hex-radius along cliff direction
+	cliffStrataFreq: 300.0,
 };
 
 export interface ShaderGlobeMaterialOptions {
