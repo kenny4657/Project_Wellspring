@@ -450,17 +450,16 @@ function getHexBorderInfo(cell: HexCell, cellById: Map<number, HexCell>): HexBor
 					}
 				}
 			} else {
-				// Water → land edge.
+				// Water → land edge. Always match the land's edge height at
+				// sea level so the corner joins cleanly (the cliff's foot
+				// lands at sea level too → no offset, no awkward shape).
+				edgeTargets[i] = 0;
 				if (nb.heightLevel > 2) {
-					// Neighbor is a cliff: DO NOT ramp water up to sea level
-					// and DO NOT mark as coast. Water stays flat at its own
-					// depth; the water sphere hides it and the cliff drops
-					// straight into water — no beach geometry at all.
-					edgeTargets[i] = getLevelHeight(cell.heightLevel);
+					// Neighbor is a cliff: don't mark as coast. The distToCoast
+					// field then ignores this edge, so the beach shader has no
+					// coast proximity to paint sand with next to the cliff.
 				} else {
-					// Neighbor is low land: normal beach — ramp water up to
-					// sea level so the coast has a gentle shoreline.
-					edgeTargets[i] = 0;
+					// Neighbor is low land: normal beach shoreline.
 					coastEdges[i] = true;
 					hasCoast = true;
 				}
