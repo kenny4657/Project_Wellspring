@@ -69,6 +69,10 @@ uniform float gridSize;
 uniform float resolution;
 uniform float outputMode;
 
+uniform vec3 pentagonVert[12];
+uniform float pentagonId[12];
+uniform float pentagonThreshold;
+
 varying vec3 vSpherePos;
 
 const float SQRT3 = 1.7320508075688772;
@@ -83,6 +87,20 @@ vec3 idColor(float fid) {
     );
 }
 
+// Pentagon early-exit. Returns -1.0 when not in any pentagon region; otherwise
+// returns the pentagon's cell id directly. Mirrors pickHexByFaceGrid in
+// hex-id-lookup.ts: 12 dot products, return on first hit. Threshold is the
+// cosine of ~half a hex spacing, set conservatively so the early-exit fires
+// only well inside the pentagon's Voronoi cell.
+float pentagonHit(vec3 P) {
+    for (int v = 0; v < 12; v++) {
+        if (dot(P, pentagonVert[v]) > pentagonThreshold) {
+            return pentagonId[v];
+        }
+    }
+    return -1.0;
+}
+
 // Find the icosahedron face whose centroid has the largest dot with P.
 // Loop over all 20 faces -- branchless, ~20 multiply-adds. Fast.
 int findFace(vec3 P) {
@@ -95,16 +113,24 @@ int findFace(vec3 P) {
     return best;
 }
 
-// Planar barycentric coords (l1, l2, l3) of P projected onto triangle plane,
-// such that P_proj ~= l1*v0 + l2*v1 + l3*v2 and l1+l2+l3 = 1.
-// Cross-product method: numerically stable, no divide-by-near-zero unless
-// the triangle is degenerate (icosahedron faces never are).
+// Gnomonic-projected barycentric coords. Project P along the ray from the
+// origin to where it hits the triangle's plane; then take planar barycentric
+// of that point. This is the standard inverse for icosahedral discrete grids:
+// great circles map to straight lines under gnomonic projection, so the
+// icosphere's slerp-based forward map is well-approximated by linear bary on
+// the gnomonic projection of the input. Perpendicular-projection bary (what
+// we used previously) is significantly wrong off-axis (~35% "far" errors at
+// face edges).
 vec3 baryCoords(vec3 P, vec3 v0, vec3 v1, vec3 v2) {
     vec3 e1 = v1 - v0;
     vec3 e2 = v2 - v0;
     vec3 n = cross(e1, e2);
+    // Plane equation: dot(n, X) = dot(n, v0). Ray from origin through P
+    // hits the plane at Q = P * dot(n, v0) / dot(n, P).
+    float t = dot(n, v0) / dot(n, P);
+    vec3 Q = P * t;
+    vec3 d = Q - v0;
     float invDen = 1.0 / dot(n, n);
-    vec3 d = P - v0;
     float l2 = dot(cross(d, e2), n) * invDen;
     float l3 = dot(cross(e1, d), n) * invDen;
     float l1 = 1.0 - l2 - l3;
@@ -143,6 +169,11 @@ float sampleLookup(int face, int i, int j) {
 // the planar bary of a unit-sphere point is within ~1% of the sphere bary --
 // well below one hex cell at any practical resolution.
 float worldPosToHexId(vec3 P) {
+    // Pentagon special case before face lookup -- planar barycentric is
+    // undefined at the 5-face seam, so handle it directly.
+    float pent = pentagonHit(P);
+    if (pent >= 0.0) return pent;
+
     int face = findFace(P);
 
     vec3 v0 = faceVertA[face];
@@ -243,6 +274,7 @@ export function createShaderGlobeDebugMaterial(scene: Scene, opts: ShaderGlobeDe
 			'gridSize', 'resolution',
 			'outputMode',
 			'faceCentroid', 'faceVertA', 'faceVertB', 'faceVertC',
+			'pentagonVert', 'pentagonId', 'pentagonThreshold',
 		],
 		samplers: ['hexLookup'],
 		needAlphaBlending: false,
@@ -269,6 +301,9 @@ export function createShaderGlobeDebugMaterial(scene: Scene, opts: ShaderGlobeDe
 	mat.setFloat('gridSize', lookup.gridSize);
 	mat.setFloat('resolution', resolution);
 	mat.setFloat('outputMode', 0);
+	mat.setArray3('pentagonVert', Array.from(lookup.pentagonVerts));
+	mat.setFloats('pentagonId', Array.from(lookup.pentagonIds));
+	mat.setFloat('pentagonThreshold', lookup.pentagonThreshold);
 
 	mat.backFaceCulling = true;
 	return mat;

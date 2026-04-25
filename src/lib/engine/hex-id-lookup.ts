@@ -39,6 +39,18 @@ export interface HexIdLookup {
 	height: number;
 	/** gridSize = resolution + 2. */
 	gridSize: number;
+
+	// ── Pentagon early-exit data ──
+	// The 12 pentagons sit at the 12 icosahedron vertices, where 5 faces meet.
+	// At those points the planar barycentric inverse breaks down (the point
+	// belongs equally to 5 face-grids), so the GLSL detects "near vertex" up
+	// front and returns the pentagon's hex ID directly.
+	/** 36 floats: 12 unit-sphere vertex positions (vec3 array). */
+	pentagonVerts: Float32Array;
+	/** 12 floats: cell ID of the pentagon hex sitting at vertex v (matched by nearest center). */
+	pentagonIds: Float32Array;
+	/** cos(angular pentagon-region radius). dot(P, vert) > this  →  inside pentagon. */
+	pentagonThreshold: number;
 }
 
 /**
@@ -61,6 +73,19 @@ export function pickHexByFaceGrid(
 	const len = Math.sqrt(p.x * p.x + p.y * p.y + p.z * p.z) || 1;
 	const px = p.x / len, py = p.y / len, pz = p.z / len;
 
+	// Pentagon early-exit. Mirrors the GLSL — if P is within angular
+	// threshold of any of the 12 icosahedron vertices, return that
+	// pentagon's hex id directly. Skips face-lookup ambiguity at the
+	// 5-face seam.
+	for (let v = 0; v < 12; v++) {
+		const vx = lookup.pentagonVerts[v * 3];
+		const vy = lookup.pentagonVerts[v * 3 + 1];
+		const vz = lookup.pentagonVerts[v * 3 + 2];
+		if (px * vx + py * vy + pz * vz > lookup.pentagonThreshold) {
+			return lookup.pentagonIds[v];
+		}
+	}
+
 	// Find face (max dot vs centroid)
 	let bestFace = 0, bestDot = -2;
 	for (let f = 0; f < 20; f++) {
@@ -75,14 +100,19 @@ export function pickHexByFaceGrid(
 	const v1 = grid.faces[bestFace].v1;
 	const v2 = grid.faces[bestFace].v2;
 
-	// Planar barycentric of P w.r.t. (v0, v1, v2).
+	// Gnomonic-projected barycentric — see GLSL baryCoords for rationale.
 	const e1x = v1.x - v0.x, e1y = v1.y - v0.y, e1z = v1.z - v0.z;
 	const e2x = v2.x - v0.x, e2y = v2.y - v0.y, e2z = v2.z - v0.z;
 	const nx = e1y * e2z - e1z * e2y;
 	const ny = e1z * e2x - e1x * e2z;
 	const nz = e1x * e2y - e1y * e2x;
+	// Plane offset = dot(n, v0). t = plane_offset / dot(n, P).
+	const planeD = nx * v0.x + ny * v0.y + nz * v0.z;
+	const nDotP = nx * px + ny * py + nz * pz;
+	const tParam = planeD / nDotP;
+	const qx = px * tParam, qy = py * tParam, qz = pz * tParam;
 	const invDen = 1 / (nx * nx + ny * ny + nz * nz);
-	const dx = px - v0.x, dy = py - v0.y, dz = pz - v0.z;
+	const dx = qx - v0.x, dy = qy - v0.y, dz = qz - v0.z;
 	const cdex = dy * e2z - dz * e2y;
 	const cdey = dz * e2x - dx * e2z;
 	const cdez = dx * e2y - dy * e2x;
@@ -149,6 +179,41 @@ export function createHexIdLookup(grid: IcoGridWithFaces, scene: Scene): HexIdLo
 	texture.wrapV = Constants.TEXTURE_CLAMP_ADDRESSMODE;
 	texture.name = 'hexIdLookup';
 
+	// ── Pentagon table ──
+	// For each icosahedron vertex, find the pentagon cell whose center is
+	// nearest. Pentagons are flagged with isPentagon=true in icosphere.ts.
+	// Generally there are exactly 12 of them; if any are missing we fall back
+	// to nearest-center over all cells (defensive — shouldn't trigger).
+	const pentagonCells = grid.cells.filter(c => c.isPentagon);
+	const pentagonVerts = new Float32Array(12 * 3);
+	const pentagonIds = new Float32Array(12);
+	for (let v = 0; v < 12; v++) {
+		const iv = grid.icoVerts[v];
+		pentagonVerts[v * 3] = iv.x;
+		pentagonVerts[v * 3 + 1] = iv.y;
+		pentagonVerts[v * 3 + 2] = iv.z;
+		const pool = pentagonCells.length === 12 ? pentagonCells : grid.cells;
+		let bestId = -1, bestD = Infinity;
+		for (const c of pool) {
+			const dx = c.center.x - iv.x;
+			const dy = c.center.y - iv.y;
+			const dz = c.center.z - iv.z;
+			const d = dx * dx + dy * dy + dz * dz;
+			if (d < bestD) { bestD = d; bestId = c.id; }
+		}
+		pentagonIds[v] = bestId;
+	}
+
+	// Pentagon angular radius ≈ half the hex spacing on the sphere.
+	// Hex spacing = (icosahedron edge angle) / (resolution + 1). Edge angle for
+	// the regular icosahedron = arccos(1/√5) ≈ 1.10715 rad.
+	// Use 0.55 × half-spacing as the threshold so the early-exit fires only
+	// well inside the pentagon — we'd rather fall through to the face lookup
+	// at the boundary than misclassify a neighbor hex as the pentagon.
+	const ICO_EDGE_ANGLE = Math.acos(1 / Math.sqrt(5));
+	const hexSpacing = ICO_EDGE_ANGLE / (grid.resolution + 1);
+	const pentagonThreshold = Math.cos(hexSpacing * 0.55);
+
 	const faceVerts = new Float32Array(20 * 9);
 	const faceCentroids = new Float32Array(20 * 3);
 	for (let f = 0; f < 20; f++) {
@@ -166,5 +231,8 @@ export function createHexIdLookup(grid: IcoGridWithFaces, scene: Scene): HexIdLo
 		faceCentroids[f * 3 + 2] = cz / cl;
 	}
 
-	return { texture, faceVerts, faceCentroids, width, height, gridSize };
+	return {
+		texture, faceVerts, faceCentroids, width, height, gridSize,
+		pentagonVerts, pentagonIds, pentagonThreshold,
+	};
 }

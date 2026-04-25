@@ -108,6 +108,9 @@ export interface IcoGridWithFaces {
 	 */
 	faceGrid: Int32Array;
 	resolution: number;
+	/** 12 unit-sphere icosahedron vertices, normalized. The 12 pentagon hexes
+	 *  sit at these positions. Used by the GLSL pentagon early-exit. */
+	icoVerts: { x: number; y: number; z: number }[];
 }
 
 /** Constants for the face-local 2D grid. Mirror these in GLSL. */
@@ -287,5 +290,10 @@ export function generateIcoHexGridWithFaces(resolution: number): IcoGridWithFace
 		});
 	}
 
-	return { cells, faces, faceGrid, resolution };
+	const icoVertsOut = icoVerts.map(v => {
+		const n = v.clone().normalize();
+		return { x: n.x, y: n.y, z: n.z };
+	});
+
+	return { cells, faces, faceGrid, resolution, icoVerts: icoVertsOut };
 }
