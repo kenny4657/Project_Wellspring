@@ -20,6 +20,8 @@ import '@babylonjs/core/Shaders/default.vertex';
 import '@babylonjs/core/Shaders/default.fragment';
 import '@babylonjs/core/Animations/animatable';
 import { FxaaPostProcess } from '@babylonjs/core/PostProcesses/fxaaPostProcess';
+import { EngineInstrumentation } from '@babylonjs/core/Instrumentation/engineInstrumentation';
+import { SceneInstrumentation } from '@babylonjs/core/Instrumentation/sceneInstrumentation';
 // Side-effect imports needed for camera pointer input system
 import '@babylonjs/core/Events/pointerEvents';
 import '@babylonjs/core/Culling/ray';
@@ -46,6 +48,16 @@ export interface GlobeEngine {
 	readonly hexCount: number;
 	readonly cells: HexCell[];
 	onHexClick: ((cellIndex: number) => void) | null;
+	// Performance instrumentation
+	readonly perf: {
+		fps: number;          // averaged frames-per-second from Babylon's performanceMonitor
+		frameMs: number;      // last frame CPU+GPU wall time in ms
+		gpuFrameMs: number;   // last frame GPU time in ms (0 if extension unavailable)
+		drawCalls: number;    // draw calls last frame
+		vertexCount: number;  // total vertices in globe mesh
+		meshBuildMs: number;  // wall time spent in buildGlobeMesh at startup
+		totalBuildMs: number; // wall time of full createGlobeEngine
+	};
 }
 
 export async function createGlobeEngine(
@@ -53,6 +65,7 @@ export async function createGlobeEngine(
 	onProgress?: (message: string) => void
 ): Promise<GlobeEngine> {
 	const report = onProgress ?? (() => {});
+	const totalBuildStart = performance.now();
 
 	// ── Engine & Scene ──────────────────────────────────────
 	report('Initializing Babylon.js...');
@@ -124,8 +137,10 @@ export async function createGlobeEngine(
 	report('Building globe mesh...');
 	await tick();
 
+	const meshBuildStart = performance.now();
 	const { mesh: globeMesh, vertexStarts, totalVerticesPerCell, colorsBuffer, positionsBuffer } =
 		buildGlobeMesh(cells, EARTH_RADIUS_KM, scene);
+	const meshBuildMs = performance.now() - meshBuildStart;
 
 	// Procedural terrain ShaderMaterial
 	const terrainMat = createTerrainMaterial(scene);
@@ -193,6 +208,16 @@ export async function createGlobeEngine(
 		}
 	});
 
+	// ── Performance instrumentation ──────────────────────────
+	// EngineInstrumentation.captureGPUFrameTime requires the
+	// EXT_disjoint_timer_query WebGL extension. It works in Chrome/Edge on
+	// most modern hardware; if unavailable we just report 0 for gpuFrameMs.
+	const engineInst = new EngineInstrumentation(engine);
+	engineInst.captureGPUFrameTime = true;
+	const sceneInst = new SceneInstrumentation(scene);
+	sceneInst.captureRenderTime = true;
+	const totalBuildMs = performance.now() - totalBuildStart;
+
 	// ── Render Loop ─────────────────────────────────────────
 	let waterTime = 0;
 	engine.runRenderLoop(() => {
@@ -248,7 +273,19 @@ export async function createGlobeEngine(
 		get cells() { return cells; },
 
 		set onHexClick(cb: ((cellIndex: number) => void) | null) { onHexClickCallback = cb; },
-		get onHexClick() { return onHexClickCallback; }
+		get onHexClick() { return onHexClickCallback; },
+
+		get perf() {
+			return {
+				fps: engine.performanceMonitor.averageFPS,
+				frameMs: sceneInst.renderTimeCounter.lastSecAverage,
+				gpuFrameMs: engineInst.gpuFrameTimeCounter.lastSecAverage / 1e6, // ns→ms
+				drawCalls: scene.getActiveMeshes().length,
+				vertexCount: globeMesh.getTotalVertices(),
+				meshBuildMs,
+				totalBuildMs,
+			};
+		}
 	};
 }
 
