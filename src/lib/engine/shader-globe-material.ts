@@ -630,49 +630,49 @@ void main() {
         //      fragment. The gate must specifically measure "distance to
         //      the nearest edge that has a real height-tier transition".
         //
-        // Same cliff-classifier rules as legacy hex-borders.ts:classifyEdge:
-        //   water<->land where land tier > 2  OR  land<->land delta >= 2
-        // Color/biome lookups still use the perturbed P below so coastlines
-        // and biome edges stay wavy.
+        // Analytic surface slope. Sample the SAME displacement function
+        // the vertex shader uses, at this fragment's P plus two
+        // orthogonal tangent offsets, then take the gradient magnitude.
+        // Wall fragments have high slope (Strategy 3 ramp drops between
+        // tier heights); hex-top fragments have ~0. The paint mask IS
+        // the geometry -- they can't disagree.
         //
-        // Geometry-noise perturbation (matches the vertex shader's
-        // identical noise field): without this the cliff edge sits on
-        // perfect hex polygons and the wall silhouette zigzags at hex
-        // vertices. Amp 0.0012 wiggles the edge within each hex side
-        // without breaking the rock band. Vertex shader uses the SAME
-        // noise so geometry and paint stay aligned.
-        vec3 geomNoise = vec3(
-            snoise(P * 120.0 + 500.0),
-            snoise(P * 120.0 + 600.0),
-            snoise(P * 120.0 + 700.0)
-        );
-        vec3 P_geom = normalize(P + geomNoise * 0.0012);
+        // Each sample point is geom-noise-perturbed with the SAME noise
+        // field the vertex shader applies before its phase5 call. That
+        // keeps fragment slope consistent with the actual mesh geometry
+        // (which is at perturbed lookup positions, not unperturbed).
+        vec3 _slopeUp = abs(P.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+        vec3 _slopeT1 = normalize(cross(P, _slopeUp));
+        vec3 _slopeT2 = cross(P, _slopeT1);
+        float _slopeEps = 0.0005;
 
-        computeHexLookup(P_geom);
-        float cleanCliffEdgeDistN = 1.0;
-        if (g_hexId >= 0.0) {
-            int cleanLvl = int(sampleHexData(g_hexId).y);
-            bool cleanW = (cleanLvl <= 1);
-            float rClean = 0.5 / (resolution + 1.0);
-            float minCliffEd = 1e30;
-            for (int k = 0; k < 6; k++) {
-                float ang = float(k) * (3.14159265 / 3.0);
-                vec2 nrm = vec2(cos(ang), sin(ang));
-                float ed = rClean - dot(g_P2D - g_self_2d, nrm);
-                float ndN = neighborIdAtEdge(k);
-                if (ndN < 0.0) continue;
-                int nH = int(sampleHexData(ndN).y);
-                bool nIsW = (nH <= 1);
-                bool isCliff = false;
-                if (cleanW && !nIsW) isCliff = (nH > 2);
-                else if (!cleanW && nIsW) isCliff = (cleanLvl > 2);
-                else if (!cleanW && !nIsW) isCliff = (abs(nH - cleanLvl) >= 2);
-                if (isCliff && ed < minCliffEd) minCliffEd = ed;
-            }
-            if (minCliffEd < 1e29) {
-                cleanCliffEdgeDistN = clamp(minCliffEd / rClean, 0.0, 1.0);
-            }
-        }
+        // Inline geom-noise perturbation (matches vertex shader).
+        #define GEOM_PERTURB(X) normalize((X) + vec3( \
+            snoise((X) * 120.0 + 500.0), \
+            snoise((X) * 120.0 + 600.0), \
+            snoise((X) * 120.0 + 700.0)) * 0.0012)
+
+        vec3 _slopeP0 = GEOM_PERTURB(P);
+        computeHexLookup(_slopeP0);
+        float _slopeLvl0 = (g_hexId >= 0.0) ? sampleHexData(g_hexId).y : 2.0;
+        float _slopeH0 = phase5AndPhase6Displacement(_slopeP0, _slopeLvl0).x;
+
+        vec3 _slopeP1 = GEOM_PERTURB(normalize(P + _slopeT1 * _slopeEps));
+        computeHexLookup(_slopeP1);
+        float _slopeLvl1 = (g_hexId >= 0.0) ? sampleHexData(g_hexId).y : 2.0;
+        float _slopeH1 = phase5AndPhase6Displacement(_slopeP1, _slopeLvl1).x;
+
+        vec3 _slopeP2 = GEOM_PERTURB(normalize(P + _slopeT2 * _slopeEps));
+        computeHexLookup(_slopeP2);
+        float _slopeLvl2 = (g_hexId >= 0.0) ? sampleHexData(g_hexId).y : 2.0;
+        float _slopeH2 = phase5AndPhase6Displacement(_slopeP2, _slopeLvl2).x;
+
+        float _slopeDh1 = (_slopeH1 - _slopeH0) / _slopeEps;
+        float _slopeDh2 = (_slopeH2 - _slopeH0) / _slopeEps;
+        // surfaceSlope: dh/d(unit-sphere-distance), in fractions of R.
+        // Wall ~ 0.005R / 0.0005 = 10. Interior noise ~ 0.001R / 0.0005
+        // = 2. Threshold around 3-7 cleanly discriminates.
+        float surfaceSlope = sqrt(_slopeDh1 * _slopeDh1 + _slopeDh2 * _slopeDh2);
 
         vec3 boundaryNoise = vec3(
             snoise(P * 80.0),
@@ -832,28 +832,25 @@ const GLSL_WATER_OVERRIDE_LAST = /* glsl */ `
 // block; the very last `}` is the else-block close.
 const GLSL_BEACH_OVERLAY_NO_CLOSE = GLSL_BEACH_OVERLAY.replace(/\}\s*$/, '');
 
-// New cliff chunk -- single fragment-side gate from cleanCliffEdgeDistN.
+// Cliff chunk -- gate purely on analytic surfaceSlope.
 //
-// wallness MUST be a step-like mask, NOT a smooth fade across the whole
-// wall band. The wall band is [0, 0.15] of apothem (Strategy 3 ramp).
-// We want full rock across that whole band -- and a quick falloff just
-// at the boundary so it doesn't bleed onto the hex top. Earlier
-// attempts used `1 - smoothstep(0, 0.22, edgeDistN)` which fades
-// throughout the band -- mid-wall fragments only got 50-60% rock blend
-// with grass, so the wall read as a thin brown line at the edge with
-// grass-blended tint everywhere else. This formula keeps rock at full
-// strength throughout the wall band:
-//   ed = 0..0.18 -> wallness = 1 (full rock, the entire wall)
-//   ed = 0.18..0.24 -> falloff
-//   ed > 0.24 -> wallness = 0 (hex top, no rock)
+// surfaceSlope is computed in GLSL_MAIN_SETUP_NEW from THE SAME
+// displacement function the vertex shader uses, sampled at 3 points
+// (own + 2 tangent offsets). Wall fragments have high slope because
+// height changes rapidly across them; hex-top fragments have ~0 slope.
+// The mask therefore IS the geometry -- they can't disagree.
 //
-// Cliff-foot sand: legacy uses a pure heightAboveR threshold which fires
-// for ANY cliff at low elevation, including inland tier 2->3 cliffs
-// where the whole wall is below the threshold. That dyes the entire
-// inland wall sand-tan. Gate footAmt on coastProximity so the sand
-// blend only fires for actually coastal cliffs.
+// wallness threshold: surfaceSlope is dh/d(unit-sphere-distance) in
+// fractions of planet radius per unit-sphere unit.
+//   Wall ramp: ~0.005 / 0.0005 = 10
+//   Interior noise: ~0.001 / 0.0005 = 2
+//   Pure flat hex top: ~0
+// smoothstep(3.0, 7.0) cleanly discriminates.
+//
+// Cliff-foot sand still gated on coastProximity so inland cliffs stay
+// rocky.
 const GLSL_CLIFF_RENDERING_NEW = /* glsl */ `
-        float wallness = 1.0 - smoothstep(0.18, 0.24, cleanCliffEdgeDistN);
+        float wallness = smoothstep(3.0, 7.0, surfaceSlope);
         float waterCliffBlend = 0.0;
         if (wallness > 0.005) {
             int cliffPalId = hasCrossBlend ? neighborId : terrainId;
