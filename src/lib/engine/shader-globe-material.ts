@@ -801,16 +801,16 @@ const FRAGMENT =
 // 1 / cliffStrataFreq fraction of planetRadius. freq=300 gives bands
 // every ~21 km, so ~5-10 visible bands across a tier transition.
 const PHASE6_DEFAULTS = {
-	// Cliff noise frequency must be HIGH enough that the noise varies
-	// meaningfully within the 12 km cliff transition band (15% of hex
-	// apothem). At freq=6 the noise period was 169 km -- the whole cliff
-	// band shifted uniformly per region, so coastlines stayed hex-aligned.
-	// Freq=40 -> period ~25 km, half a cycle across the cliff band ->
-	// visible per-hex boundary wiggle. Amp bumped 0.005 -> 0.010 so the
-	// coastline-shift effect (horizontal shift = vert noise / cliff slope)
-	// is visible at planet-scale views.
-	cliffNoiseAmp: 0.010,
-	cliffNoiseFreq: 40.0,
+	// Cliff noise: high frequency, low amplitude. The Phase 6 noise displaces
+	// vertices in the cliff transition band (last 15% of edge distance);
+	// large amp at low freq makes the *silhouette* of the cliff face swim
+	// around in big curves (visible "swirly cliff" pattern). What we want
+	// is a crisp wall (close to legacy prism cliff) with fine rocky detail
+	// across the face -- so push freq up (period ~6-7 km) and drop amp
+	// almost an order of magnitude. The cliff line stays at the hex tier
+	// boundary; only the surface texture varies.
+	cliffNoiseAmp: 0.0015,
+	cliffNoiseFreq: 150.0,
 	cliffStrataAmp: 0.0008,
 	cliffStrataFreq: 300.0,
 	// Interior noise stays gentle so dFdx/dFdy normals don't see every
