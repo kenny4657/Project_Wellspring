@@ -101,8 +101,7 @@ export async function createGlobeEngine(
 	camera.minZ = 1;
 	camera.maxZ = EARTH_RADIUS_KM * 20;
 
-	// camera.attachControl() is intentionally NOT called — inputs are handled
-	// below with a custom sphere-trackball drag (see Camera Controls section).
+	camera.attachControl();
 
 	// ── FXAA Anti-Aliasing ──────────────────────────────────
 	// Smooths sub-pixel hairline artifacts at hex mesh boundaries
@@ -160,32 +159,28 @@ export async function createGlobeEngine(
 
 	report(`Globe ready: ${cells.length} cells, ${globeMesh.getTotalVertices().toLocaleString()} vertices`);
 
-	// ── Camera Controls (MapLibre-style sphere trackball) ───────
-	// Each drag frame computes the quaternion rotation from the previous
-	// sphere hit point to the current one, then applies it to camera.center.
-	// This keeps the grabbed globe point anchored under the cursor with no
-	// drag-plane approximation and no coherence drift on wide sweeps.
-	let dragPrev: Vector3 | null = null;
+	// ── Camera Controls (MapLibre-style sphere trackball via monkey-patch) ──
+	// camera.attachControl() above wires up Babylon's full input system:
+	// right-click tilt, scroll zoom, inertia, keyboard. We monkey-patch only
+	// startDrag/handleDrag on camera.movement to replace the default drag-plane
+	// pan with sphere-trackball rotation — no coherence drift on wide sweeps.
+	let sphereDragPrev: Vector3 | null = null;
 	let pointerDownPos: { x: number; y: number } | null = null;
 
-	canvas.addEventListener('pointerdown', (e) => {
-		if (e.button !== 0) return;
-		pointerDownPos = { x: e.clientX, y: e.clientY };
-		const pick = scene.pick(scene.pointerX, scene.pointerY, m => m === pickSphere);
-		if (pick?.pickedPoint) {
-			dragPrev = pick.pickedPoint.clone();
-			canvas.setPointerCapture(e.pointerId);
-		}
-	});
+	const origStartDrag = camera.movement.startDrag.bind(camera.movement);
+	camera.movement.startDrag = (pointerX: number, pointerY: number) => {
+		origStartDrag(pointerX, pointerY); // maintains isDragging / inertia state
+		const pick = scene.pick(pointerX, pointerY, m => m === pickSphere);
+		sphereDragPrev = pick?.pickedPoint?.clone() ?? null;
+	};
 
-	canvas.addEventListener('pointermove', () => {
-		if (!dragPrev) return;
-		const pick = scene.pick(scene.pointerX, scene.pointerY, m => m === pickSphere);
+	camera.movement.handleDrag = (pointerX: number, pointerY: number) => {
+		if (!sphereDragPrev) return;
+		const pick = scene.pick(pointerX, pointerY, m => m === pickSphere);
 		if (!pick?.pickedPoint) return;
-
 		const curr = pick.pickedPoint;
 		const fromN = curr.clone().normalize();
-		const toN   = dragPrev.clone().normalize();
+		const toN   = sphereDragPrev.clone().normalize();
 		const cosA  = Math.max(-1, Math.min(1, Vector3.Dot(fromN, toN)));
 		if (cosA < 0.9999999) {
 			const axis = Vector3.Cross(fromN, toN).normalize();
@@ -194,13 +189,19 @@ export async function createGlobeEngine(
 				camera.center.clone().normalize(), rot
 			).scale(EARTH_RADIUS_KM);
 		}
-		dragPrev = curr.clone();
+		sphereDragPrev = curr.clone();
+		// Intentionally do NOT call original — pan delta stays zero so Babylon's
+		// drag-plane logic doesn't fight the sphere rotation we just applied.
+	};
+
+	// Click detection only — Babylon handles all drag/zoom/tilt input
+	canvas.addEventListener('pointerdown', (e) => {
+		if (e.button !== 0) return;
+		pointerDownPos = { x: e.clientX, y: e.clientY };
 	});
 
 	canvas.addEventListener('pointerup', (e) => {
 		if (e.button !== 0) return;
-		dragPrev = null;
-		try { canvas.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
 		if (pointerDownPos) {
 			const dx = e.clientX - pointerDownPos.x;
 			const dy = e.clientY - pointerDownPos.y;
@@ -211,15 +212,6 @@ export async function createGlobeEngine(
 			pointerDownPos = null;
 		}
 	});
-
-	// Exponential scroll zoom — feel stays consistent at all altitudes
-	canvas.addEventListener('wheel', (e) => {
-		e.preventDefault();
-		camera.radius = Math.max(
-			camera.limits.radiusMin,
-			Math.min(camera.limits.radiusMax, camera.radius * Math.pow(1.001, e.deltaY))
-		);
-	}, { passive: false });
 
 	// ── Picking / Painting ──────────────────────────────────────
 	// Pick against the lightweight pickSphere instead of the 5M-vertex globe mesh.
