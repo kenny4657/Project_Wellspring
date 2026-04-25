@@ -95,13 +95,13 @@ export function classifyWaterToLowLand(): EdgeClass {
 }
 
 /** Water hex edge whose neighbor is a CLIFF (land heightLevel > 2).
- *  Ramp to sea level for clean geometry joining with the cliff foot, but
- *  do NOT flag as coast — distToCoast will ignore this edge so no sand is
- *  painted directly against the cliff. If an adjacent edge of the same
- *  water hex is a low-land coast, its coastProximity naturally fades off
- *  along this edge away from the shared corner → graceful beach taper. */
+ *  Ramp to sea level and mark as steepCliff so encodeTopVertexColor gives
+ *  vertices near this edge a non-zero cliffProximity. That lets the shader's
+ *  water-hex cliff blend (section a) darken the water surface toward the
+ *  cliff palette right at the shared edge — closing the visual seam between
+ *  the cliff foot and the water surface. */
 export function classifyWaterToCliff(): EdgeClass {
-	return { ...EMPTY_EDGE, edgeTarget: 0 };
+	return { ...EMPTY_EDGE, edgeTarget: 0, steepCliff: true };
 }
 
 /** Low-land hex edge whose neighbor is water.
