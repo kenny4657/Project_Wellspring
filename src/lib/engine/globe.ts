@@ -37,7 +37,7 @@ import { buildGlobeMesh, buildHexEdgeLines, updateCellTerrain } from '$lib/engin
 import { assignCellsToChunks, isChunkVisible } from '$lib/engine/globe-chunks';
 import { initGpuDisplacement, type GpuDisplacementResources } from '$lib/engine/gpu-displacement';
 import { canonicalizeCells } from '$lib/engine/gpu-displacement/hex-corners-tex';
-import { diagnoseGpuDisplacement, dumpSeamPair, findRenderedMeshGaps, type DiagnoseResult } from '$lib/engine/gpu-displacement/debug';
+import { diagnoseGpuDisplacement, dumpSeamPair, dumpAtUnitDir, findRenderedMeshGaps, type DiagnoseResult } from '$lib/engine/gpu-displacement/debug';
 import { createTerrainMaterial, applyTerrainSettings } from '$lib/engine/terrain-material';
 import { createHexDebugMaterial } from '$lib/engine/hex-debug-material';
 import { createWaterMaterial } from '$lib/engine/water-material';
@@ -73,6 +73,8 @@ export interface GlobeEngine {
 	/** Verbose dump of one seam pair — logs edge-by-edge iteration so
 	 *  you can see why each side picks its nearest border. */
 	dumpSeam(cellAId: number, cellBId: number): void;
+	/** Verbose dump of two cells at a specific unit direction. */
+	dumpAt(cellAId: number, cellBId: number, ux: number, uy: number, uz: number): void;
 	/** Find and print the actual rendered-mesh gaps. Iterates every
 	 *  vertex of every flat chunk, computes its sim height (matches
 	 *  shader output), groups coincident vertices by canonical
@@ -424,6 +426,11 @@ export async function createGlobeEngine(
 		dumpSeam(cellAId: number, cellBId: number) {
 			canonicalizeCells(cells);
 			dumpSeamPair(cells, cellAId, cellBId);
+		},
+
+		dumpAt(cellAId: number, cellBId: number, ux: number, uy: number, uz: number) {
+			canonicalizeCells(cells);
+			dumpAtUnitDir(cells, cellAId, cellBId, ux, uy, uz);
 		},
 
 		async findRenderedGaps() {

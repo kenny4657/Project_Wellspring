@@ -200,16 +200,52 @@ function findNeighborByCorners(cell: HexCell, edgeIdx: number, cellById: Map<num
 	return null;
 }
 
-/** For each canonical corner, compute the consensus target across all
- *  cells that touch it — average of each cell's MAX-tie-break target
- *  for the two edges meeting at that corner. This emulates the CPU
- *  smoothing pass: each cell's vertex at a shared corner gets averaged
- *  to a single value. Stored per corner Vector3 (canonical refs are
- *  shared across cells after canonicalizeCells).
+/** For each canonical corner, compute the consensus full-height across
+ *  all cells touching it — emulates CPU smoothing pass for corner
+ *  vertices (the only vertices truly shared by multiple cells). Each
+ *  cell computes its h at the corner from its own perspective, all
+ *  results averaged.
  *
- *  Replaces in-shader corner tie-break which picks different targets
- *  from each side at corners shared by 3+ cells (the source of 76 km
- *  gaps in the rendered mesh). */
+ *  Used by sim/shader: at a vertex, if the test point is close enough
+ *  to a corner of self, snap h to the canonical corner h. All cells at
+ *  that corner snap to the same value → no seam.
+ *
+ *  Returned map keys are canonical Vector3 refs (shared across cells
+ *  after canonicalizeCells), values are pre-noise heights — the noise
+ *  contribution is added in shader so per-frame noise mods still work. */
+export function computeCornerCanonicalHeights(cells: HexCell[]): Map<Vector3, number> {
+	const cellById = new Map<number, HexCell>();
+	for (const c of cells) cellById.set(c.id, c);
+	const borderInfoById = new Map<number, HexBorderInfo>();
+	for (const c of cells) borderInfoById.set(c.id, getHexBorderInfo(c, cellById));
+
+	const sums = new Map<Vector3, { sum: number; count: number }>();
+	for (const c of cells) {
+		const tierH = getLevelHeight(c.heightLevel);
+		const isWater = c.heightLevel <= 1;
+		const hexRadius = meanHexRadius(c.corners);
+		const borderInfo = borderInfoById.get(c.id)!;
+		for (const corner of c.corners) {
+			// Use CPU's actual computeHeightWithCliffErosion — this is
+			// what CPU would compute at that corner before smoothing.
+			const h = computeHeightWithCliffErosion(
+				corner.x, corner.y, corner.z, c, borderInfo, hexRadius, tierH, isWater,
+				cellById, borderInfoById,
+			);
+			let d = sums.get(corner);
+			if (!d) { d = { sum: 0, count: 0 }; sums.set(corner, d); }
+			d.sum += h;
+			d.count += 1;
+		}
+	}
+	const out = new Map<Vector3, number>();
+	for (const [corner, d] of sums) out.set(corner, d.sum / d.count);
+	return out;
+}
+
+/** [legacy] target-only version of canonical corner data. Kept around
+ *  for reference; superseded by computeCornerCanonicalHeights which
+ *  averages full computed h instead of just tie-break targets. */
 export function computeCornerCanonicalTargets(cells: HexCell[]): Map<Vector3, number> {
 	const cellById = new Map<number, HexCell>();
 	for (const c of cells) cellById.set(c.id, c);
@@ -279,8 +315,23 @@ function simulateShaderHeight(
 	cell: HexCell,
 	cellById: Map<number, HexCell>,
 	cornerTargets?: Map<Vector3, number>,
+	cornerHeights?: Map<Vector3, number>,
+	cornerHeightsByPosition?: { lookup: (x: number, y: number, z: number) => number | undefined },
 	verbose = false,
 ): ShaderSimResult {
+	// Position-based snap: if test point is at any canonical corner (any
+	// cell's), snap to that corner's averaged h. Cross-cell unified by
+	// position so cells with non-unified Vector3 refs (residual drift in
+	// canonicalize) still see the same canonical h at the same position.
+	if (cornerHeightsByPosition) {
+		const ch = cornerHeightsByPosition.lookup(unitDir.x, unitDir.y, unitDir.z);
+		if (ch !== undefined) {
+			return {
+				h: ch, hasBorder: false, borderTarget: 0,
+				bestMu: 0, bestMidH: ch, hBase: ch,
+			};
+		}
+	}
 	const self = fetchCellData(cell, cellById);
 	const selfH = self.heightLevel;
 	const isWater = selfH <= 1;
@@ -294,25 +345,12 @@ function simulateShaderHeight(
 	const interiorNoiseH = isWater ? Math.abs(rawNoise) : (rawNoise + 0.3);
 	const borderNoiseH = Math.abs(rawNoise) + 0.15;
 
-	// CPU short-circuit: water hex with all same-tier neighbors uses pure
-	// interior height (skips border smoothing entirely).
-	if (isWater && self.allSameHeight) {
-		const h0 = selfTierH + interiorNoiseH * NOISE_AMP;
-		// Cliff erosion still applies even in this branch.
-		const state: CliffWalkState = { bestMu: 1, bestMidH: h0 };
-		const hexRadius0 = meanHexRadius(self.corners);
-		walkCliffEdges(unitDir, selfH, self.corners, self.neighborH, hexRadius0,
-			cliffNoise, midNoise, selfTierH, state);
-		for (let i = 0; i < self.neighbors.length; i++) {
-			const nb = self.neighbors[i]; if (!nb) continue;
-			const nbData = fetchCellData(nb, cellById);
-			const nbHexRadius = meanHexRadius(nbData.corners);
-			walkCliffEdges(unitDir, nbData.heightLevel, nbData.corners, nbData.neighborH,
-				nbHexRadius, cliffNoise, midNoise, getLevelHeight(nbData.heightLevel), state);
-		}
-		const hFinal = state.bestMu < 1 ? state.bestMidH * (1 - state.bestMu) + h0 * state.bestMu : h0;
-		return { h: hFinal, hasBorder: false, borderTarget: 0, bestMu: state.bestMu, bestMidH: state.bestMidH, hBase: h0 };
-	}
+	// CPU's allSameHeight short-circuit produces ASYMMETRIC results when
+	// adjacent cells take different paths (one takes the short-circuit,
+	// the other does the full border walk). For water-water seams that
+	// gives 7+ km gaps between adjacent same-tier hexes. Skipping it —
+	// the border walk produces equivalent values for genuine all-same
+	// cases but stays symmetric across the seam.
 
 	const hexRadius = meanHexRadius(self.corners);
 	const n = self.corners.length;
@@ -350,23 +388,11 @@ function simulateShaderHeight(
 		const edgeTarget = computeBorderTarget(selfH, self.neighborH[i]);
 		const coast = isCoastEdge(selfH, self.neighborH[i]);
 
-		// Per-position target along edge: blend canonical corner targets at
-		// endpoints with the edge target at midpoint. This makes both sides
-		// of any shared edge agree on the target at every position — at
-		// corners they snap to the canonical value (averaged across all
-		// cells touching that corner), at midpoint they use the symmetric
-		// edge target.
-		let posTarget = edgeTarget;
-		if (cornerTargets) {
-			const cA = cornerTargets.get(a);
-			const cB = cornerTargets.get(b);
-			const wA = Math.max(0, 1 - 2 * t); // 1 at t=0, 0 at t≥0.5
-			const wB = Math.max(0, 2 * t - 1); // 0 at t≤0.5, 1 at t=1
-			const wEdge = 1 - wA - wB;
-			posTarget = (cA !== undefined ? wA * cA : wA * edgeTarget)
-			          + wEdge * edgeTarget
-			          + (cB !== undefined ? wB * cB : wB * edgeTarget);
-		}
+		// Per-position target = edge_target (computeBorderTarget is
+		// symmetric per edge, so this is the same from both sides for
+		// any shared edge). Corner cases handled by the corner-snap
+		// at the top of simulateShaderHeight.
+		const posTarget = edgeTarget;
 
 		// Tie-break still uses the per-position target. With cornerTargets
 		// active, both sides at a corner produce the SAME posTarget so the
@@ -466,6 +492,36 @@ export interface DiagnoseResult {
 	print: () => void;
 }
 
+/** Dump verbose sim for both cells at a specific unit direction.
+ *  Useful for debugging the rendered-mesh gap finder's pairs. */
+export function dumpAtUnitDir(
+	cells: HexCell[], cellAId: number, cellBId: number,
+	ux: number, uy: number, uz: number,
+): void {
+	const cellById = new Map<number, HexCell>();
+	for (const c of cells) cellById.set(c.id, c);
+	const A = cellById.get(cellAId);
+	const B = cellById.get(cellBId);
+	if (!A || !B) { console.log('Missing cell'); return; }
+	console.log(`A=${cellAId} (tier ${A.heightLevel}) corners=${A.corners.length}`);
+	for (let i = 0; i < A.corners.length; i++) {
+		const c = A.corners[i];
+		const dx = ux - c.x, dy = uy - c.y, dz = uz - c.z;
+		console.log(`  A.corners[${i}]=(${c.x.toFixed(5)},${c.y.toFixed(5)},${c.z.toFixed(5)}) dist=${Math.sqrt(dx*dx+dy*dy+dz*dz).toExponential(2)}`);
+	}
+	console.log(`B=${cellBId} (tier ${B.heightLevel}) corners=${B.corners.length}`);
+	for (let i = 0; i < B.corners.length; i++) {
+		const c = B.corners[i];
+		const dx = ux - c.x, dy = uy - c.y, dz = uz - c.z;
+		console.log(`  B.corners[${i}]=(${c.x.toFixed(5)},${c.y.toFixed(5)},${c.z.toFixed(5)}) dist=${Math.sqrt(dx*dx+dy*dy+dz*dz).toExponential(2)}`);
+	}
+	const u = new Vector3(ux, uy, uz);
+	console.log(`A's full edge walk:`);
+	simulateShaderHeight(u, A, cellById, undefined, undefined, undefined, true);
+	console.log(`B's full edge walk:`);
+	simulateShaderHeight(u, B, cellById, undefined, undefined, undefined, true);
+}
+
 /** Verbose dump of one cell-pair's seam test. Logs each side's edge
  *  iteration so you can see why each picks the target it does.
  *  Use:  engine.dumpSeam(0, 9471) */
@@ -492,11 +548,12 @@ export function dumpSeamPair(cells: HexCell[], cellAId: number, cellBId: number)
 	m.x /= ml; m.y /= ml; m.z /= ml;
 	console.log(`  m=(${m.x.toFixed(6)}, ${m.y.toFixed(6)}, ${m.z.toFixed(6)})`);
 	const cornerTargets = computeCornerCanonicalTargets(cells);
+	const cornerHeights = computeCornerCanonicalHeights(cells);
 	console.log(`A's edge walk:`);
-	const simA = simulateShaderHeight(m, A, cellById, cornerTargets, true);
+	const simA = simulateShaderHeight(m, A, cellById, cornerTargets, cornerHeights, undefined, true);
 	console.log(`  → A.h=${simA.h.toFixed(6)} target=${simA.borderTarget.toFixed(4)} bestMu=${simA.bestMu.toFixed(3)}`);
 	console.log(`B's edge walk:`);
-	const simB = simulateShaderHeight(m, B, cellById, cornerTargets, true);
+	const simB = simulateShaderHeight(m, B, cellById, cornerTargets, cornerHeights, undefined, true);
 	console.log(`  → B.h=${simB.h.toFixed(6)} target=${simB.borderTarget.toFixed(4)} bestMu=${simB.bestMu.toFixed(3)}`);
 }
 
@@ -529,9 +586,69 @@ export function findRenderedMeshGaps(
 	const cellById = new Map<number, HexCell>();
 	for (const c of cells) cellById.set(c.id, c);
 
-	// Precompute canonical corner targets so sim uses consensus values
-	// at corners (matches CPU smoothing behavior).
+	// Precompute canonical corner targets + heights so sim uses
+	// consensus values at corners (emulates CPU smoothing pass).
 	const cornerTargets = computeCornerCanonicalTargets(cells);
+
+	// Position-bucketed corner heights: group all cells whose corners
+	// land in the same spatial bucket (regardless of canonical Vector3
+	// identity), average their h values. Handles drift larger than
+	// canonicalize MERGE_RADIUS that left some refs unmerged.
+	const cellByIdMap = new Map<number, HexCell>();
+	for (const c of cells) cellByIdMap.set(c.id, c);
+	const borderInfoById = new Map<number, HexBorderInfo>();
+	for (const c of cells) borderInfoById.set(c.id, getHexBorderInfo(c, cellByIdMap));
+
+	const SNAP_BUCKET = 2e-3; // larger than max canonicalize drift
+	const SNAP_R = 5e-4;
+	const SNAP_R2 = SNAP_R * SNAP_R;
+	const positionalSums = new Map<string, { sumX: number; sumY: number; sumZ: number; sumH: number; count: number }>();
+	for (const c of cells) {
+		const tierH = getLevelHeight(c.heightLevel);
+		const isWater = c.heightLevel <= 1;
+		const hexRadius = meanHexRadius(c.corners);
+		const borderInfo = borderInfoById.get(c.id)!;
+		for (const corner of c.corners) {
+			const h = computeHeightWithCliffErosion(
+				corner.x, corner.y, corner.z, c, borderInfo, hexRadius, tierH, isWater,
+				cellByIdMap, borderInfoById,
+			);
+			const ix = Math.floor(corner.x / SNAP_BUCKET);
+			const iy = Math.floor(corner.y / SNAP_BUCKET);
+			const iz = Math.floor(corner.z / SNAP_BUCKET);
+			const k = `${ix},${iy},${iz}`;
+			let s = positionalSums.get(k);
+			if (!s) { s = { sumX: 0, sumY: 0, sumZ: 0, sumH: 0, count: 0 }; positionalSums.set(k, s); }
+			s.sumX += corner.x; s.sumY += corner.y; s.sumZ += corner.z;
+			s.sumH += h; s.count++;
+		}
+	}
+	const grid = new Map<string, { x: number; y: number; z: number; h: number }[]>();
+	for (const [k, s] of positionalSums) {
+		const inv = 1 / s.count;
+		grid.set(k, [{ x: s.sumX * inv, y: s.sumY * inv, z: s.sumZ * inv, h: s.sumH * inv }]);
+	}
+	// Legacy ref-based map for sim's older code path (still used by t-blend etc).
+	const cornerHeights: Map<Vector3, number> = new Map();
+	const cornerHeightsByPosition = {
+		lookup(x: number, y: number, z: number): number | undefined {
+			const ix = Math.floor(x / SNAP_BUCKET);
+			const iy = Math.floor(y / SNAP_BUCKET);
+			const iz = Math.floor(z / SNAP_BUCKET);
+			let bestD2 = SNAP_R2;
+			let bestH: number | undefined;
+			for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
+				const list = grid.get(`${ix + dx},${iy + dy},${iz + dz}`);
+				if (!list) continue;
+				for (const c of list) {
+					const ddx = c.x - x, ddy = c.y - y, ddz = c.z - z;
+					const d2 = ddx * ddx + ddy * ddy + ddz * ddz;
+					if (d2 < bestD2) { bestD2 = d2; bestH = c.h; }
+				}
+			}
+			return bestH;
+		},
+	};
 
 	// Bucket vertex positions by a coarse spatial key. Two vertices in the
 	// same bucket from different hexes are candidates for a shared seam.
@@ -556,7 +673,7 @@ export function findRenderedMeshGaps(
 			const cell = cellById.get(hexId);
 			if (!cell) continue;
 			const u = new Vector3(ux, uy, uz);
-			const sim = simulateShaderHeight(u, cell, cellById, cornerTargets);
+			const sim = simulateShaderHeight(u, cell, cellById, cornerTargets, cornerHeights, cornerHeightsByPosition);
 			const bk = `${Math.round(ux / STEP)},${Math.round(uy / STEP)},${Math.round(uz / STEP)}`;
 			let list = buckets.get(bk);
 			if (!list) { list = []; buckets.set(bk, list); }
@@ -566,24 +683,55 @@ export function findRenderedMeshGaps(
 
 	const gaps: RenderedGap[] = [];
 	let totalEdgeMatches = 0;
+	// Only flag a gap if two vertices are at near-identical positions (true
+	// coincidence). Bucket grouping at 1e-4 catches "spatially close" pairs
+	// that aren't actually shared (each cell's near-corner sub-tri vertex
+	// lives in its own fan triangle interior). True shared vertices are at
+	// exactly the same world-direction (sub-tri vertices on shared edges
+	// or shared corners after canonicalize).
+	const COINCIDENT_R2 = 1e-12;
 	for (const [, list] of buckets) {
 		if (list.length < 2) continue;
-		// Compare pairs — we want the WORST diff per bucket.
 		for (let i = 0; i < list.length; i++) {
 			for (let j = i + 1; j < list.length; j++) {
 				const a = list[i], b = list[j];
 				if (a.hexId === b.hexId) continue;
+				const ddx = a.ux - b.ux, ddy = a.uy - b.uy, ddz = a.uz - b.uz;
+				if (ddx * ddx + ddy * ddy + ddz * ddz > COINCIDENT_R2) continue;
 				totalEdgeMatches++;
 				const diff = Math.abs(a.h - b.h);
 				const worldGapKm = diff * planetRadius;
 				if (worldGapKm > 0.1) { // > 100m worth tracking
+					// Check whether either side hit the corner-snap path.
+					const cellA = cellById.get(a.hexId)!;
+					const cellB = cellById.get(b.hexId)!;
+					let cornerInfoA = 'no-snap';
+					let cornerInfoB = 'no-snap';
+					if (cornerHeights) {
+						for (const corner of cellA.corners) {
+							const dx = a.ux - corner.x, dy = a.uy - corner.y, dz = a.uz - corner.z;
+							const d2 = dx * dx + dy * dy + dz * dz;
+							if (d2 < 1e-7) {
+								cornerInfoA = `near-corner d2=${d2.toExponential(2)} canon-h=${cornerHeights.get(corner)?.toFixed(5) ?? '?'}`;
+								break;
+							}
+						}
+						for (const corner of cellB.corners) {
+							const dx = b.ux - corner.x, dy = b.uy - corner.y, dz = b.uz - corner.z;
+							const d2 = dx * dx + dy * dy + dz * dz;
+							if (d2 < 1e-7) {
+								cornerInfoB = `near-corner d2=${d2.toExponential(2)} canon-h=${cornerHeights.get(corner)?.toFixed(5) ?? '?'}`;
+								break;
+							}
+						}
+					}
 					gaps.push({
 						hexAId: a.hexId, hexBId: b.hexId,
 						unitDir: [a.ux, a.uy, a.uz],
 						hA: a.h, hB: b.h,
 						worldGapKm,
-						notesA: `tier=${cellById.get(a.hexId)!.heightLevel} target=${a.sim.borderTarget.toFixed(4)} bestMu=${a.sim.bestMu.toFixed(3)} bestMidH=${a.sim.bestMidH.toFixed(5)}`,
-						notesB: `tier=${cellById.get(b.hexId)!.heightLevel} target=${b.sim.borderTarget.toFixed(4)} bestMu=${b.sim.bestMu.toFixed(3)} bestMidH=${b.sim.bestMidH.toFixed(5)}`,
+						notesA: `tier=${cellA.heightLevel} target=${a.sim.borderTarget.toFixed(4)} bestMu=${a.sim.bestMu.toFixed(3)} bestMidH=${a.sim.bestMidH.toFixed(5)} ${cornerInfoA}`,
+						notesB: `tier=${cellB.heightLevel} target=${b.sim.borderTarget.toFixed(4)} bestMu=${b.sim.bestMu.toFixed(3)} bestMidH=${b.sim.bestMidH.toFixed(5)} ${cornerInfoB}`,
 					});
 				}
 			}
