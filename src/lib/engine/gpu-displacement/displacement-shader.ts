@@ -134,10 +134,12 @@ bool isCoastEdge(int selfH, int nbH) {
 bool isExcludedEdge(int selfH, int nbH) {
     bool selfWater = selfH <= 1;
     bool nbWater = nbH <= 1;
-    // Land-land: excluded
+    // Land-land: excluded (per classifyLandToLand)
     if (!selfWater && !nbWater) return true;
-    // Water-cliff (one water, other tall land): excluded
-    if (isCliffEdge(selfH, nbH)) return true;
+    // Cliff-water from LAND side only (per classifyCliffToWater).
+    // From the water side (classifyWaterToCliff), edge is NOT excluded
+    // and uses target=0 — water surface ramps up to sea level at cliff foot.
+    if (!selfWater && nbWater && selfH > 2) return true;
     return false;
 }
 float computeBorderTarget(int selfH, int nbH) {
@@ -336,12 +338,15 @@ void main() {
                    hexRadius, cliffNoise, midNoise, selfTierH, bestMu, bestMidH);
 
     // ── Cliff erosion: 1-hop neighbors ──────────────────────
-    // For each non-cliff edge of self, walk that neighbor's cliff edges
-    // using the neighbor's own corners + heightLevels + hexRadius.
-    // Closes seams between same-tier neighbors of a common cliff hex.
+    // For EVERY edge of self, walk that neighbor's cliff edges using
+    // the neighbor's own data. Walking all 6 neighbors (not just
+    // non-cliff edges) ensures both sides of any shared edge see the
+    // same set of nearby cliffs, so they compute identical bestMu.
+    // Without this, a cliff hex C adjacent to both A and B would only
+    // be 1-hop visited from the side where A-B is non-cliff, making
+    // the seam mismatch.
     for (int i = 0; i < 6; i++) {
         if (i >= edgeCount) break;
-        if (isCliffEdge(selfH, neighborH[i])) continue;
         int nbId = nbIds[i];
         if (nbId < 0) continue;
 
@@ -394,7 +399,7 @@ void main() {
     vec3 N = normalize(cross(dy, dx));
 
     vec3 base;
-    if (vCliffMu > 0.05)              base = vec3(0.45, 0.40, 0.35); // cliff face
+    if (vCliffMu > 0.5)               base = vec3(0.45, 0.40, 0.35); // cliff face only where erosion is strong
     else if (vTierH < -0.01)          base = vec3(0.10, 0.18, 0.32);
     else if (vTierH < -0.001)         base = vec3(0.16, 0.30, 0.45);
     else if (vTierH < 0.001)          base = vec3(0.62, 0.78, 0.42);
