@@ -37,7 +37,7 @@ import { buildGlobeMesh, buildHexEdgeLines, updateCellTerrain } from '$lib/engin
 import { assignCellsToChunks, isChunkVisible } from '$lib/engine/globe-chunks';
 import { initGpuDisplacement, type GpuDisplacementResources } from '$lib/engine/gpu-displacement';
 import { canonicalizeCells } from '$lib/engine/gpu-displacement/hex-corners-tex';
-import { diagnoseGpuDisplacement, dumpSeamPair, dumpAtUnitDir, findRenderedMeshGaps, findLandUnderwaterVertices, landHHistogram, type DiagnoseResult } from '$lib/engine/gpu-displacement/debug';
+import { diagnoseGpuDisplacement, dumpSeamPair, dumpAtUnitDir, findRenderedMeshGaps, findLandUnderwaterVertices, landHHistogram, findVisibleCracks, type DiagnoseResult } from '$lib/engine/gpu-displacement/debug';
 import { createTerrainMaterial, applyTerrainSettings } from '$lib/engine/terrain-material';
 import { createHexDebugMaterial } from '$lib/engine/hex-debug-material';
 import { createWaterMaterial } from '$lib/engine/water-material';
@@ -80,6 +80,10 @@ export interface GlobeEngine {
 	 *  shader output), groups coincident vertices by canonical
 	 *  position, and reports the worst world-space height diffs. */
 	findRenderedGaps(): Promise<void>;
+	/** Bucket every flat-mesh vertex by spatial position; for each
+	 *  multi-cell cluster, report the max world-displaced position drift.
+	 *  This catches actual visible cracks regardless of h-equality. */
+	findCracks(thresholdM?: number, bucketSize?: number): Promise<unknown>;
 	/** Find vertices on land hexes (tier ≥ 2) where the computed h
 	 *  dips below the water-sphere height — explains the water-clipping
 	 *  pattern visible through green/brown surface. */
@@ -465,6 +469,16 @@ export async function createGlobeEngine(
 				gpuResources = await initGpuDisplacement(cells, chunkAssignment, scene, EARTH_RADIUS_KM);
 			}
 			landHHistogram(cells, gpuResources.flatChunks);
+		},
+
+		async findCracks(thresholdM = 100, bucketSize = 5e-4) {
+			canonicalizeCells(cells);
+			if (!gpuResources) {
+				gpuResources = await initGpuDisplacement(cells, chunkAssignment, scene, EARTH_RADIUS_KM);
+			}
+			const r = findVisibleCracks(cells, gpuResources.flatChunks, EARTH_RADIUS_KM, thresholdM, bucketSize);
+			r.print();
+			return r;
 		},
 
 		async setGpuMode(enabled: boolean) {

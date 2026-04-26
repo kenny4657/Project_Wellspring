@@ -719,6 +719,158 @@ export function landHHistogram(
 	for (const [k, v] of [...tier2Buckets.entries()].sort()) console.log(`  ${k}: ${v}`);
 }
 
+/** ──────────────────────────────────────────────────────────
+ *  findVisibleCracks: the diagnostic that catches what the user sees.
+ *
+ *  Instead of bucketing arbitrary mesh vertices by spatial proximity
+ *  (the existing findRenderedMeshGaps), this walks the cells' mesh
+ *  buffers and explicitly groups vertices by their EXACT float32
+ *  unit-direction key. Two cells whose meshes contain a vertex at the
+ *  EXACT same float32 unit-dir SHOULD displace it to the same world
+ *  position — if they don't, that's a crack.
+ *
+ *  Reports per-cluster:
+ *    - max pairwise unit-dir drift (in meters on Earth surface)
+ *    - max pairwise h drift (in meters of radial displacement)
+ *    - max pairwise WORLD-DISPLACED-POSITION drift (in meters)
+ *
+ *  The world-position drift is the actual visible crack size.
+ *  ──────────────────────────────────────────────────────────  */
+export interface VisibleCrack {
+	cellIds: number[];
+	tierByCell: number[];
+	unitDir: [number, number, number];
+	hValues: number[];
+	maxUnitDirDriftM: number;
+	maxHDriftM: number;
+	maxWorldDriftM: number;
+}
+export function findVisibleCracks(
+	cells: HexCell[],
+	flatChunks: { mesh: { getVerticesData: (kind: string) => number[] | Float32Array | null }; cellIds: number[] }[],
+	planetRadius: number,
+	thresholdM = 100,
+	bucketSize = 5e-4, // ~3km — wider than canonicalize residual
+	topK = 30,
+): {
+	crackCount: number;
+	clusterCount: number;
+	multiCellClusterCount: number;
+	worstClusters: VisibleCrack[];
+	tierPairCounts: Map<string, number>;
+	print: () => void;
+} {
+	const cellById = new Map<number, HexCell>();
+	for (const c of cells) cellById.set(c.id, c);
+
+	// Bucket every flat-mesh vertex by spatial position. After bucketing,
+	// any cluster of vertices from MULTIPLE cells in the same bucket are
+	// "should-be-coincident" (along a shared corner or sub-edge).
+	type Sample = { hexId: number; ux: number; uy: number; uz: number; h: number };
+	const buckets = new Map<string, Sample[]>();
+	for (const chunk of flatChunks) {
+		const positions = chunk.mesh.getVerticesData('position');
+		const hexIds = chunk.mesh.getVerticesData('hexId');
+		if (!positions || !hexIds) continue;
+		const seen = new Set<string>();
+		for (let i = 0; i < hexIds.length; i++) {
+			const ux = positions[i * 3];
+			const uy = positions[i * 3 + 1];
+			const uz = positions[i * 3 + 2];
+			const hexId = Math.round(hexIds[i]);
+			const dedupKey = `${hexId}|${ux.toFixed(7)},${uy.toFixed(7)},${uz.toFixed(7)}`;
+			if (seen.has(dedupKey)) continue;
+			seen.add(dedupKey);
+			const cell = cellById.get(hexId);
+			if (!cell) continue;
+			const sim = simulateShaderHeight(new Vector3(ux, uy, uz), cell, cellById);
+			const ix = Math.floor(ux / bucketSize);
+			const iy = Math.floor(uy / bucketSize);
+			const iz = Math.floor(uz / bucketSize);
+			const bk = `${ix},${iy},${iz}`;
+			let list = buckets.get(bk);
+			if (!list) { list = []; buckets.set(bk, list); }
+			list.push({ hexId, ux, uy, uz, h: sim.h });
+		}
+	}
+
+	let crackCount = 0;
+	let clusterCount = 0;
+	let multiCellClusterCount = 0;
+	const worstClusters: VisibleCrack[] = [];
+	const tierPairCounts = new Map<string, number>();
+	for (const [, list] of buckets) {
+		clusterCount++;
+		if (list.length < 2) continue;
+		const distinctCells = new Set(list.map(s => s.hexId));
+		if (distinctCells.size < 2) continue;
+		multiCellClusterCount++;
+		// Compute pairwise drifts within this cluster.
+		let maxUDDrift = 0; // unit-dir drift
+		let maxHDrift = 0;
+		let maxWDrift = 0;
+		let worstA: Sample | null = null;
+		let worstB: Sample | null = null;
+		for (let i = 0; i < list.length; i++) {
+			for (let j = i + 1; j < list.length; j++) {
+				const a = list[i], b = list[j];
+				if (a.hexId === b.hexId) continue;
+				const dux = a.ux - b.ux, duy = a.uy - b.uy, duz = a.uz - b.uz;
+				const ud = Math.sqrt(dux * dux + duy * duy + duz * duz) * planetRadius * 1000;
+				if (ud > maxUDDrift) maxUDDrift = ud;
+				const hd = Math.abs(a.h - b.h) * planetRadius * 1000;
+				if (hd > maxHDrift) maxHDrift = hd;
+				// World-displaced position
+				const wax = a.ux * (1 + a.h), way = a.uy * (1 + a.h), waz = a.uz * (1 + a.h);
+				const wbx = b.ux * (1 + b.h), wby = b.uy * (1 + b.h), wbz = b.uz * (1 + b.h);
+				const wdx = wax - wbx, wdy = way - wby, wdz = waz - wbz;
+				const wd = Math.sqrt(wdx * wdx + wdy * wdy + wdz * wdz) * planetRadius * 1000;
+				if (wd > maxWDrift) {
+					maxWDrift = wd;
+					worstA = a;
+					worstB = b;
+				}
+			}
+		}
+		if (maxWDrift > thresholdM) {
+			crackCount++;
+			if (worstA && worstB) {
+				const tA = cellById.get(worstA.hexId)!.heightLevel;
+				const tB = cellById.get(worstB.hexId)!.heightLevel;
+				const pairKey = `${Math.min(tA, tB)}↔${Math.max(tA, tB)}`;
+				tierPairCounts.set(pairKey, (tierPairCounts.get(pairKey) ?? 0) + 1);
+			}
+			const cellList = [...distinctCells];
+			worstClusters.push({
+				cellIds: cellList,
+				tierByCell: cellList.map(id => cellById.get(id)!.heightLevel),
+				unitDir: [list[0].ux, list[0].uy, list[0].uz],
+				hValues: list.map(s => s.h),
+				maxUnitDirDriftM: maxUDDrift,
+				maxHDriftM: maxHDrift,
+				maxWorldDriftM: maxWDrift,
+			});
+		}
+	}
+	worstClusters.sort((a, b) => b.maxWorldDriftM - a.maxWorldDriftM);
+
+	return {
+		crackCount, clusterCount, multiCellClusterCount, worstClusters,
+		tierPairCounts,
+		print() {
+			console.log(`[visible-cracks] ${clusterCount} buckets, ${multiCellClusterCount} multi-cell, ${crackCount} with world-drift > ${thresholdM}m`);
+			console.log('[visible-cracks] tier pair counts:');
+			for (const [k, v] of [...tierPairCounts.entries()].sort((a, b) => b[1] - a[1])) {
+				console.log(`  ${k}: ${v}`);
+			}
+			console.log(`[visible-cracks] worst ${topK} clusters:`);
+			for (const c of worstClusters.slice(0, topK)) {
+				console.log(`  cells [${c.cellIds.join(',')}] tiers [${c.tierByCell.join(',')}] world-drift=${c.maxWorldDriftM.toFixed(0)}m (h-drift=${c.maxHDriftM.toFixed(0)}m, ud-drift=${c.maxUnitDirDriftM.toFixed(0)}m) h=[${c.hValues.map(x => x.toFixed(5)).join(',')}]`);
+			}
+		},
+	};
+}
+
 export function findRenderedMeshGaps(
 	cells: HexCell[],
 	flatChunks: { mesh: { getVerticesData: (kind: string) => number[] | Float32Array | null }; cellIds: number[] }[],
