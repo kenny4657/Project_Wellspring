@@ -357,9 +357,9 @@ scheduler.
   LOD plan, but the picker just selects which buffer to bind).
 - Hemisphere culling already in place.
 
-**Total: ~1050 lines** + a fallback path keeping the CPU build
-working for older GPUs (~150 lines wrapper). Roughly 1.5–2 weeks
-focused work.
+**Total: ~1050 lines.** Roughly 1.5–2 weeks focused work. (No
+fallback path — discrete-GPU target means we delete the CPU
+displacement path once the GPU path is verified.)
 
 ## What stays the same
 
@@ -402,11 +402,8 @@ focused work.
    Pushing past 1M hexes requires a 2048×1024 texture (still
    fine) or a buffer texture.
 
-4. **Mobile / integrated GPU compatibility.** WebGL2 cubemaps
-   and dynamic indexing of textures are widely supported, but
-   per-vertex texture samples at 1M+ × 60 fps is heavy on
-   integrated GPUs. Fallback: keep the CPU path behind a flag
-   for low-end devices.
+4. ~~Mobile / integrated GPU compatibility.~~ **Resolved**:
+   target is desktop with discrete GPU. No fallback path needed.
 
 5. **Painting/editing immediate visual feedback.** Today the
    color buffer write is followed by `setVerticesData` which
@@ -443,14 +440,13 @@ focused work.
 3. **Hex corner storage layout?** Buffer texture vs 2D texture
    indexed by hexId. Probably buffer texture for cleaner layout.
 
-4. **Keep fallback CPU path?** Adds ~150 lines and significant
-   conditional logic. Decision deferred — start with GPU-only,
-   add fallback if device-compat issues surface.
+4. ~~Keep fallback CPU path?~~ **Resolved**: no fallback (discrete
+   GPU target). Cut ~150 lines from the estimate.
 
-5. **At what scale do we cut over?** Could implement GPU
-   displacement and ship it as opt-in initially (like the
-   `setDebugMode` toggle). Validate visual parity, then make
-   it default.
+5. **At what scale do we cut over?** Implement GPU displacement
+   behind an opt-in toggle (like `setDebugMode`). Validate visual
+   parity via offscreen-render diff, then make it default and
+   delete the CPU path.
 
 ## Comparison vs the (1)+(2)+(3)+(5) path
 
@@ -472,13 +468,19 @@ Bigger upfront cost; better end state.
 
 ## Decision
 
-This plan is for reference / approval. Don't start without:
-1. Confirming the visual parity test plan — how do we verify
-   the GPU shader produces the same output as the CPU function?
-   (Suggestion: render both to offscreen targets, diff pixels,
-   gate the cutover on near-zero diff.)
-2. Confirming target devices — is integrated GPU support a
-   requirement or can we assume discrete GPUs only?
-3. Identifying which existing experiments in the
-   `terrain-colors-v2` stash had partial GLSL ports we can
-   borrow from. Several functions may already be ported.
+Decisions taken:
+1. **Visual parity test**: render CPU and GPU paths to offscreen
+   targets at the same camera, diff pixel-by-pixel, gate the
+   default-cutover on near-zero diff. Implement this as part of
+   Phase 2 so we have a regression check while porting the shader.
+2. **Target devices**: desktop with discrete GPU. No integrated /
+   mobile fallback. Drop the ~150 lines of fallback wrapping.
+3. **Stash code**: not reused. Port from `hex-heights.ts` /
+   `hex-distance-fields.ts` / `hex-borders.ts` directly. Cleaner
+   start; the stash had architectural assumptions (uniform
+   icosphere) that don't apply here.
+
+Ready to start when you are. Phase 1 (CPU bake noise → cubemap +
+flat-mesh build path) is the right kickoff because it's
+self-contained and produces a verifiable artifact (the cubemap)
+without needing the shader yet.
