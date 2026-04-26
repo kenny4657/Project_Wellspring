@@ -56,6 +56,7 @@ import {
 	subdivideEdge,
 	lerpOnSphere,
 } from './mesh-smoothing';
+import type { ChunkAssignment, ChunkRuntime } from './globe-chunks';
 
 // ── Build Globe Mesh ────────────────────────────────────────
 
@@ -83,6 +84,7 @@ function buildCellTopFace(
 	cell: HexCell,
 	borderInfo: HexBorderInfo,
 	cellById: Map<number, HexCell>,
+	borderInfoById: Map<number, HexBorderInfo>,
 	hexRadius: number,
 	tierH: number,
 	radius: number,
@@ -112,7 +114,7 @@ function buildCellTopFace(
 				const ux = triVerts[j + k * 3];
 				const uy = triVerts[j + k * 3 + 1];
 				const uz = triVerts[j + k * 3 + 2];
-				const h = computeHeightWithCliffErosion(ux, uy, uz, cell, borderInfo, hexRadius, tierH, isWaterHex, cellById);
+				const h = computeHeightWithCliffErosion(ux, uy, uz, cell, borderInfo, hexRadius, tierH, isWaterHex, cellById, borderInfoById);
 				const r = radius * (1 + h);
 				displaced.push(ux * r, uy * r, uz * r);
 			}
@@ -289,19 +291,29 @@ function buildCellWalls(
 	}
 }
 
-export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): {
-	mesh: Mesh;
-	vertexStarts: number[];
+export interface BuildGlobeMeshResult {
+	chunks: ChunkRuntime[];
+	/** cellIdx → chunkIdx (denormalized from ChunkAssignment for fast lookup). */
+	chunkOfCell: number[];
+	/** Total vertex count in cell ci (across whatever chunk owns it). */
 	totalVerticesPerCell: number[];
-	colorsBuffer: Float32Array;
-	positionsBuffer: Float32Array;
-} {
+}
+
+export async function buildGlobeMesh(
+	cells: HexCell[],
+	radius: number,
+	scene: Scene,
+	chunkAssignment: ChunkAssignment,
+	yieldEvery = 500,
+): Promise<BuildGlobeMeshResult> {
 	const positions: number[] = [];
 	const indices: number[] = [];
 	const normals: number[] = [];
 	const colors: number[] = [];
 	const vertexStarts: number[] = [];
 	const totalVerticesPerCell: number[] = [];
+	const indexStarts: number[] = [];
+	const indexCountPerCell: number[] = [];
 
 	const botR = radius * (1 + BASE_HEIGHT);
 
@@ -316,10 +328,18 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 	for (let ci = 0; ci < cells.length; ci++) {
 		const cell = cells[ci];
 		const n = cell.corners.length;
-		if (n < 3) { vertexStarts.push(vOffRef.value); totalVerticesPerCell.push(0); continue; }
+		if (n < 3) {
+			vertexStarts.push(vOffRef.value);
+			totalVerticesPerCell.push(0);
+			indexStarts.push(indices.length);
+			indexCountPerCell.push(0);
+			continue;
+		}
 
 		vertexStarts.push(vOffRef.value);
+		indexStarts.push(indices.length);
 		const startVOff = vOffRef.value;
+		const startIdx = indices.length;
 
 		const color = getTerrainColor(cell.terrain);   // wall faces
 		const tierH = getLevelHeight(cell.heightLevel);
@@ -329,12 +349,19 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 		const borderInfo = borderInfoById.get(cell.id)!;
 		const hexRadius = computeHexRadius(cell);
 
-		buildCellTopFace(cell, borderInfo, cellById, hexRadius, tierH, radius, isWaterHex,
+		buildCellTopFace(cell, borderInfo, cellById, borderInfoById, hexRadius, tierH, radius, isWaterHex,
 			positions, normals, colors, indices, vOffRef);
 		buildCellWalls(cell, borderInfo, borderInfoById, cellById, hexRadius, tierH, radius, botR, isWaterHex, color,
 			positions, normals, colors, indices, vOffRef);
 
 		totalVerticesPerCell.push(vOffRef.value - startVOff);
+		indexCountPerCell.push(indices.length - startIdx);
+
+		// Async yield: spread the build across frames so the main thread
+		// stays responsive on big maps.
+		if (yieldEvery > 0 && ci > 0 && ci % yieldEvery === 0) {
+			await new Promise<void>(r => setTimeout(r, 0));
+		}
 	}
 
 	const vOff = vOffRef.value;
@@ -400,15 +427,117 @@ export function buildGlobeMesh(cells: HexCell[], radius: number, scene: Scene): 
 		for (const ex of gapExamples) console.log(ex);
 	}
 
-	const mesh = new Mesh('globeHex', scene);
-	const vertexData = new VertexData();
-	vertexData.positions = positionsF32;
-	vertexData.indices = new Uint32Array(indices);
-	vertexData.normals = normalsF32;
-	vertexData.colors = colorsF32;
-	vertexData.applyToMesh(mesh, true);
+	// ── Split the global buffers into per-chunk Babylon meshes ─────
+	// Smoothing has run on the global flat buffers, so seams across
+	// chunk boundaries are already consistent. Now we slice each
+	// cell's vertex range out into the chunk it was assigned to.
+	const chunks = splitGlobalBuffersIntoChunks(
+		cells, scene, chunkAssignment,
+		positionsF32, normalsF32, colorsF32, indices,
+		vertexStarts, totalVerticesPerCell,
+		indexStarts, indexCountPerCell,
+	);
 
-	return { mesh, vertexStarts, totalVerticesPerCell, colorsBuffer: colorsF32, positionsBuffer: positionsF32 };
+	return {
+		chunks,
+		chunkOfCell: chunkAssignment.chunkOfCell.slice(),
+		totalVerticesPerCell,
+	};
+}
+
+/** Slice the global flat buffers into per-chunk Babylon meshes.
+ *  Each cell's vertex range is copied verbatim into its chunk's
+ *  buffers, and indices are remapped from global → chunk-local.
+ *  Smoothing (which ran on the global buffers) is preserved
+ *  exactly: shared seam vertices on opposite sides of a chunk
+ *  boundary were snapped to identical positions before slicing. */
+function splitGlobalBuffersIntoChunks(
+	cells: HexCell[],
+	scene: Scene,
+	assignment: ChunkAssignment,
+	positions: Float32Array,
+	normals: Float32Array,
+	colors: Float32Array,
+	indices: number[],
+	vertexStarts: number[],
+	totalVerticesPerCell: number[],
+	indexStarts: number[],
+	indexCountPerCell: number[],
+): ChunkRuntime[] {
+	const numChunks = assignment.cellsByChunk.length;
+	const chunks: ChunkRuntime[] = [];
+
+	for (let chunkIdx = 0; chunkIdx < numChunks; chunkIdx++) {
+		const cellIds = assignment.cellsByChunk[chunkIdx];
+		// Pre-count vertex + index totals so we can allocate typed
+		// arrays of the exact final size (no growing).
+		let totalV = 0;
+		let totalI = 0;
+		for (const ci of cellIds) {
+			totalV += totalVerticesPerCell[ci];
+			totalI += indexCountPerCell[ci];
+		}
+
+		const chunkPositions = new Float32Array(totalV * 3);
+		const chunkNormals = new Float32Array(totalV * 3);
+		const chunkColors = new Float32Array(totalV * 4);
+		const chunkIndices = new Uint32Array(totalI);
+		const cellLocalStart = new Map<number, number>();
+		const cellVertexCount = new Map<number, number>();
+
+		let writeV = 0;
+		let writeI = 0;
+		for (const ci of cellIds) {
+			const srcVStart = vertexStarts[ci];
+			const vCount = totalVerticesPerCell[ci];
+			const srcIStart = indexStarts[ci];
+			const iCount = indexCountPerCell[ci];
+			cellLocalStart.set(ci, writeV);
+			cellVertexCount.set(ci, vCount);
+
+			// Copy vertex attributes for this cell's range.
+			chunkPositions.set(positions.subarray(srcVStart * 3, (srcVStart + vCount) * 3), writeV * 3);
+			chunkNormals.set(normals.subarray(srcVStart * 3, (srcVStart + vCount) * 3), writeV * 3);
+			chunkColors.set(colors.subarray(srcVStart * 4, (srcVStart + vCount) * 4), writeV * 4);
+
+			// Translate indices from global → chunk-local.
+			const offset = writeV - srcVStart;
+			for (let k = 0; k < iCount; k++) {
+				chunkIndices[writeI + k] = indices[srcIStart + k] + offset;
+			}
+
+			writeV += vCount;
+			writeI += iCount;
+		}
+
+		const mesh = new Mesh(`globeHex_${chunkIdx}`, scene);
+		const vertexData = new VertexData();
+		vertexData.positions = chunkPositions;
+		vertexData.indices = chunkIndices;
+		vertexData.normals = chunkNormals;
+		vertexData.colors = chunkColors;
+		vertexData.applyToMesh(mesh, true);
+
+		chunks.push({
+			mesh,
+			centroid: assignment.centroids[chunkIdx],
+			cellIds: cellIds.slice(),
+			cellLocalStart,
+			cellVertexCount,
+			colorsBuffer: chunkColors,
+			positionsBuffer: chunkPositions,
+			currentLOD: SUBDIVISIONS,
+		});
+	}
+
+	return chunks;
+}
+
+/** LOD-rebuild scaffold. Not wired up in this pass — exists so that
+ *  approach (3) can replace a chunk's mesh without restructuring the
+ *  pipeline. Today's chunks are all built at SUBDIVISIONS=3. */
+export function rebuildChunkAtLOD(_chunkIdx: number, _newLOD: number): void {
+	throw new Error('rebuildChunkAtLOD not yet implemented (LOD is approach #3)');
 }
 
 export function buildCornerGapPatchMesh(cells: HexCell[], radius: number, scene: Scene): Mesh {
@@ -564,61 +693,68 @@ function updateCellTopFaceTriangle(
 }
 
 /** Update colors for a cell and its neighbors when terrain is painted.
- *  Recomputes per-vertex terrain blend for all affected cells. */
+ *  Chunk-aware: writes only to the chunk(s) containing the affected
+ *  cells and re-uploads the color buffer for those chunks alone.
+ *  When the painted cell + its neighbors all live in one chunk that's
+ *  one upload; in the worst case (cell on a chunk seam) it's a small
+ *  handful of chunks, never the full globe. */
 export function updateCellTerrain(
-	mesh: Mesh,
+	chunks: ChunkRuntime[],
+	chunkOfCell: number[],
 	cells: HexCell[],
 	cellIndex: number,
-	vertexStarts: number[],
-	totalVerticesPerCell: number[],
-	radius: number,
-	colorsBuffer: Float32Array,
-	positionsBuffer: Float32Array
 ): void {
-	// Build lookup maps
 	const cellById = new Map<number, HexCell>();
 	for (const c of cells) cellById.set(c.id, c);
 	const cellIdToIdx = new Map<number, number>();
 	for (let i = 0; i < cells.length; i++) cellIdToIdx.set(cells[i].id, i);
 
-	// Collect affected cells: painted cell + all its neighbors
+	// Painted cell + its neighbors are all dirty.
 	const affected = new Set<number>();
 	affected.add(cellIndex);
-	const cell = cells[cellIndex];
-	for (const nId of cell.neighbors) {
+	const paintedCell = cells[cellIndex];
+	for (const nId of paintedCell.neighbors) {
 		const nIdx = cellIdToIdx.get(nId);
 		if (nIdx !== undefined) affected.add(nIdx);
 	}
 
+	const dirtyChunks = new Set<number>();
 	for (const ci of affected) {
 		const c = cells[ci];
+		const chunkIdx = chunkOfCell[ci];
+		const chunk = chunks[chunkIdx];
+		const start = chunk.cellLocalStart.get(ci);
+		const count = chunk.cellVertexCount.get(ci);
+		if (start === undefined || count === undefined) continue;
+
 		const wallColor = getTerrainColor(c.terrain);
 		const borderInfo = getHexBorderInfo(c, cellById);
 		const hexRadius = computeHexRadius(c);
 
-		const start = vertexStarts[ci];
-		const count = totalVerticesPerCell[ci];
-
 		for (let i = 0; i < count; ) {
 			const vi0 = (start + i) * 4;
-			const isWall = colorsBuffer[vi0 + 3] < 0.05;
+			const isWall = chunk.colorsBuffer[vi0 + 3] < 0.05;
 
 			if (isWall) {
-				// Wall vertices — update color individually
-				colorsBuffer[vi0] = wallColor[0];
-				colorsBuffer[vi0 + 1] = wallColor[1];
-				colorsBuffer[vi0 + 2] = wallColor[2];
+				chunk.colorsBuffer[vi0] = wallColor[0];
+				chunk.colorsBuffer[vi0 + 1] = wallColor[1];
+				chunk.colorsBuffer[vi0 + 2] = wallColor[2];
 				i++;
 			} else {
-				// Top-face triangle — process 3 vertices together
-				// to ensure same neighborId (prevents interpolation artifacts)
-				updateCellTopFaceTriangle(c, borderInfo, cellById, hexRadius, start + i, colorsBuffer, positionsBuffer);
+				updateCellTopFaceTriangle(
+					c, borderInfo, cellById, hexRadius,
+					start + i, chunk.colorsBuffer, chunk.positionsBuffer,
+				);
 				i += 3;
 			}
 		}
+		dirtyChunks.add(chunkIdx);
 	}
 
-	mesh.setVerticesData(VertexBuffer.ColorKind, new Float32Array(colorsBuffer), true);
+	for (const chunkIdx of dirtyChunks) {
+		const chunk = chunks[chunkIdx];
+		chunk.mesh.setVerticesData(VertexBuffer.ColorKind, chunk.colorsBuffer, true);
+	}
 }
 
 /** Build wireframe (optional overlay) */

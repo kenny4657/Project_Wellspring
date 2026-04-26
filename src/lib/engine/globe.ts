@@ -34,7 +34,9 @@ import '@babylonjs/core/Rendering/depthRendererSceneComponent';
 import { EARTH_RADIUS_KM, latLngToWorld } from '$lib/geo/coords';
 import { generateIcoHexGrid, type HexCell } from '$lib/engine/icosphere';
 import { buildGlobeMesh, buildHexEdgeLines, updateCellTerrain } from '$lib/engine/globe-mesh';
+import { assignCellsToChunks, isChunkVisible } from '$lib/engine/globe-chunks';
 import { createTerrainMaterial, applyTerrainSettings } from '$lib/engine/terrain-material';
+import { createHexDebugMaterial } from '$lib/engine/hex-debug-material';
 import { createWaterMaterial } from '$lib/engine/water-material';
 // picking is inlined below using the lightweight pickSphere
 import { assignTerrain } from '$lib/engine/terrain-gen';
@@ -49,6 +51,10 @@ export interface GlobeEngine {
 	setHexTerrain(cellIndex: number, terrain: TerrainTypeId): void;
 	setGridVisible(visible: boolean): void;
 	setTerrainSettings(settings: TerrainSettings): void;
+	/** Toggle hex-id debug coloring. Each hex gets a hash-derived RGB so
+	 *  adjacent hexes are visibly distinct — useful for tracking down
+	 *  geometry gaps and seam mismatches. */
+	setDebugMode(enabled: boolean): void;
 	readonly hexCount: number;
 	readonly cells: HexCell[];
 	onHexClick: ((cellIndex: number) => void) | null;
@@ -142,25 +148,55 @@ export async function createGlobeEngine(
 	await tick();
 
 	const meshBuildStart = performance.now();
-	const { mesh: globeMesh, vertexStarts, totalVerticesPerCell, colorsBuffer, positionsBuffer } =
-		buildGlobeMesh(cells, EARTH_RADIUS_KM, scene);
+	const chunkAssignment = assignCellsToChunks(cells);
+	const { chunks, chunkOfCell, totalVerticesPerCell } =
+		await buildGlobeMesh(cells, EARTH_RADIUS_KM, scene, chunkAssignment);
 	const meshBuildMs = performance.now() - meshBuildStart;
 
-	// Procedural terrain ShaderMaterial
+	// Procedural terrain ShaderMaterial — shared across all chunk meshes.
 	const terrainMat = createTerrainMaterial(scene);
-	globeMesh.material = terrainMat;
-	globeMesh.hasVertexAlpha = false;
-	globeMesh.isPickable = false; // picking uses the lightweight pickSphere instead
+	for (const chunk of chunks) {
+		chunk.mesh.material = terrainMat;
+		chunk.mesh.hasVertexAlpha = false;
+		// Pick against displaced terrain so cliff clicks resolve to the
+		// visible hex (the inner pickSphere offsets the hit point
+		// angularly when terrain is high).
+		chunk.mesh.isPickable = true;
+	}
 
+	// ── Hex-debug attribute (per chunk) ─────────────────────
+	// Per-vertex RGB baked CPU-side using Knuth multiplicative hash.
+	// Each chunk gets its own attribute buffer sized to its vertex count.
+	const debugMat = createHexDebugMaterial(scene);
+	for (const chunk of chunks) {
+		const totalV = chunk.mesh.getTotalVertices();
+		const hexDebugColors = new Float32Array(totalV * 3);
+		for (const ci of chunk.cellIds) {
+			const start = chunk.cellLocalStart.get(ci);
+			const count = chunk.cellVertexCount.get(ci);
+			if (start === undefined || count === undefined) continue;
+			const id = cells[ci].id;
+			const scrambled = Math.imul(id + 1, 2654435761) >>> 8;
+			const r = (scrambled & 0xff) / 255;
+			const g = ((scrambled >>> 8) & 0xff) / 255;
+			const b = ((scrambled >>> 16) & 0xff) / 255;
+			for (let v = 0; v < count; v++) {
+				const off = (start + v) * 3;
+				hexDebugColors[off] = r;
+				hexDebugColors[off + 1] = g;
+				hexDebugColors[off + 2] = b;
+			}
+		}
+		chunk.mesh.setVerticesData('hexDebugColor', hexDebugColors, false, 3);
+	}
 
 	// ── Depth Renderer + Water Surface ─────────────────────
 	// Depth renderer captures terrain depth. Water shader samples it
 	// to discard fragments where terrain is closer → land occludes water.
 	const depthRenderer = scene.enableDepthRenderer(camera, false);
 	const depthTexture = depthRenderer.getDepthMap();
-	// Force renderList to terrain only — depth renderer defaults to null (all meshes)
 	depthTexture.renderList = [];
-	depthTexture.renderList.push(globeMesh);
+	for (const chunk of chunks) depthTexture.renderList.push(chunk.mesh);
 
 	const waterSphere = MeshBuilder.CreateSphere('waterSurface', {
 		diameter: EARTH_RADIUS_KM * 2 * 0.9995,
@@ -176,7 +212,9 @@ export async function createGlobeEngine(
 	const edgeLines = buildHexEdgeLines(cells, EARTH_RADIUS_KM, scene);
 	edgeLines.setEnabled(false); // off by default — Sota style uses geometry, not grid lines
 
-	report(`Globe ready: ${cells.length} cells, ${globeMesh.getTotalVertices().toLocaleString()} vertices`);
+	let totalVertCount = 0;
+	for (const chunk of chunks) totalVertCount += chunk.mesh.getTotalVertices();
+	report(`Globe ready: ${cells.length} cells, ${totalVertCount.toLocaleString()} vertices, ${chunks.length} chunks`);
 
 	// ── Picking / Painting ──────────────────────────────────
 	// Pick against the lightweight pickSphere instead of the 5M-vertex globe mesh.
@@ -184,8 +222,16 @@ export async function createGlobeEngine(
 	let onHexClickCallback: ((cellIndex: number) => void) | null = null;
 	let pointerDownPos: { x: number; y: number } | null = null;
 
+	const chunkMeshSet = new Set(chunks.map(c => c.mesh));
 	function pickHex(sx: number, sy: number): number {
-		const result = scene.pick(sx, sy, (m) => m === pickSphere);
+		// Try the displaced terrain (any chunk mesh) first — this is
+		// what's visible, so the hit point is exactly where the user
+		// clicked. Fall back to pickSphere (with the angular-offset
+		// caveat) if the terrain mesh has no hit (clicked off-planet).
+		let result = scene.pick(sx, sy, (m) => chunkMeshSet.has(m as never));
+		if (!result?.hit || !result.pickedPoint) {
+			result = scene.pick(sx, sy, (m) => m === pickSphere);
+		}
 		if (!result?.hit || !result.pickedPoint) return -1;
 		const hitNorm = result.pickedPoint.normalize();
 		let bestIdx = -1, bestDist = Infinity;
@@ -249,6 +295,16 @@ export async function createGlobeEngine(
 		waterMat.setVector3('sunDir', sunDirVec);
 		waterMat.setFloat('cameraNear', camera.minZ);
 		waterMat.setFloat('cameraFar', camera.maxZ);
+
+		// Hemisphere chunk culling: disable chunks whose centroid is
+		// past the horizon. ~50% of chunks are off at any given time.
+		const camDirX = cx / cl;
+		const camDirY = cy / cl;
+		const camDirZ = cz / cl;
+		for (const chunk of chunks) {
+			chunk.mesh.setEnabled(isChunkVisible(chunk.centroid, camDirX, camDirY, camDirZ));
+		}
+
 		scene.render();
 	});
 
@@ -270,7 +326,7 @@ export async function createGlobeEngine(
 
 		setHexTerrain(cellIndex: number, terrain: TerrainTypeId) {
 			cells[cellIndex].terrain = TERRAIN_TYPES[terrain];
-			updateCellTerrain(globeMesh, cells, cellIndex, vertexStarts, totalVerticesPerCell, EARTH_RADIUS_KM, colorsBuffer, positionsBuffer);
+			updateCellTerrain(chunks, chunkOfCell, cells, cellIndex);
 		},
 
 		setGridVisible(visible: boolean) {
@@ -279,6 +335,11 @@ export async function createGlobeEngine(
 
 		setTerrainSettings(settings: TerrainSettings) {
 			applyTerrainSettings(terrainMat, settings);
+		},
+
+		setDebugMode(enabled: boolean) {
+			const mat = enabled ? debugMat : terrainMat;
+			for (const chunk of chunks) chunk.mesh.material = mat;
 		},
 
 		get hexCount() { return cells.length; },
@@ -295,7 +356,7 @@ export async function createGlobeEngine(
 					? engineInst.gpuFrameTimeCounter.lastSecAverage / 1e6 // ns → ms
 					: 0,
 				drawCalls: scene.getActiveMeshes().length,
-				vertexCount: globeMesh.getTotalVertices(),
+				vertexCount: totalVertCount,
 				meshBuildMs,
 				totalBuildMs,
 			};
