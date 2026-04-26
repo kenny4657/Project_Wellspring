@@ -36,25 +36,50 @@ done; the rest pop in over time.
   `requestIdleCallback` chain. ~50 lines.
 - **Pairs naturally with (1)**.
 
-### 3. Adaptive SUBDIVISIONS by hex size
+### 3. LOD: adaptive subdivisions by screen-space hex size
 
-At 1M hexes each cell is ~510 km² (vs ~32k km² at 16k hexes). The
-current `SUBDIVISIONS = 3` gives 384 tris per hex top → 1.3 km² per
-tri at 1M hexes — sub-pixel overkill at any reasonable camera
-distance. Scaling subdivisions inversely with hex count keeps
-**screen-space tri density** constant.
+The goal is constant **screen-space triangle density** — tris per
+pixel, not tris per hex. A fixed `SUBDIVISIONS = 3` wastes verts on
+hexes that cover sub-pixel area at far zoom, and starves hexes the
+camera is parked over.
 
-- 16k hexes × 384 tris = 6.1M tris (today)
-- 1M hexes × 24 tris = 24M tris (with SUBDIVISIONS=1)
+This is camera-dependent, not hex-count-dependent. `SUBDIVISIONS`
+becomes a function of *projected hex size on screen*:
 
-- **Visual preservation**: effectively pure — at game-scale zoom the
-  per-hex tri count doesn't matter; the screen-space tri density is
-  what drives appearance, and that stays constant. Strictly the
-  per-hex mesh is coarser, but at 1M hexes a single hex covers
-  fewer screen pixels than at 16k anyway.
-- **Effort**: trivial — make `SUBDIVISIONS` a function of hex count.
-  ~5 lines.
-- **Total tri count at 1M hexes**: 24M, manageable.
+- Far zoom (whole planet in view, hex < 1 px): SUBDIVISIONS = 0–1
+- Mid zoom (hex ~50 px): SUBDIVISIONS = 2
+- Close zoom (hex 500+ px, bumps need to read): SUBDIVISIONS = 3–4
+
+Hex count sets the baseline budget — at 1M hexes the *far-zoom* tier
+must be very low (otherwise you blow the vert budget on hexes you
+can't see detail in anyway). The camera factor raises detail locally
+where the player is looking.
+
+**Implementation requires chunking (#1).** Each chunk picks a
+SUBDIVISIONS tier based on its distance to the camera. As the camera
+moves, chunks that cross an LOD threshold get rebuilt; everything
+else stays. A small cache of recent LOD builds avoids thrashing on
+back-and-forth zoom.
+
+- **Visual preservation**: effectively pure at any given camera
+  distance — screen-space tri density is held constant. The visible
+  artifact is *LOD pop* when a chunk swaps tiers. Mitigated by
+  hysteresis on the threshold; full cross-fade blending of displaced
+  terrain across LODs is hard and most games just accept the pop.
+- **Effort**: not trivial. Mesh rebuilds become camera-driven, which
+  requires the async build (#2) to avoid frame stalls, plus chunk
+  LOD bookkeeping (current tier per chunk, threshold hysteresis,
+  rebuild queue, recent-LOD cache). Realistically ~300–500 lines on
+  top of chunking, not 5.
+- **Total tri count at 1M hexes**: depends on camera, but the
+  near-camera chunks at high subdivision plus far chunks at minimum
+  subdivision typically lands in the 20–40M range — manageable.
+
+A degenerate version of this — `SUBDIVISIONS = f(hexCount)` only,
+ignoring camera — is ~5 lines and gives you the far-zoom win for
+free, but breaks the moment the player zooms in on a 1M-hex world
+and sees flat-faceted terrain. Only acceptable if camera zoom is
+hard-bounded.
 
 ### 4. GPU-side displacement (medium-effort, biggest CPU/memory win)
 
@@ -89,7 +114,7 @@ units.
 ## Recommended stack to hit 1M hexes
 
 - **(1) chunking** gets GPU memory under control
-- **(3) adaptive subdivisions** keeps total tri count manageable
+- **(3) LOD subdivisions** keeps total tri count manageable across the full zoom range
 - **(5) caching** makes startup tractable after first run
 - **(2) async build** keeps the first run from feeling broken
 - **(4) GPU displacement** as a wildcard — only if (1)+(3)+(5) hit a wall
@@ -100,7 +125,7 @@ units.
    win, lays groundwork for chunking.
 2. **(1) chunking + view-frustum culling** — the real scalability
    unlock.
-3. **(3) adaptive SUBDIVISIONS** — when pushing past ~100k hexes.
+3. **(3) LOD subdivisions** — once chunking is in place; needed as soon as zoom-in close enough to see individual hexes is supported at high hex counts.
 4. **(5) persistent cache** — polish, after the rest is in place.
 5. **(4) GPU-side displacement** — only if the rest hits a memory
    or CPU wall at 1M+ hexes.
