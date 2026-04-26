@@ -2,225 +2,128 @@
 
 Implements approach **(5) Persistent mesh cache** from
 [scaling-to-1m-hexes-legacy.md](scaling-to-1m-hexes-legacy.md).
-Goal: turn the 27s mesh build into a ~100–500ms cache load on
-subsequent page loads. First-run cost is unchanged.
 
-## What gets cached
+## Status: deferred — fold into (3) LOD
 
-The expensive output of `buildGlobeMesh` — per-chunk vertex/index
-buffers — plus the inputs that produced them so we can detect
-staleness.
+A whole-globe cache works at low hex counts but doesn't scale.
+At 1M hexes a snapshot is ~42 GB (verts + indices + colors) — well
+past IndexedDB practical limits, and bigger than most users' free
+disk. The cache only fits at 16k–60k hex counts (~560 MB to ~2.1
+GB), where the build is 27s today and caching cuts it to ~100ms —
+useful for iteration but not for hitting 1M.
 
-**Cached:**
-- Per-chunk: `positions` (Float32Array), `indices` (Uint32Array),
-  `colors` (Float32Array), `cellIds` (Int32Array), `cellLocalStart`
-  (Int32Array), `cellVertexCount` (Int32Array), `centroid` (xyz).
-- Cells: minimal record per cell — `id`, `center` (xyz), `corners`
-  (flattened xyz array), `neighbors` (Int32Array of ids), `terrain`,
-  `heightLevel`, `isPentagon`.
-- Top-level: `totalVerticesPerCell` (Int32Array), `chunkOfCell`
-  (Int32Array).
+The cache only becomes valuable at scale once (3) LOD is in,
+because LOD partitions a chunk into multiple cheaper representations
+(SUB=0 far, SUB=3 near) and the cache stores **(chunkId, lodTier)**
+combinations rather than one giant globe-wide blob. Per-chunk-per-tier
+caching makes camera movement smooth: the first visit to a region
+builds chunks at higher LOD, the second visit reads them from cache.
 
-**Not cached** (cheap to recompute on load):
-- `normals` — re-derive from displaced positions, then run
-  `smoothNormalsPass` once.
-- `hexDebugColor` attribute — Knuth-hash bake is trivial.
-- Border info, distance fields — they're builder-internal, not
-  needed at runtime.
+That's a different shape of cache than "snapshot the whole globe."
+Building the whole-globe version now and replacing it with per-chunk
+later is throwaway work.
 
-Skipping normals + hexDebug saves ~30% of the cache size.
+**Decision: fold cache into the LOD implementation as a sub-module.**
 
-## Cache size budget
+LOD already needs a `buildChunkAtLOD(chunkId, lodTier)` function
+that produces the chunk's vertex buffers. Caching just stores that
+function's output keyed by `(chunkId, lodTier, terrainGenVersion,
+buildVersion)` and short-circuits the next call. ~100 lines on top
+of LOD, vs ~200 lines as standalone.
 
-Per-vertex bytes after skipping normals + hexDebug:
-positions (12) + colors (16) = 28 bytes.
+## What the cache layer needs to do (when implemented as part of LOD)
 
-| Hex count | Verts (est) | Cache size | Verdict |
-|-----------|-------------|------------|---------|
-| 4k (res=20)  | ~5 M    | ~140 MB    | comfortable |
-| 16k (res=40) | ~20 M   | ~560 MB    | OK on desktop, tight on mobile |
-| 60k (res=80) | ~75 M   | ~2.1 GB    | over IndexedDB default quotas |
-| 250k         | ~310 M  | ~8.7 GB    | not viable |
-| 1M           | ~1.2 B  | ~33 GB     | not viable |
+- **Key**: `chunk{N}-lod{T}-v{BUILD}-tg{TG}` per chunk-tier pair.
+- **Value**: per-chunk buffers (positions, indices, colors,
+  cellLocalStart, cellVertexCount). Skip normals + hexDebug — fast
+  to recompute on load.
+- **Storage**: IndexedDB, single object store, one record per key.
+- **Invalidation**: bump `BUILD` constant when build math changes,
+  bump `TG` when terrain-gen output changes. Old keys become
+  unreachable; cleaned up on a periodic sweep or never (browser
+  evicts under quota pressure).
+- **Read path**: in `buildChunkAtLOD`, check cache first. Hit →
+  deserialize buffers, recompute normals + hexDebug, attach to
+  Babylon mesh.
+- **Write path**: after a fresh build of a chunk-tier, write to
+  cache asynchronously (don't block the build pipeline).
+- **Quota handling**: catch `QuotaExceededError`, log, continue
+  without writing. Browser will evict least-recently-used entries
+  under pressure.
+- **Force rebuild UI**: button in View panel that calls
+  `cache.clearAll()` then `location.reload()`. Also exposed as
+  `window.engine.clearCache()`.
 
-**Auto-disable rule**: if estimated cache size > 1 GB, skip writing
-to cache. Log a warning. The build still runs every load at that
-scale; cache is for the lower-hex-count regime where we iterate.
+## Cache size at 1M hexes (with LOD)
 
-(Once approach (3) LOD is implemented, far chunks at low SUBDIVISIONS
-have far fewer verts, and the cache budget for 1M+ becomes feasible
-again — cache can re-enable.)
+Per-chunk verts at each LOD tier (rough — 1M hexes / 80 chunks =
+12.5k hexes per chunk, average):
 
-## Cache key / invalidation
+| Tier  | SUBDIVISIONS | Verts/chunk | Bytes/chunk (28 B/vert + indices) |
+|-------|--------------|-------------|------------------------------------|
+| far   | 0            | ~225k       | ~10 MB                             |
+| mid-far | 1          | ~900k       | ~40 MB                             |
+| mid   | 2            | ~3.6M       | ~160 MB                            |
+| close | 3            | ~14.4M      | ~640 MB                            |
 
-Single string key:
+In practice, a session only ever cache-fills the chunks the camera
+visits at the tiers it visits. Far tier is whole-globe (80 chunks ×
+10 MB = 800 MB). Close tier is only ever a handful of chunks the
+camera parks over (~5 chunks × 640 MB = 3.2 GB worst case, usually
+much less).
 
-```
-wellspring-globe-v{CACHE_VERSION}-res{ICO_RESOLUTION}-tg{TERRAIN_GEN_VERSION}
-```
+Total cache footprint for a heavily-explored 1M world: ~2–4 GB.
+Within IndexedDB practical limits on desktop with healthy disk.
 
-- `CACHE_VERSION` — manual bump constant in `globe-cache.ts`.
-  Increment whenever the mesh build changes meaning (height
-  formula, cliff erosion, smoothing, vertex layout).
-- `ICO_RESOLUTION` — picked up from `globe.ts`.
-- `TERRAIN_GEN_VERSION` — manual bump in `terrain-gen.ts`.
-  Increment when procedural terrain output changes.
+## What stays in this doc
 
-If the key doesn't match, treat as a miss and rebuild.
+If the project ever wants the standalone-cache stopgap (16k–60k
+sweet spot), the original plan is preserved below for reference.
 
-Painting (`setHexTerrain`) is **not** invalidating — paints only
-mutate color buffers in place; the cached mesh remains valid for
-re-use. (Paints are not persisted today; orthogonal feature.)
+---
 
-## Storage layer
+## Stopgap version (whole-globe snapshot, deferred / not building)
 
-IndexedDB, single database `wellspring`, single object store
-`globe-snapshots`. Key = the version string above. Value = a single
-record containing all cached data as transferable buffers.
+For 16k–60k hex counts only. Cache size ~560 MB at 16k. Single
+record per cacheKey holds everything. Replaced once LOD lands.
 
-Schema (TypeScript shape; serialized as `{ ...fields }` directly to
-IDB which handles ArrayBuffers natively):
+### What gets cached (stopgap)
 
-```ts
-interface GlobeSnapshot {
-  cacheKey: string;
-  createdAt: number;
-  cellCount: number;
-  cells: {
-    ids: Int32Array;            // length = cellCount
-    centersXYZ: Float32Array;   // length = cellCount * 3
-    cornersFlat: Float32Array;  // packed xyz
-    cornersOffsets: Int32Array; // length = cellCount + 1, prefix sum
-    neighborsFlat: Int32Array;
-    neighborsOffsets: Int32Array;
-    terrains: Int32Array;
-    heightLevels: Int32Array;
-    isPentagonBits: Uint8Array;
-  };
-  totalVerticesPerCell: Int32Array;
-  chunkOfCell: Int32Array;
-  chunks: Array<{
-    centroidXYZ: Float32Array;        // length 3
-    cellIds: Int32Array;
-    cellLocalStart: Int32Array;
-    cellVertexCount: Int32Array;
-    positions: Float32Array;
-    indices: Uint32Array;
-    colors: Float32Array;
-  }>;
-}
-```
+- Per-chunk: positions, indices, colors, cellIds, cellLocalStart,
+  cellVertexCount, centroid.
+- Cells: id, center, corners, neighbors, terrain, heightLevel,
+  isPentagon (flat typed-array layout with prefix-sum offsets for
+  variable-length per-cell data).
+- Top-level: totalVerticesPerCell, chunkOfCell.
+- **Skip** normals + hexDebug — recompute on load.
 
-Reasons for this layout:
-- Flat typed arrays are what IDB stores efficiently — no JSON
-  serialization, no per-cell object overhead.
-- Prefix-sum offsets for variable-length per-cell data (corners,
-  neighbors) — same trick used in compressed sparse row matrices.
-- Single record per snapshot keeps load to one `IDBObjectStore.get`
-  call.
-
-## Load path
-
-In `createGlobeEngine`:
+### Cache key (stopgap)
 
 ```
-1. Try cache.read(cacheKey)
-2a. HIT:
-    - Deserialize cells → HexCell[]
-    - For each cached chunk: create Mesh, applyToMesh with
-      positions/colors/indices, compute normals + smoothNormalsPass,
-      bake hexDebugColor, attach to chunkRuntime
-    - Skip generateIcoHexGrid, assignTerrain, buildGlobeMesh entirely
-2b. MISS:
-    - Run today's path (generateIcoHexGrid + assignTerrain +
-      buildGlobeMesh)
-    - After build completes, if size budget OK: cache.write(snapshot)
+wellspring-globe-v{BUILD}-res{ICO_RESOLUTION}-tg{TG}
 ```
 
-Normals recomputation: per-triangle face normals from displaced
-positions, then smoothNormalsPass. Roughly 100–500ms on 16k hexes,
-vs 27s for the full build — easy win.
+- `BUILD` — bump when mesh build changes meaning.
+- `TG` — bump when terrain-gen output changes.
 
-## Save path
+### Auto-disable rule (stopgap)
 
-After successful first build (post-smoothing, post-split):
+If estimated snapshot size > 1 GB, skip writing. The build still
+runs; cache is silently disabled. This prevents trying to cache
+60k+ hex counts where the snapshot won't fit.
 
-```
-const snapshot = serializeSnapshot(cells, chunks, ...);
-const sizeBytes = estimateSnapshotSize(snapshot);
-if (sizeBytes < CACHE_SIZE_LIMIT) {
-  await cache.write(cacheKey, snapshot);
-}
-```
+### Files (stopgap, if built)
 
-Keep one snapshot per `cacheKey` value. Older snapshots with
-different keys can be cleaned up on write (delete-then-put pattern).
+- New: `src/lib/engine/globe-cache.ts` — IDB wrapper, serialization.
+- Modified: `src/lib/engine/globe.ts` — read-on-init, write-after-build.
+- Modified: `src/lib/engine/globe-mesh.ts` — `restoreChunksFromSnapshot`
+  helper.
+- Modified: `src/routes/globe/+page.svelte` — "Rebuild mesh" button,
+  cache hit/miss perf row.
 
-Write is async and non-blocking — happens after the engine returns.
+### Why we're not building this now
 
-## Force rebuild UI
-
-Button in the View section of the sidebar in `+page.svelte`,
-labeled **"Rebuild mesh"**. Behavior:
-
-```
-1. Call engine.clearCache() (awaits cache.delete(cacheKey))
-2. window.location.reload()
-```
-
-Why reload instead of in-place rebuild: the engine's mesh build is
-async and the entire scene is built around the chunk runtime; safer
-to nuke and rebuild than to surgically replace meshes mid-session.
-
-Add it under the existing "View" panel section, alongside the grid
-toggle. Place near the bottom so it's not the first thing seen.
-
-Also expose a console method: `window.engine.clearCache()` for dev.
-
-## Files touched
-
-- New file: [src/lib/engine/globe-cache.ts](../src/lib/engine/globe-cache.ts)
-  — IndexedDB wrapper, serialization, version constant.
-- [src/lib/engine/globe.ts](../src/lib/engine/globe.ts) — integrate
-  read-on-init, write-after-build, expose `clearCache()` API.
-- [src/lib/engine/globe-mesh.ts](../src/lib/engine/globe-mesh.ts) —
-  factor out a `restoreChunksFromSnapshot(snapshot, scene)` helper
-  that builds chunk meshes directly from cached buffers (skipping
-  the build loop).
-- [src/routes/globe/+page.svelte](../src/routes/globe/+page.svelte)
-  — "Rebuild mesh" button, perf overlay row showing "Cache: hit/miss"
-  and load source ("cache" vs "build").
-
-## Edge cases
-
-- **Quota exceeded on write**: catch `QuotaExceededError`, log
-  warning, continue without caching. Don't crash the load.
-- **Corrupt cache**: if deserialization throws, treat as miss and
-  rebuild. Optionally delete the bad entry.
-- **Browser without IndexedDB**: detect, skip cache, run normal
-  build. (Unlikely in 2026 but the code path costs nothing.)
-- **Multiple tabs**: IDB serializes writes; reads are concurrent.
-  No special handling needed.
-- **Schema migration**: don't try. Just bump CACHE_VERSION on any
-  layout change — old entries become unreachable and are cleaned
-  up on next write.
-
-## Perf overlay additions
-
-Two new rows under the existing perf block:
-
-- `Cache` — `hit (loaded in 187ms)` or `miss (built in 27.2s)`
-- (Replace `Mesh build` with the appropriate label depending on
-  source, or keep both and show the inactive one as `—`)
-
-## Open questions
-
-1. **Cache size estimate**: should we measure actual size by
-   serializing first, or estimate from totalVerticesPerCell? The
-   estimate is simpler and probably fine — exact bytes don't matter.
-2. **Should we cache pre-smoothing or post-smoothing buffers?**
-   Post-smoothing is what we'd skip rebuilding. Recommend
-   post-smoothing — that's the slow part.
-3. **Cache the icosphere generation output too?** Generating the
-   hex grid is ~1s at res=40; not the bottleneck but easy to add
-   since cells are already serialized.
+(3) LOD is the next priority and it changes the cache shape from
+"one snapshot per globe" to "one record per chunk-per-tier." The
+stopgap code would be discarded when LOD lands. Skip and build the
+right version once LOD machinery exists.

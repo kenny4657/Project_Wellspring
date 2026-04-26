@@ -119,33 +119,52 @@ no noise/cliff displacement applied). Vertex shader runs
   function runs, just on GPU.
 - **Effort**: ~400 lines of GLSL port + integration.
 
-### 5. Persistent mesh cache
+### 5. Persistent mesh cache (sub-feature of #3, not standalone)
 
-Pre-build meshes once, serialize to IndexedDB or a server-side
-asset, reload on next session. Trades startup latency (one-time)
-for ongoing convenience. Pairs with (1) — chunks become cache
-units.
+Cache built chunk meshes to IndexedDB so they don't have to be
+rebuilt every session.
+
+**Whole-globe snapshot (without LOD) doesn't scale.** A single
+1M-hex snapshot is ~42 GB (verts + indices + colors), well past
+IndexedDB practical limits. It only fits at 16k–60k hex counts
+(~560 MB to ~2.1 GB). At those sizes the build is already 27s and
+caching cuts it to ~100ms — a real but localized win.
+
+**The cache becomes valuable as part of LOD.** Once (3) LOD is in,
+the cache should be keyed by **(chunkId, lodTier)** rather than
+the whole globe. Each chunk-LOD combination is small (one chunk
+at SUB=0 is a few hundred KB), and you only ever cache tiers that
+have actually been visited. The cache then serves the streaming
+system: when the camera flies somewhere new, chunks rebuild at
+higher LOD; second visit to a region is instant.
+
+In other words, cache without LOD is a stopgap; cache with LOD is
+the persistence layer for chunk streaming.
 
 - **Visual preservation**: pure.
-- **Effort**: ~200 lines of serialization.
+- **Effort**: ~200 lines as standalone, ~100 lines as a sub-module
+  of LOD (since LOD already needs per-chunk-per-tier mesh builders
+  — cache just stores their output).
 
 ## Recommended stack to hit 1M hexes
 
 - **(1) chunking** gets GPU memory under control
 - **(3) LOD subdivisions** keeps total tri count manageable across the full zoom range
-- **(5) caching** makes startup tractable after first run
+- **(5) per-chunk-per-tier cache** — built into the LOD streaming system, makes camera movement smooth on revisit
 - **(2) async build** keeps the first run from feeling broken
 - **(4) GPU displacement** as a wildcard — only if (1)+(3)+(5) hit a wall
 
 ## Suggested implementation order
 
 1. **(2) async / time-amortized build** — cheapest, immediate UX
-   win, lays groundwork for chunking.
+   win, lays groundwork for chunking. ✓ done as part of (1).
 2. **(1) chunking + view-frustum culling** — the real scalability
-   unlock.
-3. **(3) LOD subdivisions** — once chunking is in place; needed as soon as zoom-in close enough to see individual hexes is supported at high hex counts.
-4. **(5) persistent cache** — polish, after the rest is in place.
-5. **(4) GPU-side displacement** — only if the rest hits a memory
+   unlock. ✓ done.
+3. **(3) LOD subdivisions** — needed as soon as zoom-in close
+   enough to see individual hexes is supported at high hex counts.
+   Plan to fold (5) into this work rather than building it
+   separately.
+4. **(4) GPU-side displacement** — only if the rest hits a memory
    or CPU wall at 1M+ hexes.
 
 ## What we already proved doesn't work
