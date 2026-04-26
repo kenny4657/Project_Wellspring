@@ -34,7 +34,11 @@ import { findNeighborAcrossEdge } from '../hex-borders';
  *  slightly different distances from each side → mu mismatch → seam
  *  gap. Canonicalizing forces both hexes to use the same value. */
 function buildCanonicalCorners(cells: HexCell[]): Map<string, Vector3> {
-	const STEP = 1e-5; // bucket size; smaller than any real corner spacing
+	// Bucket size has to be much larger than typical FP drift between
+	// two hex copies of a shared corner (~1e-7 for slerp-derived points)
+	// AND much smaller than the spacing between distinct real corners
+	// (~hexRadius, ~1e-2 at res=40). 1e-4 lands safely between.
+	const STEP = 1e-4;
 	const groups = new Map<string, { sum: Vector3; count: number }>();
 	const keyOf = (v: Vector3) =>
 		`${Math.round(v.x / STEP)},${Math.round(v.y / STEP)},${Math.round(v.z / STEP)}`;
@@ -61,7 +65,7 @@ function buildCanonicalCorners(cells: HexCell[]): Map<string, Vector3> {
 }
 
 function canonKey(v: Vector3): string {
-	const STEP = 1e-5;
+	const STEP = 1e-4;
 	return `${Math.round(v.x / STEP)},${Math.round(v.y / STEP)},${Math.round(v.z / STEP)}`;
 }
 

@@ -240,7 +240,13 @@ function simulateShaderHeight(
 	const coastK = hexRadius * 0.22; // matches CPU smoothDistanceToTargetEdges
 	let coastSmoothD = Infinity;     // polynomial smooth-min accumulator over coast edges
 	let hasCoastEdge = false;
-	const EPS = 1e-4;
+	// EPS for corner tie-break. CPU uses 1e-4, but at unit-sphere-normalized
+	// edge midpoints the chord-to-sphere drift is ~7e-5 — that drift is the
+	// same magnitude as 1e-4, causing the tie-break to fire on midpoints
+	// (non-corners) and pick wrong-target edges. 1e-7 catches genuine
+	// corner ties (where two edges meet at the same vertex) without
+	// false-positives at midpoints.
+	const EPS = 1e-7;
 
 	for (let i = 0; i < n; i++) {
 		const nb = self.neighbors[i];
