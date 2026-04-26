@@ -15,7 +15,7 @@ import type { ChunkAssignment } from '../globe-chunks';
 import { bakeNoiseCubemapData, uploadNoiseCubemap, verifyNoiseBake, type NoiseBakeData } from './noise-bake';
 import { buildFlatChunkMeshes, type FlatChunkMesh } from './flat-mesh';
 import { buildHexDataTextures, type HexDataTextures } from './hex-data-tex';
-import { buildHexCornersTexture, type HexCornersTexture } from './hex-corners-tex';
+import { buildHexCornersTexture, canonicalizeCells, type HexCornersTexture } from './hex-corners-tex';
 import { createDisplacementMaterial } from './displacement-shader';
 import type { RawCubeTexture } from '@babylonjs/core/Materials/Textures/rawCubeTexture';
 import type { ShaderMaterial } from '@babylonjs/core/Materials/shaderMaterial';
@@ -38,6 +38,12 @@ export async function initGpuDisplacement(
 	noiseRes = 1024,
 ): Promise<GpuDisplacementResources> {
 	const t0 = performance.now();
+
+	// Canonicalize corner positions across hexes. icosphere.ts can leave
+	// FP drift between two hexes that share a physical corner — that drift
+	// causes seam mismatches in the GPU shader (each side computes slightly
+	// different distances from its own corner copy). One-time fix.
+	canonicalizeCells(cells);
 
 	const noiseBakeData = bakeNoiseCubemapData(noiseRes);
 	const t1 = performance.now();

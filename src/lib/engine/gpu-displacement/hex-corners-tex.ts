@@ -18,11 +18,66 @@
  * with neighborId = -1, so a fixed-size shader loop with
  * `edgeCount` early-out walks exactly 5 unique edges.
  */
+import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { RawTexture } from '@babylonjs/core/Materials/Textures/rawTexture';
 import { Constants } from '@babylonjs/core/Engines/constants';
 import type { Scene } from '@babylonjs/core/scene';
 import type { HexCell } from '../icosphere';
 import { findNeighborAcrossEdge } from '../hex-borders';
+
+/** Build a Map from canonical-corner-key → averaged unit-direction.
+ *  icosphere.ts dedupes corners within a single hex but leaves cross-hex
+ *  drift: two hexes that share a physical corner can store slightly
+ *  different Vector3 values (each computed from a different ico
+ *  triangle's slerp). That FP drift means each hex's edge endpoints
+ *  differ at the shared seam, so the same world position computes
+ *  slightly different distances from each side → mu mismatch → seam
+ *  gap. Canonicalizing forces both hexes to use the same value. */
+function buildCanonicalCorners(cells: HexCell[]): Map<string, Vector3> {
+	const STEP = 1e-5; // bucket size; smaller than any real corner spacing
+	const groups = new Map<string, { sum: Vector3; count: number }>();
+	const keyOf = (v: Vector3) =>
+		`${Math.round(v.x / STEP)},${Math.round(v.y / STEP)},${Math.round(v.z / STEP)}`;
+	for (const c of cells) {
+		for (const corner of c.corners) {
+			const k = keyOf(corner);
+			const g = groups.get(k);
+			if (g) {
+				g.sum.x += corner.x; g.sum.y += corner.y; g.sum.z += corner.z;
+				g.count++;
+			} else {
+				groups.set(k, { sum: new Vector3(corner.x, corner.y, corner.z), count: 1 });
+			}
+		}
+	}
+	const out = new Map<string, Vector3>();
+	for (const [k, g] of groups) {
+		const avg = new Vector3(g.sum.x / g.count, g.sum.y / g.count, g.sum.z / g.count);
+		const len = Math.sqrt(avg.x * avg.x + avg.y * avg.y + avg.z * avg.z) || 1;
+		avg.x /= len; avg.y /= len; avg.z /= len;
+		out.set(k, avg);
+	}
+	return out;
+}
+
+function canonKey(v: Vector3): string {
+	const STEP = 1e-5;
+	return `${Math.round(v.x / STEP)},${Math.round(v.y / STEP)},${Math.round(v.z / STEP)}`;
+}
+
+export function canonicalizeCells(cells: HexCell[]): void {
+	const canon = buildCanonicalCorners(cells);
+	for (const c of cells) {
+		for (let k = 0; k < c.corners.length; k++) {
+			const cv = canon.get(canonKey(c.corners[k]));
+			if (cv) {
+				c.corners[k].x = cv.x;
+				c.corners[k].y = cv.y;
+				c.corners[k].z = cv.z;
+			}
+		}
+	}
+}
 
 export interface HexCornersTexture {
 	tex: RawTexture;

@@ -36,6 +36,7 @@ import { generateIcoHexGrid, type HexCell } from '$lib/engine/icosphere';
 import { buildGlobeMesh, buildHexEdgeLines, updateCellTerrain } from '$lib/engine/globe-mesh';
 import { assignCellsToChunks, isChunkVisible } from '$lib/engine/globe-chunks';
 import { initGpuDisplacement, type GpuDisplacementResources } from '$lib/engine/gpu-displacement';
+import { canonicalizeCells } from '$lib/engine/gpu-displacement/hex-corners-tex';
 import { diagnoseGpuDisplacement, type DiagnoseResult } from '$lib/engine/gpu-displacement/debug';
 import { createTerrainMaterial, applyTerrainSettings } from '$lib/engine/terrain-material';
 import { createHexDebugMaterial } from '$lib/engine/hex-debug-material';
@@ -398,6 +399,9 @@ export async function createGlobeEngine(
 		},
 
 		diagnoseGpuDisplacement(opts) {
+			// Match the GPU init path: canonicalize corners before sim.
+			// Idempotent — running again on already-canonical cells is a no-op.
+			canonicalizeCells(cells);
 			const r = diagnoseGpuDisplacement(cells, opts);
 			r.print();
 			return r;

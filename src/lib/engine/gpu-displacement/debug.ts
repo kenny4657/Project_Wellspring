@@ -20,7 +20,6 @@ import {
 	getHexBorderInfo,
 	getLevelHeight,
 	findNeighborAcrossEdge,
-	countLandNeighbors,
 	LEVEL_HEIGHTS,
 } from '../hex-borders';
 import {
@@ -58,21 +57,20 @@ function isCoastEdge(selfH: number, nbH: number): boolean {
 	return selfH <= 2;
 }
 
-function isExcludedEdge(self: HexCell, nb: HexCell, cellById: Map<number, HexCell>): boolean {
+function isExcludedEdge(self: HexCell, nb: HexCell, _cellById: Map<number, HexCell>): boolean {
 	const selfH = self.heightLevel;
 	const nbH = nb.heightLevel;
 	const selfWater = selfH <= 1;
 	const nbWater = nbH <= 1;
 	if (!selfWater && !nbWater) return true;
 	if (!selfWater && nbWater && selfH > 2) return true;
-	// Open-water exclusion (matches CPU classifyWaterToWater): both water,
-	// same heightLevel, both have ≤2 land neighbors → excluded so the
-	// coastal ramp of a nearby shore hex can sweep through.
-	if (selfWater && nbWater && selfH === nbH) {
-		const selfLand = countLandNeighbors(self, cellById);
-		const nbLand = countLandNeighbors(nb, cellById);
-		if (selfLand <= 2 && nbLand <= 2) return true;
-	}
+	// CPU's "open water" exclusion (water-water same-tier with ≤2 land
+	// neighbors each) is deliberately omitted. CPU relies on the
+	// post-hoc smoothing pass to fix the resulting seam mismatch where
+	// two open-water hexes fall back to different alternative borders.
+	// We have no smoothing pass, so include those edges and let both
+	// sides agree on the shared water-water edge as nearest with the
+	// symmetric `min(self,nb)` tier height as target.
 	return false;
 }
 
