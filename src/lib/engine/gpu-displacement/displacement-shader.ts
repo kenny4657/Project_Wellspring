@@ -24,7 +24,6 @@ import type { Scene } from '@babylonjs/core/scene';
 import type { RawCubeTexture } from '@babylonjs/core/Materials/Textures/rawCubeTexture';
 import type { HexDataTextures } from './hex-data-tex';
 import type { HexCornersTexture } from './hex-corners-tex';
-import type { CornerHeightsTexture } from './corner-heights-tex';
 import { LEVEL_HEIGHTS } from '../hex-borders';
 import { NOISE_AMP, NOISE_SCALE, BASE_HEIGHT, COAST_ROUNDING } from '../hex-heights';
 
@@ -47,7 +46,6 @@ uniform samplerCube noiseCubemap;
 uniform sampler2D hexDataTex;
 uniform sampler2D hexNeighborsTex;
 uniform sampler2D hexCornersTex;
-uniform sampler2D cornerHeightsTex;
 uniform int hexTexWidth;
 uniform int hexCornersTexWidth;
 
@@ -261,18 +259,15 @@ void main() {
     float borderNoiseH = abs(rawNoise) + 0.15;
     float hexRadius = meanHexRadius(corners, edgeCount);
 
-    // ── Walk all 6 edges; classify nearest as no-op or active border ──
-    // No-op edges (same-tier land-land, cliff-water-from-land side) carry
-    // target=selfTierH and a flag. When nearest is no-op, h falls back
-    // to pure interior — both sides of any shared no-op edge see the same
-    // selfTierH and same noise → identical h, no sub-edge crack.
+    // ── Walk non-excluded edges to find nearest border ─────
     float minDist = 1e9;
     float borderTarget = 0.0;
     int nearestEdgeIdx = -1;
     float nearestEdgeT = 0.0;
     float nearestBorderTarget = 0.0;
-    bool nearestIsNoop = false;
+    bool hasBorder = false;
 
+    // For coast smooth-min: accumulate exp(-d/k) for coast edges only
     float coastSmoothK = 0.22;
     float coastWeightSum = 0.0;
     bool hasCoastEdge = false;
@@ -280,6 +275,7 @@ void main() {
     for (int i = 0; i < 6; i++) {
         if (i >= edgeCount) break;
         int nbH = neighborH[i];
+        if (isExcludedEdge(selfH, nbH)) continue;
 
         vec3 a = corners[i];
         int nextIdx = (i + 1) == edgeCount ? 0 : (i + 1);
@@ -288,24 +284,7 @@ void main() {
         float dist; float tEdge;
         distAndT(unitDir, a, b, dist, tEdge);
 
-        // Classify: water-water same-tier OR both-land OR cliff-water-from-land are no-op.
-        bool selfWater = selfH <= 1;
-        bool nbWater = nbH <= 1;
-        bool noop = false;
-        float target;
-        if (selfWater && nbWater) {
-            target = levelHeight(min(selfH, nbH));
-            noop = (selfH == nbH);
-        } else if (!selfWater && !nbWater) {
-            target = selfTierH; noop = true;
-        } else if ((selfWater && nbH <= 2) || (nbWater && selfH <= 2)) {
-            target = 0.0; noop = false; // coast
-        } else if (selfWater) {
-            target = 0.0; noop = false; // water side of cliff-water
-        } else {
-            target = selfTierH; noop = true; // land side of cliff-water
-        }
-
+        float target = computeBorderTarget(selfH, nbH);
         bool coast = isCoastEdge(selfH, nbH);
 
         if (dist < minDist) {
@@ -313,20 +292,23 @@ void main() {
             nearestEdgeIdx = i;
             nearestEdgeT = tEdge;
             nearestBorderTarget = target;
-            nearestIsNoop = noop;
         }
         if (coast) {
             coastWeightSum += exp(-dist / coastSmoothK);
             hasCoastEdge = true;
         }
+        hasBorder = true;
     }
 
     float h;
-    if (nearestIsNoop) {
-        // Pure interior — symmetric across both sides of the no-op edge.
+    if (!hasBorder) {
+        // All edges excluded (typical for an inland land hex with only
+        // land neighbors). Pure interior height — cliff erosion below
+        // will pull it toward midTier near any cliff edge.
         h = selfTierH + interiorNoiseH * noiseAmp;
     } else {
         borderTarget = nearestBorderTarget;
+        // Coast smooth-min: rounds the corner where two coast edges meet
         float dist = minDist;
         if (hasCoastEdge && nearestBorderTarget == 0.0 && coastWeightSum > 0.0) {
             float smoothD = -log(coastWeightSum) * coastSmoothK;
@@ -341,6 +323,7 @@ void main() {
         float noiseH = interiorNoiseH * mu + borderNoiseH * (1.0 - mu);
         h = selfTierH * mu + borderTarget * (1.0 - mu) + noiseH * noiseCoeff;
 
+        // COAST_ROUNDING dip at coastal edge midpoint
         if (borderTarget == 0.0 && nearestEdgeIdx >= 0) {
             float coastMid = 4.0 * nearestEdgeT * (1.0 - nearestEdgeT);
             float coastBlend = mu * (1.0 - mu);
@@ -382,32 +365,7 @@ void main() {
     }
 
     if (bestMu < 1.0) {
-        // Remap small bestMu (< 0.05) to 0: cliffNoise perturbation in
-        // 1-hop walks can leave bestMu slightly > 0 even at the exact
-        // cliff edge, leaking (h_base_A - h_base_B) * bestMu of own-tier
-        // difference between the two adjacent cells. Clamping to 0 in the
-        // (0, 0.05] band keeps the cliff edge fully at bestMidH (symmetric).
-        float clamped = max(0.0, (bestMu - 0.05) / 0.95);
-        h = bestMidH * (1.0 - clamped) + h * clamped;
-    }
-
-    // Corner snap: if this vertex sits exactly on one of the cell's 6
-    // canonical corners, override h with the per-corner consensus
-    // value. CPU averages the sim h across all cells touching that
-    // corner, so every cell at a 3+-cell corner gets the same h. Closes
-    // the visible cracks reported by findVisibleCracks (76km drift at
-    // tier-0/1/1 and tier-2/4/X corners → 0).
-    for (int k = 0; k < 6; k++) {
-        if (k >= edgeCount) break;
-        vec3 d = unitDir - corners[k];
-        if (dot(d, d) < 1e-10) {
-            int xCol = id % hexCornersTexWidth;
-            int yRow = (id / hexCornersTexWidth) * 6 + k;
-            float ch = texelFetch(cornerHeightsTex, ivec2(xCol, yRow), 0).r;
-            // NaN sentinel = no consensus available; leave h alone.
-            if (ch == ch) h = ch;
-            break;
-        }
+        h = bestMidH * (1.0 - bestMu) + h * bestMu;
     }
 
     vec3 worldPos = unitDir * (planetRadius * (1.0 + h));
@@ -459,7 +417,6 @@ export function createDisplacementMaterial(
 		noiseCubemap: RawCubeTexture;
 		hexTextures: HexDataTextures;
 		hexCorners: HexCornersTexture;
-		cornerHeights: CornerHeightsTexture;
 	},
 	planetRadius: number,
 ): ShaderMaterial {
@@ -479,7 +436,7 @@ export function createDisplacementMaterial(
 			'hexTexWidth', 'hexCornersTexWidth',
 			'sunDir', 'cameraPos',
 		],
-		samplers: ['noiseCubemap', 'hexDataTex', 'hexNeighborsTex', 'hexCornersTex', 'cornerHeightsTex'],
+		samplers: ['noiseCubemap', 'hexDataTex', 'hexNeighborsTex', 'hexCornersTex'],
 	});
 
 	mat.setFloat('planetRadius', planetRadius);
@@ -498,7 +455,6 @@ export function createDisplacementMaterial(
 	mat.setTexture('hexDataTex', resources.hexTextures.hexDataTex);
 	mat.setTexture('hexNeighborsTex', resources.hexTextures.hexNeighborsTex);
 	mat.setTexture('hexCornersTex', resources.hexCorners.tex);
-	mat.setTexture('cornerHeightsTex', resources.cornerHeights.tex);
 	mat.backFaceCulling = true;
 
 	return mat;
