@@ -23,7 +23,7 @@
 	let settings = $state<TerrainSettings>(loadTerrainSettings());
 	let editingIdx = $state(4); // plains by default
 
-	let perf = $state({ fps: 0, frameMs: 0, gpuFrameMs: 0, drawCalls: 0, vertexCount: 0, meshBuildMs: 0, totalBuildMs: 0 });
+	let perf = $state({ fps: 0, frameMs: 0, gpuFrameMs: 0, drawCalls: 0, vertexCount: 0, meshBuildMs: 0, totalBuildMs: 0, visibleChunks: 0, totalChunks: 0, visibleVertexCount: 0 });
 	let perfTimer: ReturnType<typeof setInterval> | null = null;
 
 	onMount(async () => {
@@ -168,6 +168,8 @@
 				<div class="perf-row"><span>GPU</span><span>{perf.gpuFrameMs > 0 ? perf.gpuFrameMs.toFixed(2) + ' ms' : 'n/a'}</span></div>
 				<div class="perf-row"><span>Draw calls</span><span>{perf.drawCalls}</span></div>
 				<div class="perf-row"><span>Verts</span><span>{(perf.vertexCount / 1e6).toFixed(2)} M</span></div>
+				<div class="perf-row"><span>Verts visible</span><span>{(perf.visibleVertexCount / 1e6).toFixed(2)} M ({perf.vertexCount > 0 ? Math.round(100 * perf.visibleVertexCount / perf.vertexCount) : 0}%)</span></div>
+				<div class="perf-row"><span>Chunks</span><span>{perf.visibleChunks} / {perf.totalChunks}</span></div>
 				<div class="perf-row perf-divider"><span>Hexes</span><span>{hexCount.toLocaleString()}</span></div>
 				<div class="perf-row"><span>Mesh build</span><span>{(perf.meshBuildMs / 1000).toFixed(2)} s</span></div>
 				<div class="perf-row"><span>Total init</span><span>{(perf.totalBuildMs / 1000).toFixed(2)} s</span></div>

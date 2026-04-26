@@ -65,6 +65,9 @@ export interface GlobeEngine {
 		gpuFrameMs: number;   // last frame GPU time in ms (0 if extension unavailable)
 		drawCalls: number;    // draw calls last frame
 		vertexCount: number;  // total vertices in globe mesh
+		visibleChunks: number;    // chunks not culled this frame
+		totalChunks: number;      // total chunks built
+		visibleVertexCount: number; // sum of vertices in visible chunks
 		meshBuildMs: number;  // wall time spent in buildGlobeMesh at startup
 		totalBuildMs: number; // wall time of full createGlobeEngine
 	};
@@ -278,6 +281,8 @@ export async function createGlobeEngine(
 
 	// ── Render Loop ─────────────────────────────────────────
 	let waterTime = 0;
+	let visibleChunkCount = chunks.length;
+	let visibleVertCount = totalVertCount;
 	engine.runRenderLoop(() => {
 		const camPos = camera.position;
 		terrainMat.setVector3('cameraPos', camPos);
@@ -301,9 +306,18 @@ export async function createGlobeEngine(
 		const camDirX = cx / cl;
 		const camDirY = cy / cl;
 		const camDirZ = cz / cl;
+		let visChunks = 0;
+		let visVerts = 0;
 		for (const chunk of chunks) {
-			chunk.mesh.setEnabled(isChunkVisible(chunk.centroid, camDirX, camDirY, camDirZ));
+			const visible = isChunkVisible(chunk.centroid, camDirX, camDirY, camDirZ);
+			chunk.mesh.setEnabled(visible);
+			if (visible) {
+				visChunks++;
+				visVerts += chunk.mesh.getTotalVertices();
+			}
 		}
+		visibleChunkCount = visChunks;
+		visibleVertCount = visVerts;
 
 		scene.render();
 	});
@@ -357,6 +371,9 @@ export async function createGlobeEngine(
 					: 0,
 				drawCalls: scene.getActiveMeshes().length,
 				vertexCount: totalVertCount,
+				visibleChunks: visibleChunkCount,
+				totalChunks: chunks.length,
+				visibleVertexCount: visibleVertCount,
 				meshBuildMs,
 				totalBuildMs,
 			};
