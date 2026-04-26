@@ -35,6 +35,7 @@ import { EARTH_RADIUS_KM, latLngToWorld } from '$lib/geo/coords';
 import { generateIcoHexGrid, type HexCell } from '$lib/engine/icosphere';
 import { buildGlobeMesh, buildHexEdgeLines, updateCellTerrain } from '$lib/engine/globe-mesh';
 import { assignCellsToChunks, isChunkVisible } from '$lib/engine/globe-chunks';
+import { initGpuDisplacement, type GpuDisplacementResources } from '$lib/engine/gpu-displacement';
 import { createTerrainMaterial, applyTerrainSettings } from '$lib/engine/terrain-material';
 import { createHexDebugMaterial } from '$lib/engine/hex-debug-material';
 import { createWaterMaterial } from '$lib/engine/water-material';
@@ -55,6 +56,10 @@ export interface GlobeEngine {
 	 *  adjacent hexes are visibly distinct — useful for tracking down
 	 *  geometry gaps and seam mismatches. */
 	setDebugMode(enabled: boolean): void;
+	/** Build the Phase 1 artifacts for the GPU displacement path
+	 *  (noise cubemap, per-hex data textures, flat-mesh per chunk).
+	 *  Does not change rendering — Phase 2 will wire in the shader. */
+	initGpuDisplacement(): Promise<GpuDisplacementResources>;
 	readonly hexCount: number;
 	readonly cells: HexCell[];
 	onHexClick: ((cellIndex: number) => void) | null;
@@ -355,6 +360,10 @@ export async function createGlobeEngine(
 		setDebugMode(enabled: boolean) {
 			const mat = enabled ? debugMat : terrainMat;
 			for (const chunk of chunks) chunk.mesh.material = mat;
+		},
+
+		async initGpuDisplacement() {
+			return initGpuDisplacement(cells, chunkAssignment, scene);
 		},
 
 		get hexCount() { return cells.length; },
