@@ -170,7 +170,7 @@
 				<div class="perf-row"><span>Verts</span><span>{(perf.vertexCount / 1e6).toFixed(2)} M</span></div>
 				<div class="perf-row"><span>Verts visible</span><span>{(perf.visibleVertexCount / 1e6).toFixed(2)} M ({perf.vertexCount > 0 ? Math.round(100 * perf.visibleVertexCount / perf.vertexCount) : 0}%)</span></div>
 				<div class="perf-row"><span>Chunks</span><span>{perf.visibleChunks} / {perf.totalChunks}</span></div>
-				<div class="perf-row"><span>Altitude</span><span>{perf.altitudeKm < 1000 ? perf.altitudeKm.toFixed(0) + ' km' : (perf.altitudeKm / 1000).toFixed(2) + ' Mm'}</span></div>
+				<div class="perf-row"><span>Altitude</span><span>{perf.altitudeKm.toLocaleString(undefined, { maximumFractionDigits: 0 })} km</span></div>
 				<div class="perf-row perf-divider"><span>Hexes</span><span>{hexCount.toLocaleString()}</span></div>
 				<div class="perf-row"><span>Mesh build</span><span>{(perf.meshBuildMs / 1000).toFixed(2)} s</span></div>
 				<div class="perf-row"><span>Total init</span><span>{(perf.totalBuildMs / 1000).toFixed(2)} s</span></div>
