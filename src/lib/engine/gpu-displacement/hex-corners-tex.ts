@@ -137,7 +137,8 @@ export function canonicalizeCells(cells: HexCell[]): void {
 	// Step 1: build a canonical-vector lookup. Each cluster of corners
 	// within MERGE_RADIUS becomes a single canonical Vector3. Spatial
 	// hash makes the per-corner query O(1).
-	const { grid } = buildCanonicalLookup(cells);
+	const { grid, allCanon } = buildCanonicalLookup(cells);
+	console.log(`[canon] ${cornersBefore} corner instances → ${allCanon.length} unique canonical points (merge ratio ${(cornersBefore / allCanon.length).toFixed(2)})`);
 
 	// Step 2: snap each cell's corners to the canonical vector of their
 	// cluster, dedupe (multiple corners hitting the same canonical
