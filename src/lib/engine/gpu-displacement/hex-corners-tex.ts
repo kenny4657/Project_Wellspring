@@ -115,6 +115,25 @@ export function canonicalizeCells(cells: HexCell[]): void {
 	const cornersBefore = cells.reduce((s, c) => s + c.corners.length, 0);
 	const corner7sBefore = cells.filter(c => c.corners.length >= 7).length;
 
+	// Inspect a problem cell: dump its corners + min pairwise distance.
+	const problem = cells.find(c => c.id === 0);
+	if (problem) {
+		console.log(`[canon] cell 0 has ${problem.corners.length} corners:`);
+		for (const c of problem.corners) {
+			console.log(`  (${c.x.toFixed(6)}, ${c.y.toFixed(6)}, ${c.z.toFixed(6)})`);
+		}
+		let minD = Infinity, maxD = 0;
+		for (let i = 0; i < problem.corners.length; i++) {
+			for (let j = i + 1; j < problem.corners.length; j++) {
+				const a = problem.corners[i], b = problem.corners[j];
+				const d = Math.sqrt((a.x-b.x)**2 + (a.y-b.y)**2 + (a.z-b.z)**2);
+				if (d < minD) minD = d;
+				if (d > maxD) maxD = d;
+			}
+		}
+		console.log(`  min pairwise dist: ${minD.toFixed(6)}, max: ${maxD.toFixed(6)}`);
+	}
+
 	// Step 1: build a canonical-vector lookup. Each cluster of corners
 	// within MERGE_RADIUS becomes a single canonical Vector3. Spatial
 	// hash makes the per-corner query O(1).
