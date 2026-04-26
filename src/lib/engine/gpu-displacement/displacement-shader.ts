@@ -192,14 +192,6 @@ float meanHexRadius(vec3 corners[6], int edgeCount) {
     return r / float(edgeCount);
 }
 
-// Polynomial smooth-min (matches CPU hex-distance-fields.ts).
-// Preserves non-negativity unlike exp-min.
-float smoothMinP(float a, float b, float k) {
-    if (k <= 0.0) return min(a, b);
-    float h = max(k - abs(a - b), 0.0) / k;
-    return min(a, b) - h * h * k * 0.25;
-}
-
 // Walk a hex's 6 edges and apply cliff erosion for every cliff
 // edge to (bestMu, bestMidH). Used both for self and 1-hop neighbors.
 void walkCliffEdges(
@@ -226,14 +218,7 @@ void walkCliffEdges(
         float mu;
         if (steep) {
             float rampWidth = ownerHexRadius * 0.2;
-            // Cliff safe-band: at very small dist, skip the cliffNoise
-            // perturbation. Without this, cliffNoise shifts mu away
-            // from 0 at shared cliff edges, leaving asymmetric h_base
-            // contribution in the lerp.
-            float safeBand = ownerHexRadius * 0.05;
-            float perturbed = dist < safeBand
-                ? dist
-                : max(0.0, dist + cliffNoise * ownerHexRadius * 0.25);
+            float perturbed = max(0.0, dist + cliffNoise * ownerHexRadius * 0.25);
             float t = min(perturbed / rampWidth, 1.0);
             mu = t * (2.0 - t);
         } else {
@@ -282,10 +267,9 @@ void main() {
     float nearestBorderTarget = 0.0;
     bool hasBorder = false;
 
-    // For coast smooth-min: polynomial smooth-min over coast edges only
-    // (matches CPU smoothDistanceToTargetEdges).
-    float coastSmoothK = hexRadius * 0.22;
-    float coastSmoothD = 1e9;
+    // For coast smooth-min: accumulate exp(-d/k) for coast edges only
+    float coastSmoothK = 0.22;
+    float coastWeightSum = 0.0;
     bool hasCoastEdge = false;
 
     for (int i = 0; i < 6; i++) {
@@ -309,26 +293,26 @@ void main() {
             nearestEdgeT = tEdge;
             nearestBorderTarget = target;
         }
-        if (coast && target == 0.0) {
-            coastSmoothD = (coastSmoothD > 1e8) ? dist : smoothMinP(coastSmoothD, dist, coastSmoothK);
+        if (coast) {
+            coastWeightSum += exp(-dist / coastSmoothK);
             hasCoastEdge = true;
         }
         hasBorder = true;
     }
 
     float h;
-    // CPU's allSameHeight short-circuit produces asymmetric h values
-    // when adjacent cells take different formula paths (one shortcuts,
-    // the other does the full border walk). Skip it — the border walk
-    // gives equivalent values for genuine all-same cases but stays
-    // symmetric across seams.
     if (!hasBorder) {
+        // All edges excluded (typical for an inland land hex with only
+        // land neighbors). Pure interior height — cliff erosion below
+        // will pull it toward midTier near any cliff edge.
         h = selfTierH + interiorNoiseH * noiseAmp;
     } else {
         borderTarget = nearestBorderTarget;
+        // Coast smooth-min: rounds the corner where two coast edges meet
         float dist = minDist;
-        if (hasCoastEdge && nearestBorderTarget == 0.0 && coastSmoothD < 1e8) {
-            dist = min(dist, coastSmoothD);
+        if (hasCoastEdge && nearestBorderTarget == 0.0 && coastWeightSum > 0.0) {
+            float smoothD = -log(coastWeightSum) * coastSmoothK;
+            dist = min(dist, smoothD);
         }
         float t01 = clamp(dist / hexRadius, 0.0, 1.0);
         float mu = (1.0 - cos(t01 * 3.14159265)) / 2.0;
@@ -382,18 +366,6 @@ void main() {
 
     if (bestMu < 1.0) {
         h = bestMidH * (1.0 - bestMu) + h * bestMu;
-    }
-
-    // Land hexes: floor h well above water-sphere height. The
-    // interior noise formula rawNoise + 0.3 goes negative when
-    // rawNoise < -0.3, which dips h below the water sphere (-0.0005)
-    // and exposes water sphere through the land surface. CPU smoothing
-    // averages neighboring vertices to keep the surface above water;
-    // without smoothing we floor explicitly. Use -0.0001 (3.2km above
-    // water sphere at planet scale) to stay well outside z-buffer
-    // precision and avoid any z-fighting flicker.
-    if (!isWaterHex) {
-        h = max(h, -0.0001);
     }
 
     vec3 worldPos = unitDir * (planetRadius * (1.0 + h));
