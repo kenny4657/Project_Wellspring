@@ -56,7 +56,6 @@ in float wallFlag;
 in float neighborSlot;
 
 out vec3 vWorldPos;
-out vec3 vUnitDir;
 out vec2 vLocalUV;
 out float vHeight;
 out float vTierH;
@@ -400,7 +399,6 @@ void main() {
     vec3 worldPos = unitDir * (planetRadius * (1.0 + h));
     vec4 wp = world * vec4(worldPos, 1.0);
     vWorldPos = wp.xyz;
-    vUnitDir = unitDir;
     vLocalUV = localUV;
     vHeight = h;
     vTierH = selfTierH;
@@ -413,7 +411,6 @@ const FRAGMENT = /* glsl */ `#version 300 es
 precision highp float;
 
 in vec3 vWorldPos;
-in vec3 vUnitDir;
 in vec2 vLocalUV;
 in float vHeight;
 in float vTierH;
@@ -425,14 +422,9 @@ uniform vec3 cameraPos;
 out vec4 fragColor;
 
 void main() {
-    // Use the smooth outward sphere normal (unitDir). dFdx/dFdy gave
-    // per-triangle face normals → faceted look = "repeating bump
-    // pattern" the user reported on tier 2. CPU's renderer smooths
-    // normals across coincident vertices; the equivalent for us is
-    // to ignore per-tri height variation in the lighting normal
-    // and just use the radial outward direction. Surface bumps still
-    // show via parallax/displacement, but lighting stays smooth.
-    vec3 N = normalize(vUnitDir);
+    vec3 dx = dFdx(vWorldPos);
+    vec3 dy = dFdy(vWorldPos);
+    vec3 N = normalize(cross(dy, dx));
 
     vec3 base;
     if (vCliffMu > 0.5)               base = vec3(0.45, 0.40, 0.35); // cliff face only where erosion is strong
