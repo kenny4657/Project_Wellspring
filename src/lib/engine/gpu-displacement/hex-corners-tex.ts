@@ -23,7 +23,23 @@ import { RawTexture } from '@babylonjs/core/Materials/Textures/rawTexture';
 import { Constants } from '@babylonjs/core/Engines/constants';
 import type { Scene } from '@babylonjs/core/scene';
 import type { HexCell } from '../icosphere';
-import { findNeighborAcrossEdge } from '../hex-borders';
+
+/** Find neighbor across edge by canonical-corner reference equality. */
+function findNeighborByCorners(cell: HexCell, edgeIdx: number, cellByIdMap: Map<number, HexCell>): HexCell | null {
+	const a = cell.corners[edgeIdx];
+	const b = cell.corners[(edgeIdx + 1) % cell.corners.length];
+	for (const nId of cell.neighbors) {
+		const nb = cellByIdMap.get(nId);
+		if (!nb) continue;
+		let hasA = false, hasB = false;
+		for (const c of nb.corners) {
+			if (c === a) hasA = true;
+			if (c === b) hasB = true;
+			if (hasA && hasB) return nb;
+		}
+	}
+	return null;
+}
 
 /** Build a Map from canonical-corner-key → averaged unit-direction.
  *  icosphere.ts dedupes corners within a single hex but leaves cross-hex
@@ -241,7 +257,7 @@ export function buildHexCornersTexture(cells: HexCell[], scene: Scene): HexCorne
 			const corner = corners[k] ?? corners[0]; // pad pentagons
 			let neighborId = -1;
 			if (k < edgeCount) {
-				const nb = findNeighborAcrossEdge(c, k, cellByIdMap);
+				const nb = findNeighborByCorners(c, k, cellByIdMap);
 				if (nb) neighborId = nb.id;
 			}
 			const px = (yRowBase + k) * W + xCol;

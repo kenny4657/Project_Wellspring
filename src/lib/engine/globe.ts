@@ -51,6 +51,7 @@ const ICO_RESOLUTION = 40;
 export interface GlobeEngine {
 	dispose(): void;
 	flyTo(lat: number, lng: number, altitude?: number): void;
+	setView(lat: number, lng: number, altitude: number): void;
 	setHexTerrain(cellIndex: number, terrain: TerrainTypeId): void;
 	setGridVisible(visible: boolean): void;
 	setTerrainSettings(settings: TerrainSettings): void;
@@ -375,6 +376,11 @@ export async function createGlobeEngine(
 		flyTo(lat: number, lng: number, altitude: number = EARTH_RADIUS_KM * 0.5) {
 			const targetCenter = latLngToWorld(lat, lng, EARTH_RADIUS_KM);
 			camera.flyToAsync(undefined, undefined, EARTH_RADIUS_KM + altitude, targetCenter, 2000);
+		},
+
+		setView(lat: number, lng: number, altitude: number) {
+			camera.center = latLngToWorld(lat, lng, EARTH_RADIUS_KM);
+			camera.radius = EARTH_RADIUS_KM + altitude;
 		},
 
 		setHexTerrain(cellIndex: number, terrain: TerrainTypeId) {

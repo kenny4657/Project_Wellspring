@@ -23,7 +23,26 @@ import { RawTexture } from '@babylonjs/core/Materials/Textures/rawTexture';
 import { Constants } from '@babylonjs/core/Engines/constants';
 import type { Scene } from '@babylonjs/core/scene';
 import type { HexCell } from '../icosphere';
-import { findNeighborAcrossEdge } from '../hex-borders';
+
+/** Find neighbor across edge by canonical-corner reference equality.
+ *  Robust where dot-product matching fails (7+ corner cells where two
+ *  edges have similar midpoint directions). Requires canonicalizeCells
+ *  to have run so corners are shared Vector3 references across hexes. */
+function findNeighborByCorners(cell: HexCell, edgeIdx: number, cellByIdMap: Map<number, HexCell>): HexCell | null {
+	const a = cell.corners[edgeIdx];
+	const b = cell.corners[(edgeIdx + 1) % cell.corners.length];
+	for (const nId of cell.neighbors) {
+		const nb = cellByIdMap.get(nId);
+		if (!nb) continue;
+		let hasA = false, hasB = false;
+		for (const c of nb.corners) {
+			if (c === a) hasA = true;
+			if (c === b) hasB = true;
+			if (hasA && hasB) return nb;
+		}
+	}
+	return null;
+}
 
 export interface HexDataTextures {
 	hexDataTex: RawTexture;
@@ -89,7 +108,9 @@ export function buildHexDataTextures(cells: HexCell[], scene: Scene): HexDataTex
 				heights.push(c.heightLevel);
 				continue;
 			}
-			const nb = findNeighborAcrossEdge(c, k, cellByIdMap);
+			// Corner-match (not dot-product) so 7+ corner cells get the
+			// right neighbor for each edge.
+			const nb = findNeighborByCorners(c, k, cellByIdMap);
 			heights.push(nb ? nb.heightLevel : c.heightLevel);
 		}
 		// Pack pairs into bytes (4 bits each, since heightLevel is 0–4).

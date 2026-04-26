@@ -192,6 +192,14 @@ float meanHexRadius(vec3 corners[6], int edgeCount) {
     return r / float(edgeCount);
 }
 
+// Polynomial smooth-min (matches CPU hex-distance-fields.ts).
+// Preserves non-negativity unlike exp-min.
+float smoothMinP(float a, float b, float k) {
+    if (k <= 0.0) return min(a, b);
+    float h = max(k - abs(a - b), 0.0) / k;
+    return min(a, b) - h * h * k * 0.25;
+}
+
 // Walk a hex's 6 edges and apply cliff erosion for every cliff
 // edge to (bestMu, bestMidH). Used both for self and 1-hop neighbors.
 void walkCliffEdges(
@@ -267,9 +275,10 @@ void main() {
     float nearestBorderTarget = 0.0;
     bool hasBorder = false;
 
-    // For coast smooth-min: accumulate exp(-d/k) for coast edges only
-    float coastSmoothK = 0.22;
-    float coastWeightSum = 0.0;
+    // For coast smooth-min: polynomial smooth-min over coast edges only
+    // (matches CPU smoothDistanceToTargetEdges).
+    float coastSmoothK = hexRadius * 0.22;
+    float coastSmoothD = 1e9;
     bool hasCoastEdge = false;
 
     for (int i = 0; i < 6; i++) {
@@ -293,26 +302,30 @@ void main() {
             nearestEdgeT = tEdge;
             nearestBorderTarget = target;
         }
-        if (coast) {
-            coastWeightSum += exp(-dist / coastSmoothK);
+        if (coast && target == 0.0) {
+            coastSmoothD = (coastSmoothD > 1e8) ? dist : smoothMinP(coastSmoothD, dist, coastSmoothK);
             hasCoastEdge = true;
         }
         hasBorder = true;
     }
 
     float h;
-    if (!hasBorder) {
-        // All edges excluded (typical for an inland land hex with only
-        // land neighbors). Pure interior height — cliff erosion below
-        // will pull it toward midTier near any cliff edge.
+    // CPU short-circuit for water hex with all same-tier neighbors:
+    // skip border smoothing, use pure interior height.
+    bool allSameHeight = true;
+    for (int i = 0; i < 6; i++) {
+        if (i >= edgeCount) break;
+        if (neighborH[i] != selfH) { allSameHeight = false; break; }
+    }
+    if (isWaterHex && allSameHeight) {
+        h = selfTierH + interiorNoiseH * noiseAmp;
+    } else if (!hasBorder) {
         h = selfTierH + interiorNoiseH * noiseAmp;
     } else {
         borderTarget = nearestBorderTarget;
-        // Coast smooth-min: rounds the corner where two coast edges meet
         float dist = minDist;
-        if (hasCoastEdge && nearestBorderTarget == 0.0 && coastWeightSum > 0.0) {
-            float smoothD = -log(coastWeightSum) * coastSmoothK;
-            dist = min(dist, smoothD);
+        if (hasCoastEdge && nearestBorderTarget == 0.0 && coastSmoothD < 1e8) {
+            dist = min(dist, coastSmoothD);
         }
         float t01 = clamp(dist / hexRadius, 0.0, 1.0);
         float mu = (1.0 - cos(t01 * 3.14159265)) / 2.0;
