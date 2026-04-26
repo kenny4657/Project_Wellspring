@@ -1,19 +1,21 @@
 /**
  * GPU displacement shader (Phase 2 final).
  *
- * Vertex shader displaces unit-sphere hex meshes by computing the
- * full equivalent of `computeHeightWithCliffErosion`:
+ * Vertex shader fully ports `computeHeightWithCliffErosion`:
  *   - sample baked noise cubemap (raw + cliff channels)
- *   - read hex tier from hexDataTex; 6 corners from hexCornersTex
- *   - walk edges to find nearest border + symmetric border target
+ *   - read hex tier from hexDataTex; 6 corners + neighbor IDs
+ *     packed into hexCornersTex (xyz=corner, a=neighborId)
+ *   - classify edges (excluded / coast / cliff / steepCliff) using
+ *     the same rules as hex-borders.ts
+ *   - find nearest non-excluded edge for border smoothing, with
+ *     coast smooth-min across coast edges and COAST_ROUNDING dip
  *   - apply self cliff erosion for cliff edges
- *   - apply 1-hop neighbor cliff erosion for non-cliff edges of self
- *     (closes the seam between same-tier neighbors of a common cliff)
- *   - apply coast smooth-min + COAST_ROUNDING for hex-zigzag-free coastlines
- *   - wall vertices (wallFlag=1) drop to neighbor surface or BASE_HEIGHT
+ *   - apply 1-hop neighbor cliff erosion: for every non-cliff edge
+ *     of self, walk that neighbor's cliff edges using its own data
+ *     (closes seams between same-tier neighbors of a common cliff)
  *
- * Fragment shader: analytic finite-difference face normals + Lambert
- * lighting + tier-based debug palette. Real terrain colors land in Phase 3.
+ * Fragment shader: per-fragment dFdx/dFdy face normals + Lambert
+ * + tier-based debug palette. Real terrain colors land in Phase 3.
  */
 import { ShaderMaterial } from '@babylonjs/core/Materials/shaderMaterial';
 import { ShaderStore } from '@babylonjs/core/Engines/shaderStore';
@@ -37,7 +39,7 @@ uniform float noiseAmp;
 uniform float noiseScale;
 uniform float baseHeight;
 uniform float coastRounding;
-uniform vec4 levelHeights; // L0..L3
+uniform vec4 levelHeights;
 uniform float levelHeight4;
 
 uniform samplerCube noiseCubemap;
@@ -55,7 +57,6 @@ in float neighborSlot;
 
 out vec3 vWorldPos;
 out vec2 vLocalUV;
-out float vWallFlag;
 out float vHeight;
 out float vTierH;
 out float vCliffMu;
@@ -72,11 +73,11 @@ ivec2 hexCoord(int id) {
     return ivec2(id % hexTexWidth, id / hexTexWidth);
 }
 
-vec3 readCorner(int id, int k) {
+vec4 readCornerPixel(int id, int k) {
     int W = hexCornersTexWidth;
     int xCol = id % W;
     int yRow = (id / W) * 6 + k;
-    return texelFetch(hexCornersTex, ivec2(xCol, yRow), 0).rgb;
+    return texelFetch(hexCornersTex, ivec2(xCol, yRow), 0);
 }
 
 float distToSegment(vec3 p, vec3 a, vec3 b) {
@@ -87,30 +88,110 @@ float distToSegment(vec3 p, vec3 a, vec3 b) {
     return length(p - proj);
 }
 
-// ── Cliff classification (matches hex-borders.ts) ─────────────
-// cliff = gap > 0 AND (both land OR water-side-against-tall-land)
-// steep = gap >= 2 between two land hexes, OR water-cliff (land tier > 2)
+// Distance + edge parameter t (0..1 along segment)
+void distAndT(vec3 p, vec3 a, vec3 b, out float dist, out float t) {
+    vec3 ab = b - a;
+    float ab2 = dot(ab, ab);
+    t = ab2 > 1e-12 ? clamp(dot(p - a, ab) / ab2, 0.0, 1.0) : 0.0;
+    vec3 proj = a + ab * t;
+    dist = length(p - proj);
+}
+
+// ── Edge classification (matches hex-borders.ts) ─────────────
+// CPU rule: coast if water<->lowland (low-side tier ≤ 2).
+//           cliff if any height gap > 0 between two land hexes
+//           OR water-against-tall-land (land tier > 2).
+//           steepCliff if gap ≥ 2 between land hexes
+//           OR water-against-tall-land.
+//           excluded from border-distance walk if: both land,
+//           OR cliff (water+tall-land), so border smoothing
+//           doesn't pull the surface toward sea level there.
 bool isCliffEdge(int selfH, int nbH) {
     bool selfWater = selfH <= 1;
-    bool nbWater   = nbH   <= 1;
+    bool nbWater = nbH <= 1;
     if (selfWater && nbWater) return false;
     int gap = int(abs(float(selfH - nbH)));
-    if (selfWater && nbH <= 2) return false; // water to lowland
-    if (nbWater   && selfH <= 2) return false; // lowland to water
+    if (selfWater && nbH <= 2) return false;
+    if (nbWater && selfH <= 2) return false;
     return gap > 0;
 }
 bool isSteepCliffEdge(int selfH, int nbH) {
     bool selfWater = selfH <= 1;
-    bool nbWater   = nbH   <= 1;
+    bool nbWater = nbH <= 1;
     if (selfWater && nbWater) return false;
     if (!selfWater && !nbWater) return abs(selfH - nbH) >= 2;
-    if (nbWater)   return selfH > 2;
-    if (selfWater) return nbH   > 2;
+    if (nbWater) return selfH > 2;
+    if (selfWater) return nbH > 2;
     return false;
 }
+bool isCoastEdge(int selfH, int nbH) {
+    bool selfWater = selfH <= 1;
+    bool nbWater = nbH <= 1;
+    if (selfWater == nbWater) return false; // both same → not coast
+    if (selfWater) return nbH <= 2;         // water against shallow land
+    return selfH <= 2;                      // shallow land against water
+}
+bool isExcludedEdge(int selfH, int nbH) {
+    bool selfWater = selfH <= 1;
+    bool nbWater = nbH <= 1;
+    // Land-land: excluded
+    if (!selfWater && !nbWater) return true;
+    // Water-cliff (one water, other tall land): excluded
+    if (isCliffEdge(selfH, nbH)) return true;
+    return false;
+}
+float computeBorderTarget(int selfH, int nbH) {
+    bool selfWater = selfH <= 1;
+    bool nbWater = nbH <= 1;
+    // Water-water: target is the shallower of the two (per CPU classifyWaterToWater)
+    if (selfWater && nbWater) {
+        int lo = min(selfH, nbH);
+        return levelHeight(lo);
+    }
+    // Coast (water<->shallow land): sea level
+    return 0.0;
+}
 
-// Walk a hex's 6 edges and apply the cliff-erosion ramp for any
-// cliff edge to (bestMu, bestMidH). Hex's 6 corners passed in.
+void readNeighbors(int id, out int nb[6]) {
+    vec4 nbPacked = texelFetch(hexNeighborsTex, hexCoord(id), 0);
+    int n0 = int(nbPacked.r * 255.0 + 0.5);
+    int n1 = int(nbPacked.g * 255.0 + 0.5);
+    int n2 = int(nbPacked.b * 255.0 + 0.5);
+    nb[0] = n0 & 0xf;
+    nb[1] = (n0 >> 4) & 0xf;
+    nb[2] = n1 & 0xf;
+    nb[3] = (n1 >> 4) & 0xf;
+    nb[4] = n2 & 0xf;
+    nb[5] = (n2 >> 4) & 0xf;
+}
+
+void readHexData(int id, out int heightLevel, out int edgeCount) {
+    vec4 d = texelFetch(hexDataTex, hexCoord(id), 0);
+    heightLevel = int(d.r * 255.0 + 0.5);
+    int packed = int(d.b * 255.0 + 0.5);
+    edgeCount = (packed >> 4) & 0xf;
+    if (edgeCount < 5) edgeCount = 6;
+}
+
+void readCornersAndNeighborIds(int id, out vec3 corners[6], out int nbIds[6]) {
+    for (int i = 0; i < 6; i++) {
+        vec4 v = readCornerPixel(id, i);
+        corners[i] = v.rgb;
+        nbIds[i] = int(v.a + 0.5);
+    }
+}
+
+float meanHexRadius(vec3 corners[6], int edgeCount) {
+    vec3 c = vec3(0.0);
+    for (int i = 0; i < 6; i++) { if (i >= edgeCount) break; c += corners[i]; }
+    c = normalize(c / float(edgeCount));
+    float r = 0.0;
+    for (int i = 0; i < 6; i++) { if (i >= edgeCount) break; r += length(corners[i] - c); }
+    return r / float(edgeCount);
+}
+
+// Walk a hex's 6 edges and apply cliff erosion for every cliff
+// edge to (bestMu, bestMidH). Used both for self and 1-hop neighbors.
 void walkCliffEdges(
     vec3 unitDir,
     int selfH,
@@ -151,184 +232,144 @@ void walkCliffEdges(
     }
 }
 
-void readNeighbors(int id, out int nb[6]) {
-    vec4 nbPacked = texelFetch(hexNeighborsTex, hexCoord(id), 0);
-    int n0 = int(nbPacked.r * 255.0 + 0.5);
-    int n1 = int(nbPacked.g * 255.0 + 0.5);
-    int n2 = int(nbPacked.b * 255.0 + 0.5);
-    nb[0] = n0 & 0xf;
-    nb[1] = (n0 >> 4) & 0xf;
-    nb[2] = n1 & 0xf;
-    nb[3] = (n1 >> 4) & 0xf;
-    nb[4] = n2 & 0xf;
-    nb[5] = (n2 >> 4) & 0xf;
-}
+void main() {
+    int id = int(hexId + 0.5);
+    vec3 unitDir = normalize(position);
 
-void readHexData(int id, out int heightLevel, out int edgeCount) {
-    vec4 d = texelFetch(hexDataTex, hexCoord(id), 0);
-    heightLevel = int(d.r * 255.0 + 0.5);
-    int packed = int(d.b * 255.0 + 0.5);
-    edgeCount = (packed >> 4) & 0xf;
-    if (edgeCount < 5) edgeCount = 6;
-}
-
-void readCorners(int id, out vec3 corners[6]) {
-    for (int i = 0; i < 6; i++) corners[i] = readCorner(id, i);
-}
-
-float meanHexRadius(vec3 corners[6], int edgeCount) {
-    vec3 c = vec3(0.0);
-    for (int i = 0; i < 6; i++) { if (i >= edgeCount) break; c += corners[i]; }
-    c = normalize(c / float(edgeCount));
-    float r = 0.0;
-    for (int i = 0; i < 6; i++) { if (i >= edgeCount) break; r += length(corners[i] - c); }
-    return r / float(edgeCount);
-}
-
-// Core: compute the displacement height at unitDir from a hex.
-// Mirrors computeSurfaceHeight + computeHeightWithCliffErosion
-// (self cliff loop; 1-hop neighbor cliff loop is a TODO below).
-float computeDisplacement(vec3 unitDir, int selfId) {
+    // Self data
     int selfH, edgeCount;
-    readHexData(selfId, selfH, edgeCount);
+    readHexData(id, selfH, edgeCount);
     int neighborH[6];
-    readNeighbors(selfId, neighborH);
+    readNeighbors(id, neighborH);
     vec3 corners[6];
-    readCorners(selfId, corners);
+    int nbIds[6];
+    readCornersAndNeighborIds(id, corners, nbIds);
 
+    // Noise
     vec4 noiseRGBA = textureLod(noiseCubemap, unitDir, 0.0);
     float rawNoise = noiseRGBA.r;
     float cliffNoise = noiseRGBA.g;
-    float midNoise = rawNoise; // matches CPU: midNoise===rawNoise
+    float midNoise = rawNoise; // identical to CPU: midNoise === rawNoise
 
     bool isWaterHex = selfH <= 1;
     float selfTierH = levelHeight(selfH);
     float interiorNoiseH = isWaterHex ? abs(rawNoise) : (rawNoise + 0.3);
     float borderNoiseH = abs(rawNoise) + 0.15;
+    float hexRadius = meanHexRadius(corners, edgeCount);
 
-    // ── Find nearest border edge + smooth-min for coast edges ─────
+    // ── Walk non-excluded edges to find nearest border ─────
     float minDist = 1e9;
     float borderTarget = 0.0;
     int nearestEdgeIdx = -1;
     float nearestEdgeT = 0.0;
-    float coastSmoothK = 0.22; // matches COAST_SMOOTHING
-    float coastSmoothMin = 1e9;
+    float nearestBorderTarget = 0.0;
+    bool hasBorder = false;
+
+    // For coast smooth-min: accumulate exp(-d/k) for coast edges only
+    float coastSmoothK = 0.22;
+    float coastWeightSum = 0.0;
+    bool hasCoastEdge = false;
 
     for (int i = 0; i < 6; i++) {
         if (i >= edgeCount) break;
+        int nbH = neighborH[i];
+        if (isExcludedEdge(selfH, nbH)) continue;
+
         vec3 a = corners[i];
         int nextIdx = (i + 1) == edgeCount ? 0 : (i + 1);
         vec3 b = corners[nextIdx];
-        // distance + edge t
-        vec3 ab = b - a;
-        float ab2 = dot(ab, ab);
-        float t = ab2 > 1e-12 ? clamp(dot(unitDir - a, ab) / ab2, 0.0, 1.0) : 0.0;
-        vec3 proj = a + ab * t;
-        float dist = length(unitDir - proj);
 
-        int nbH = neighborH[i];
-        int sharedLevel = min(selfH, nbH);
-        float target = levelHeight(sharedLevel);
-        bool isCoast = (target == 0.0); // coastline: shared level = 2 → height 0
+        float dist; float tEdge;
+        distAndT(unitDir, a, b, dist, tEdge);
+
+        float target = computeBorderTarget(selfH, nbH);
+        bool coast = isCoastEdge(selfH, nbH);
 
         if (dist < minDist) {
             minDist = dist;
-            borderTarget = target;
             nearestEdgeIdx = i;
-            nearestEdgeT = t;
+            nearestEdgeT = tEdge;
+            nearestBorderTarget = target;
         }
+        if (coast) {
+            coastWeightSum += exp(-dist / coastSmoothK);
+            hasCoastEdge = true;
+        }
+        hasBorder = true;
+    }
 
-        // Smooth-min only across coast edges (target == 0).
-        if (isCoast) {
-            // exponential smooth-min: -log(sum(exp(-k*d)))/k
-            // accumulate exp(-d/coastSmoothK) inline
-            float weight = exp(-dist / coastSmoothK);
-            // We'll combine after the loop; reuse coastSmoothMin as accum.
-            // Use bit trick: store as -accum so we can min vs other things.
-            // Simpler: use a separate accumulator.
-            coastSmoothMin = (coastSmoothMin > 1e8) ? weight : (coastSmoothMin + weight);
+    float h;
+    if (!hasBorder) {
+        // All edges excluded (typical for an inland land hex with only
+        // land neighbors). Pure interior height — cliff erosion below
+        // will pull it toward midTier near any cliff edge.
+        h = selfTierH + interiorNoiseH * noiseAmp;
+    } else {
+        borderTarget = nearestBorderTarget;
+        // Coast smooth-min: rounds the corner where two coast edges meet
+        float dist = minDist;
+        if (hasCoastEdge && nearestBorderTarget == 0.0 && coastWeightSum > 0.0) {
+            float smoothD = -log(coastWeightSum) * coastSmoothK;
+            dist = min(dist, smoothD);
+        }
+        float t01 = clamp(dist / hexRadius, 0.0, 1.0);
+        float mu = (1.0 - cos(t01 * 3.14159265)) / 2.0;
+
+        bool isWaterNeighborBorder = borderTarget < -0.001;
+        float borderNoiseCoeff = isWaterNeighborBorder ? noiseAmp : noiseAmp * 0.3;
+        float noiseCoeff = noiseAmp * mu + borderNoiseCoeff * (1.0 - mu);
+        float noiseH = interiorNoiseH * mu + borderNoiseH * (1.0 - mu);
+        h = selfTierH * mu + borderTarget * (1.0 - mu) + noiseH * noiseCoeff;
+
+        // COAST_ROUNDING dip at coastal edge midpoint
+        if (borderTarget == 0.0 && nearestEdgeIdx >= 0) {
+            float coastMid = 4.0 * nearestEdgeT * (1.0 - nearestEdgeT);
+            float coastBlend = mu * (1.0 - mu);
+            h -= coastRounding * coastMid * coastBlend * 4.0;
         }
     }
 
-    // Round coast: replace the dist used for blend if we're nearest a coast edge.
-    float dist = minDist;
-    if (borderTarget == 0.0 && coastSmoothMin < 1e8 && coastSmoothMin > 0.0) {
-        float smoothD = -log(coastSmoothMin) * coastSmoothK;
-        dist = min(dist, smoothD);
-    }
-
-    float hexRadius = meanHexRadius(corners, edgeCount);
-    float t01 = clamp(dist / hexRadius, 0.0, 1.0);
-    float mu = (1.0 - cos(t01 * 3.14159265)) / 2.0;
-
-    bool isWaterNeighbor = borderTarget < -0.001;
-    float borderNoiseCoeff = isWaterNeighbor ? noiseAmp : noiseAmp * 0.3;
-    float noiseCoeff = noiseAmp * mu + borderNoiseCoeff * (1.0 - mu);
-    float noiseH = interiorNoiseH * mu + borderNoiseH * (1.0 - mu);
-
-    float h = selfTierH * mu + borderTarget * (1.0 - mu) + noiseH * noiseCoeff;
-
-    // Coast rounding (slight dip at edge midpoints)
-    if (borderTarget == 0.0 && nearestEdgeIdx >= 0) {
-        float coastMid = 4.0 * nearestEdgeT * (1.0 - nearestEdgeT);
-        float coastBlend = mu * (1.0 - mu);
-        h -= coastRounding * coastMid * coastBlend * 4.0;
-    }
-
-    // ── Cliff erosion: self ─────────────────────────────────────
+    // ── Cliff erosion: self ─────────────────────────────────
     float bestMu = 1.0;
     float bestMidH = h;
     walkCliffEdges(unitDir, selfH, edgeCount, neighborH, corners,
                    hexRadius, cliffNoise, midNoise, selfTierH, bestMu, bestMidH);
 
-    // ── Cliff erosion: 1-hop neighbors ──────────────────────────
-    // For each non-cliff edge of self, walk that neighbor's cliff edges.
-    // This closes seams between same-tier neighbors of a common cliff hex.
+    // ── Cliff erosion: 1-hop neighbors ──────────────────────
+    // For each non-cliff edge of self, walk that neighbor's cliff edges
+    // using the neighbor's own corners + heightLevels + hexRadius.
+    // Closes seams between same-tier neighbors of a common cliff hex.
     for (int i = 0; i < 6; i++) {
         if (i >= edgeCount) break;
-        if (isCliffEdge(selfH, neighborH[i])) continue; // already in self loop
+        if (isCliffEdge(selfH, neighborH[i])) continue;
+        int nbId = nbIds[i];
+        if (nbId < 0) continue;
 
-        // Find the neighbor hex by id. We don't know neighbor hex IDs in
-        // the texture (only their heightLevels). To look up the neighbor
-        // by 1-hop, we encode neighbor IDs in another texture — but we
-        // skipped that. As a graceful fallback, skip 1-hop here. The
-        // visible artifact is the same gap problem the CPU code has at
-        // chunk-internal cliffs; small at SUB=3 due to the symmetric
-        // border-target formula keeping seams matched.
-        // TODO Phase 2.5: add hexNeighborIdsTex and walk the neighbor's
-        //   cliff edges via readHexData(nbId, ...) etc.
-        break; // documented intentional skip
+        int nbHL, nbEdgeCount;
+        readHexData(nbId, nbHL, nbEdgeCount);
+        int nbNeighborH[6];
+        readNeighbors(nbId, nbNeighborH);
+        vec3 nbCorners[6];
+        int nbNbIds[6];
+        readCornersAndNeighborIds(nbId, nbCorners, nbNbIds);
+        float nbHexRadius = meanHexRadius(nbCorners, nbEdgeCount);
+        float nbTierH = levelHeight(nbHL);
+
+        walkCliffEdges(unitDir, nbHL, nbEdgeCount, nbNeighborH, nbCorners,
+                       nbHexRadius, cliffNoise, midNoise, nbTierH, bestMu, bestMidH);
     }
 
     if (bestMu < 1.0) {
         h = bestMidH * (1.0 - bestMu) + h * bestMu;
     }
 
-    return h;
-}
-
-// Used by both the main-vertex displacement and finite-difference normals.
-float displacementAt(vec3 unitDir, int selfId) {
-    return computeDisplacement(normalize(unitDir), selfId);
-}
-
-void main() {
-    int id = int(hexId + 0.5);
-    vec3 unitDir = normalize(position);
-    float h = computeDisplacement(unitDir, id);
-
     vec3 worldPos = unitDir * (planetRadius * (1.0 + h));
     vec4 wp = world * vec4(worldPos, 1.0);
     vWorldPos = wp.xyz;
     vLocalUV = localUV;
-    vWallFlag = wallFlag;
     vHeight = h;
-
-    int selfH2, edgeCount2;
-    readHexData(id, selfH2, edgeCount2);
-    vTierH = levelHeight(selfH2);
-    vCliffMu = 0.0; // populated later if cliff paint mask is needed
-
+    vTierH = selfTierH;
+    vCliffMu = 1.0 - bestMu;
     gl_Position = viewProjection * wp;
 }
 `;
@@ -338,7 +379,6 @@ precision highp float;
 
 in vec3 vWorldPos;
 in vec2 vLocalUV;
-in float vWallFlag;
 in float vHeight;
 in float vTierH;
 in float vCliffMu;
@@ -349,15 +389,13 @@ uniform vec3 cameraPos;
 out vec4 fragColor;
 
 void main() {
-    // Per-fragment face normal via screen-space derivatives.
     vec3 dx = dFdx(vWorldPos);
     vec3 dy = dFdy(vWorldPos);
     vec3 N = normalize(cross(dy, dx));
 
     vec3 base;
-    if (vWallFlag > 0.5) {
-        base = vec3(0.45, 0.40, 0.35); // wall stone
-    } else if (vTierH < -0.01)        base = vec3(0.10, 0.18, 0.32);
+    if (vCliffMu > 0.05)              base = vec3(0.45, 0.40, 0.35); // cliff face
+    else if (vTierH < -0.01)          base = vec3(0.10, 0.18, 0.32);
     else if (vTierH < -0.001)         base = vec3(0.16, 0.30, 0.45);
     else if (vTierH < 0.001)          base = vec3(0.62, 0.78, 0.42);
     else if (vTierH < 0.008)          base = vec3(0.45, 0.55, 0.30);
