@@ -68,6 +68,7 @@ export interface GlobeEngine {
 		visibleChunks: number;    // chunks not culled this frame
 		totalChunks: number;      // total chunks built
 		visibleVertexCount: number; // sum of vertices in visible chunks
+		altitudeKm: number;       // camera altitude above planet surface, km
 		meshBuildMs: number;  // wall time spent in buildGlobeMesh at startup
 		totalBuildMs: number; // wall time of full createGlobeEngine
 	};
@@ -374,6 +375,11 @@ export async function createGlobeEngine(
 				visibleChunks: visibleChunkCount,
 				totalChunks: chunks.length,
 				visibleVertexCount: visibleVertCount,
+				altitudeKm: Math.max(0, Math.sqrt(
+					camera.position.x * camera.position.x +
+					camera.position.y * camera.position.y +
+					camera.position.z * camera.position.z
+				) - EARTH_RADIUS_KM),
 				meshBuildMs,
 				totalBuildMs,
 			};
