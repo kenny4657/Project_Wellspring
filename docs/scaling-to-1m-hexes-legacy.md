@@ -65,8 +65,8 @@ they're 25+ px and bumpy displacement clearly needs to read.
 |-------------------|-----------|-----------------|--------------|
 | > 20,000 km       | far       | 0 (or imposter) | ≤6           |
 | 5,000–20,000 km   | mid-far   | 1               | 24           |
-| 1,000–5,000 km    | mid       | 2               | 96           |
-| < 1,000 km        | close     | 3               | 384          |
+| 1,500–5,000 km    | mid       | 2               | 96           |
+| < 1,500 km        | close     | 3               | 384          |
 
 Hex count sets the baseline budget — at 1M hexes the far-zoom tier
 must be very low (otherwise you blow the vert budget on hexes you

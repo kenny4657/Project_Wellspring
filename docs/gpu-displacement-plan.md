@@ -421,9 +421,19 @@ focused work.
 
 ## Open questions
 
-1. **Bake noise on CPU or GPU?** GPU bake (one-time render to
-   cubemap) eliminates the CPU/GPU implementation drift risk.
-   Slight startup speedup too.
+1. **Bake noise on CPU or GPU?** Recommendation: CPU bake first.
+   - **CPU bake**: deterministic across devices (GPU FP precision
+     varies between vendors), reuses existing `fbmNoise.ts`, no
+     render-to-cubemap infrastructure, can run in a Web Worker
+     during page load. First-bake cost ~3 s; cache the result to
+     IndexedDB so subsequent loads skip it.
+   - **GPU bake**: ~3000× faster (1ms vs 3s), enables runtime
+     re-baking if noise scale/seed becomes a UI setting.
+   - The "implementation drift" worry is mostly a non-issue:
+     runtime shader only *samples* the baked cubemap, never calls
+     `fbmNoise`. Drift only matters if other CPU-side code (picking,
+     AI) needs to agree with GPU heights — and the fix there is
+     "have CPU helpers also sample the cubemap," not GPU baking.
 
 2. **Single noise channel or three?** Today uses raw, cliff,
    mid noise — different scales/offsets of fbm. If GPU bake is
