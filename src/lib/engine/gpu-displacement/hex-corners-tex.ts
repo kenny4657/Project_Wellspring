@@ -189,6 +189,18 @@ export function canonicalizeCells(cells: HexCell[]): void {
 	const cornersAfter = cells.reduce((s, c) => s + c.corners.length, 0);
 	const corner7sAfter = cells.filter(c => c.corners.length >= 7).length;
 	console.log(`[canonicalize] corners: ${cornersBefore} → ${cornersAfter}, 7+ cells: ${corner7sBefore} → ${corner7sAfter}, total cells: ${cells.length}`);
+
+	const cell0 = cells.find(c => c.id === 0);
+	const cell9471 = cells.find(c => c.id === 9471);
+	if (cell0 && cell9471) {
+		console.log(`[canon] cell 0 neighbors: ${[...cell0.neighbors].sort((a,b)=>a-b).join(',')}`);
+		console.log(`[canon] cell 9471 neighbors: ${[...cell9471.neighbors].sort((a,b)=>a-b).join(',')}`);
+		// Count shared canonical Vector3s by reference identity.
+		const set0 = new Set(cell0.corners);
+		let shared = 0;
+		for (const c of cell9471.corners) if (set0.has(c)) shared++;
+		console.log(`[canon] cell 0 ↔ 9471 share ${shared} canonical corners (need ≥2 for neighbor)`);
+	}
 }
 
 export interface HexCornersTexture {

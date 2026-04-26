@@ -166,13 +166,37 @@ interface CellData {
 	allSameHeight: boolean;
 }
 
+/** Find the neighbor across edge `edgeIdx` of `cell` by matching shared
+ *  canonical corner identities (reference equality, valid after
+ *  canonicalizeCells). Robust where dot-product matching fails — cells
+ *  with 7+ corners can have multiple edges with similar midpoint
+ *  directions, and direction-matching loses when two neighbors are
+ *  near-aligned. Corner-matching is exact: only one neighbor contains
+ *  both endpoints of any given edge. */
+function findNeighborByCorners(cell: HexCell, edgeIdx: number, cellById: Map<number, HexCell>): HexCell | null {
+	const a = cell.corners[edgeIdx];
+	const b = cell.corners[(edgeIdx + 1) % cell.corners.length];
+	for (const nId of cell.neighbors) {
+		const nb = cellById.get(nId);
+		if (!nb) continue;
+		let hasA = false;
+		let hasB = false;
+		for (const c of nb.corners) {
+			if (c === a) hasA = true;
+			if (c === b) hasB = true;
+			if (hasA && hasB) return nb;
+		}
+	}
+	return null;
+}
+
 function fetchCellData(cell: HexCell, cellById: Map<number, HexCell>): CellData {
 	const n = cell.corners.length;
 	const neighbors: (HexCell | null)[] = [];
 	const neighborH: number[] = [];
 	let allSame = true;
 	for (let k = 0; k < n; k++) {
-		const nb = findNeighborAcrossEdge(cell, k, cellById);
+		const nb = findNeighborByCorners(cell, k, cellById);
 		neighbors.push(nb);
 		neighborH.push(nb ? nb.heightLevel : cell.heightLevel);
 		if (nb && nb.heightLevel !== cell.heightLevel) allSame = false;
@@ -373,10 +397,10 @@ export function dumpSeamPair(cells: HexCell[], cellAId: number, cellBId: number)
 		console.log(`Missing cell: A=${A?.id} B=${B?.id}`);
 		return;
 	}
-	// Find the edge index of A facing B.
+	// Find the edge index of A facing B (corner-match, not dot-product).
 	let edgeIdxA = -1;
 	for (let i = 0; i < A.corners.length; i++) {
-		const nb = findNeighborAcrossEdge(A, i, cellById);
+		const nb = findNeighborByCorners(A, i, cellById);
 		if (nb && nb.id === B.id) { edgeIdxA = i; break; }
 	}
 	console.log(`A=${A.id} (tier ${A.heightLevel}) edgeIdxA=${edgeIdxA}`);
