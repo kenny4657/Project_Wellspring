@@ -70,6 +70,7 @@ function canonKey(v: Vector3): string {
 }
 
 export function canonicalizeCells(cells: HexCell[]): void {
+	// Step 1: snap corner positions to a single canonical value across hexes.
 	const canon = buildCanonicalCorners(cells);
 	for (const c of cells) {
 		for (let k = 0; k < c.corners.length; k++) {
@@ -79,6 +80,54 @@ export function canonicalizeCells(cells: HexCell[]): void {
 				c.corners[k].y = cv.y;
 				c.corners[k].z = cv.z;
 			}
+		}
+	}
+
+	// Step 2: dedupe per-cell corners. icosphere.ts's per-cell dedupe uses a
+	// distance threshold that misses near-pentagon cases where slerp drift
+	// from different ico triangles exceeds it. After canonicalization we
+	// can dedupe by exact canonical key.
+	for (const c of cells) {
+		const seen = new Set<string>();
+		const kept: Vector3[] = [];
+		for (const corner of c.corners) {
+			const key = canonKey(corner);
+			if (!seen.has(key)) {
+				seen.add(key);
+				kept.push(corner);
+			}
+		}
+		c.corners = kept;
+	}
+
+	// Step 3: rebuild neighbor sets from canonical corner overlap. Two
+	// hexes sharing ≥2 canonical corners share an edge → neighbors. The
+	// icosphere.ts neighbor build only links cells inside the same ico
+	// triangle's patch, missing some cross-triangle pairs (we observed
+	// cell 0 ↔ 9471 where one direction was missing).
+	const cornerToCells = new Map<string, number[]>();
+	for (const c of cells) {
+		for (const corner of c.corners) {
+			const key = canonKey(corner);
+			let list = cornerToCells.get(key);
+			if (!list) { list = []; cornerToCells.set(key, list); }
+			if (!list.includes(c.id)) list.push(c.id);
+		}
+	}
+	for (const c of cells) {
+		const counts = new Map<number, number>();
+		for (const corner of c.corners) {
+			const key = canonKey(corner);
+			const list = cornerToCells.get(key);
+			if (!list) continue;
+			for (const cId of list) {
+				if (cId === c.id) continue;
+				counts.set(cId, (counts.get(cId) || 0) + 1);
+			}
+		}
+		c.neighbors.clear();
+		for (const [cId, count] of counts) {
+			if (count >= 2) c.neighbors.add(cId);
 		}
 	}
 }
