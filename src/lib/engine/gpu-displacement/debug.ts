@@ -310,7 +310,7 @@ interface ShaderSimResult {
 	hBase: number;
 }
 
-function simulateShaderHeight(
+export function simulateShaderHeight(
 	unitDir: Vector3,
 	cell: HexCell,
 	cellById: Map<number, HexCell>,
@@ -371,46 +371,47 @@ function simulateShaderHeight(
 	// false-positives at midpoints.
 	const EPS = 1e-7;
 
+	let nearestIsNoop = false;
 	for (let i = 0; i < n; i++) {
 		const nb = self.neighbors[i];
 		if (!nb) continue;
-		const excluded = isExcludedEdge(cell, nb, cellById);
-		if (verbose) {
-			const a0 = self.corners[i];
-			const b0 = self.corners[(i + 1) % n];
-			const { dist: d0 } = distAndT(unitDir, a0, b0);
-			console.log(`  cell ${cell.id} edge ${i}: nb=${nb.id} (tier ${nb.heightLevel}) dist=${d0.toFixed(7)} excluded=${excluded} target=${computeBorderTarget(selfH, self.neighborH[i]).toFixed(4)}`);
-		}
-		if (excluded) continue;
 		const a = self.corners[i];
 		const b = self.corners[(i + 1) % n];
 		const { dist, t } = distAndT(unitDir, a, b);
-		const edgeTarget = computeBorderTarget(selfH, self.neighborH[i]);
-		const coast = isCoastEdge(selfH, self.neighborH[i]);
 
-		// Per-position target = edge_target (computeBorderTarget is
-		// symmetric per edge, so this is the same from both sides for
-		// any shared edge). Corner cases handled by the corner-snap
-		// at the top of simulateShaderHeight.
-		const posTarget = edgeTarget;
+		const nbH = self.neighborH[i];
+		const sw = selfH <= 1, nw = nbH <= 1;
+		let target: number, noop = false;
+		if (sw && nw) {
+			target = getLevelHeight(Math.min(selfH, nbH));
+			noop = (selfH === nbH);
+		} else if (!sw && !nw) {
+			target = selfTierH; noop = true;
+		} else if ((sw && nbH <= 2) || (nw && selfH <= 2)) {
+			target = 0; noop = false;
+		} else if (sw) {
+			target = 0; noop = false;
+		} else {
+			target = selfTierH; noop = true;
+		}
+		const coast = isCoastEdge(selfH, nbH);
 
-		// Tie-break still uses the per-position target. With cornerTargets
-		// active, both sides at a corner produce the SAME posTarget so the
-		// tie-break choice doesn't matter for symmetry.
 		if (dist < minDist - EPS) {
 			minDist = dist;
 			nearestEdgeIdx = i;
 			nearestEdgeT = t;
-			nearestBorderTarget = posTarget;
+			nearestBorderTarget = target;
+			nearestIsNoop = noop;
 		} else if (dist < minDist + EPS) {
-			if (posTarget > nearestBorderTarget) {
-				nearestBorderTarget = posTarget;
+			if (target > nearestBorderTarget) {
+				nearestBorderTarget = target;
 				nearestEdgeIdx = i;
 				nearestEdgeT = t;
+				nearestIsNoop = noop;
 			}
 			if (dist < minDist) minDist = dist;
 		}
-		if (coast && edgeTarget === 0) {
+		if (coast) {
 			coastSmoothD = Number.isFinite(coastSmoothD) ? smoothMin(coastSmoothD, dist, coastK) : dist;
 			hasCoastEdge = true;
 		}
@@ -418,7 +419,7 @@ function simulateShaderHeight(
 	}
 
 	let h: number;
-	if (!hasBorder) {
+	if (nearestIsNoop || !hasBorder) {
 		h = selfTierH + interiorNoiseH * NOISE_AMP;
 	} else {
 		let dist = minDist;
@@ -455,7 +456,8 @@ function simulateShaderHeight(
 	}
 
 	if (state.bestMu < 1) {
-		h = state.bestMidH * (1 - state.bestMu) + hBase * state.bestMu;
+		const clamped = Math.max(0, (state.bestMu - 0.05) / 0.95);
+		h = state.bestMidH * (1 - clamped) + hBase * clamped;
 	}
 
 	// Land hex: floor above water sphere — see shader for rationale.
@@ -745,6 +747,27 @@ export interface VisibleCrack {
 	maxHDriftM: number;
 	maxWorldDriftM: number;
 }
+/** Compute the per-canonical-corner consensus h that the shader's
+ *  corner-snap uses. Average sim h across all cells touching each
+ *  canonical corner (Vector3 ref shared after canonicalize). */
+export function computeCornerConsensusH(cells: HexCell[]): Map<Vector3, number> {
+	const cellById = new Map<number, HexCell>();
+	for (const c of cells) cellById.set(c.id, c);
+	const sums = new Map<Vector3, { sum: number; count: number }>();
+	for (const c of cells) {
+		for (const corner of c.corners) {
+			const sim = simulateShaderHeight(corner, c, cellById);
+			let s = sums.get(corner);
+			if (!s) { s = { sum: 0, count: 0 }; sums.set(corner, s); }
+			s.sum += sim.h;
+			s.count += 1;
+		}
+	}
+	const out = new Map<Vector3, number>();
+	for (const [c, s] of sums) out.set(c, s.sum / s.count);
+	return out;
+}
+
 export function findVisibleCracks(
 	cells: HexCell[],
 	flatChunks: { mesh: { getVerticesData: (kind: string) => number[] | Float32Array | null }; cellIds: number[] }[],
@@ -762,6 +785,10 @@ export function findVisibleCracks(
 } {
 	const cellById = new Map<number, HexCell>();
 	for (const c of cells) cellById.set(c.id, c);
+
+	// Mirror the shader's corner-snap so the diagnostic measures
+	// post-snap state.
+	const consensusH = computeCornerConsensusH(cells);
 
 	// Bucket every flat-mesh vertex by spatial position. After bucketing,
 	// any cluster of vertices from MULTIPLE cells in the same bucket are
@@ -784,13 +811,24 @@ export function findVisibleCracks(
 			const cell = cellById.get(hexId);
 			if (!cell) continue;
 			const sim = simulateShaderHeight(new Vector3(ux, uy, uz), cell, cellById);
+			let h = sim.h;
+			// Mirror shader's corner-snap: if vertex sits on one of cell's
+			// canonical corners (within 1e-5 unit-dir distance), snap.
+			for (const corner of cell.corners) {
+				const dx = ux - corner.x, dy = uy - corner.y, dz = uz - corner.z;
+				if (dx * dx + dy * dy + dz * dz < 1e-10) {
+					const ch = consensusH.get(corner);
+					if (ch !== undefined) h = ch;
+					break;
+				}
+			}
 			const ix = Math.floor(ux / bucketSize);
 			const iy = Math.floor(uy / bucketSize);
 			const iz = Math.floor(uz / bucketSize);
 			const bk = `${ix},${iy},${iz}`;
 			let list = buckets.get(bk);
 			if (!list) { list = []; buckets.set(bk, list); }
-			list.push({ hexId, ux, uy, uz, h: sim.h });
+			list.push({ hexId, ux, uy, uz, h });
 		}
 	}
 
