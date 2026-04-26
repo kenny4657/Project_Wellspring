@@ -44,13 +44,31 @@ hexes that cover sub-pixel area at far zoom, and starves hexes the
 camera is parked over.
 
 This is camera-dependent, not hex-count-dependent. `SUBDIVISIONS`
-becomes a function of *projected hex size on screen*:
+becomes a function of *projected hex size on screen*.
 
-- Far zoom (whole planet in view, hex < 1 px): SUBDIVISIONS = 0–1
-- Mid zoom (hex ~50 px): SUBDIVISIONS = 2
-- Close zoom (hex 500+ px, bumps need to read): SUBDIVISIONS = 3–4
+**Concrete pixels-per-hex (1080p, 60° FOV):**
 
-Hex count sets the baseline budget — at 1M hexes the *far-zoom* tier
+| Altitude        | What this is        | 16k hex (r≈111km) | 1M hex (r≈14km) |
+|-----------------|---------------------|-------------------|------------------|
+| 100 km          | surface skim        | 1037 px           | **131 px**       |
+| 500 km          | close zoom          | 207 px            | **26 px**        |
+| 1,000 km        | mid zoom            | 104 px            | **13 px**        |
+| 5,629 km        | default start       | 18 px             | **2.3 px**       |
+| 33,629 km       | max zoom out        | 3.1 px            | **0.39 px**      |
+
+So 1M hexes do go sub-pixel at far zoom (0.4 px), but at close zoom
+they're 25+ px and bumpy displacement clearly needs to read.
+
+**Realistic LOD tiers for a 1M-hex world:**
+
+| Altitude          | Tier      | SUBDIVISIONS    | Tris per hex |
+|-------------------|-----------|-----------------|--------------|
+| > 20,000 km       | far       | 0 (or imposter) | ≤6           |
+| 5,000–20,000 km   | mid-far   | 1               | 24           |
+| 1,000–5,000 km    | mid       | 2               | 96           |
+| < 1,000 km        | close     | 3               | 384          |
+
+Hex count sets the baseline budget — at 1M hexes the far-zoom tier
 must be very low (otherwise you blow the vert budget on hexes you
 can't see detail in anyway). The camera factor raises detail locally
 where the player is looking.
