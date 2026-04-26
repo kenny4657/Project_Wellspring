@@ -20,6 +20,7 @@ import {
 	getHexBorderInfo,
 	getLevelHeight,
 	findNeighborAcrossEdge,
+	countLandNeighbors,
 	LEVEL_HEIGHTS,
 } from '../hex-borders';
 import {
@@ -57,11 +58,21 @@ function isCoastEdge(selfH: number, nbH: number): boolean {
 	return selfH <= 2;
 }
 
-function isExcludedEdge(selfH: number, nbH: number): boolean {
+function isExcludedEdge(self: HexCell, nb: HexCell, cellById: Map<number, HexCell>): boolean {
+	const selfH = self.heightLevel;
+	const nbH = nb.heightLevel;
 	const selfWater = selfH <= 1;
 	const nbWater = nbH <= 1;
 	if (!selfWater && !nbWater) return true;
 	if (!selfWater && nbWater && selfH > 2) return true;
+	// Open-water exclusion (matches CPU classifyWaterToWater): both water,
+	// same heightLevel, both have ≤2 land neighbors → excluded so the
+	// coastal ramp of a nearby shore hex can sweep through.
+	if (selfWater && nbWater && selfH === nbH) {
+		const selfLand = countLandNeighbors(self, cellById);
+		const nbLand = countLandNeighbors(nb, cellById);
+		if (selfLand <= 2 && nbLand <= 2) return true;
+	}
 	return false;
 }
 
@@ -145,25 +156,23 @@ function walkCliffEdges(
 interface CellData {
 	heightLevel: number;
 	corners: Vector3[];
-	neighborH: number[];   // length 6, padded with self.h for missing slots
-	neighborIds: (number | null)[];
+	neighbors: (HexCell | null)[]; // length n
+	neighborH: number[];           // length n, neighbor heightLevel (or self.h if missing)
+	allSameHeight: boolean;
 }
 
 function fetchCellData(cell: HexCell, cellById: Map<number, HexCell>): CellData {
 	const n = cell.corners.length;
+	const neighbors: (HexCell | null)[] = [];
 	const neighborH: number[] = [];
-	const neighborIds: (number | null)[] = [];
-	for (let k = 0; k < 6; k++) {
-		if (k >= n) {
-			neighborH.push(cell.heightLevel);
-			neighborIds.push(null);
-			continue;
-		}
+	let allSame = true;
+	for (let k = 0; k < n; k++) {
 		const nb = findNeighborAcrossEdge(cell, k, cellById);
+		neighbors.push(nb);
 		neighborH.push(nb ? nb.heightLevel : cell.heightLevel);
-		neighborIds.push(nb ? nb.id : null);
+		if (nb && nb.heightLevel !== cell.heightLevel) allSame = false;
 	}
-	return { heightLevel: cell.heightLevel, corners: cell.corners, neighborH, neighborIds };
+	return { heightLevel: cell.heightLevel, corners: cell.corners, neighbors, neighborH, allSameHeight: allSame };
 }
 
 // ── The shader simulator ─────────────────────────────────────
@@ -195,31 +204,61 @@ function simulateShaderHeight(
 	const interiorNoiseH = isWater ? Math.abs(rawNoise) : (rawNoise + 0.3);
 	const borderNoiseH = Math.abs(rawNoise) + 0.15;
 
+	// CPU short-circuit: water hex with all same-tier neighbors uses pure
+	// interior height (skips border smoothing entirely).
+	if (isWater && self.allSameHeight) {
+		const h0 = selfTierH + interiorNoiseH * NOISE_AMP;
+		// Cliff erosion still applies even in this branch.
+		const state: CliffWalkState = { bestMu: 1, bestMidH: h0 };
+		const hexRadius0 = meanHexRadius(self.corners);
+		walkCliffEdges(unitDir, selfH, self.corners, self.neighborH, hexRadius0,
+			cliffNoise, midNoise, selfTierH, state);
+		for (let i = 0; i < self.neighbors.length; i++) {
+			const nb = self.neighbors[i]; if (!nb) continue;
+			const nbData = fetchCellData(nb, cellById);
+			const nbHexRadius = meanHexRadius(nbData.corners);
+			walkCliffEdges(unitDir, nbData.heightLevel, nbData.corners, nbData.neighborH,
+				nbHexRadius, cliffNoise, midNoise, getLevelHeight(nbData.heightLevel), state);
+		}
+		const hFinal = state.bestMu < 1 ? state.bestMidH * (1 - state.bestMu) + h0 * state.bestMu : h0;
+		return { h: hFinal, hasBorder: false, borderTarget: 0, bestMu: state.bestMu, bestMidH: state.bestMidH, hBase: h0 };
+	}
+
 	const hexRadius = meanHexRadius(self.corners);
 	const n = self.corners.length;
 
 	let minDist = Infinity;
 	let nearestEdgeIdx = -1;
 	let nearestEdgeT = 0;
-	let nearestBorderTarget = 0;
+	let nearestBorderTarget = -Infinity;
 	let hasBorder = false;
 	const coastK = 0.22;
 	let coastWeightSum = 0;
 	let hasCoastEdge = false;
+	const EPS = 1e-4;
 
 	for (let i = 0; i < n; i++) {
-		const nbH = self.neighborH[i];
-		if (isExcludedEdge(selfH, nbH)) continue;
+		const nb = self.neighbors[i];
+		if (!nb) continue;
+		if (isExcludedEdge(cell, nb, cellById)) continue;
 		const a = self.corners[i];
 		const b = self.corners[(i + 1) % n];
 		const { dist, t } = distAndT(unitDir, a, b);
-		const target = computeBorderTarget(selfH, nbH);
-		const coast = isCoastEdge(selfH, nbH);
-		if (dist < minDist) {
+		const target = computeBorderTarget(selfH, self.neighborH[i]);
+		const coast = isCoastEdge(selfH, self.neighborH[i]);
+		// CPU tie-break: at corners (multiple edges within EPS), pick highest target.
+		if (dist < minDist - EPS) {
 			minDist = dist;
 			nearestEdgeIdx = i;
 			nearestEdgeT = t;
 			nearestBorderTarget = target;
+		} else if (dist < minDist + EPS) {
+			if (target > nearestBorderTarget) {
+				nearestBorderTarget = target;
+				nearestEdgeIdx = i;
+				nearestEdgeT = t;
+			}
+			if (dist < minDist) minDist = dist;
 		}
 		if (coast) { coastWeightSum += Math.exp(-dist / coastK); hasCoastEdge = true; }
 		hasBorder = true;
@@ -254,9 +293,7 @@ function simulateShaderHeight(
 		cliffNoise, midNoise, selfTierH, state);
 
 	for (let i = 0; i < n; i++) {
-		const nbId = self.neighborIds[i];
-		if (nbId == null) continue;
-		const nb = cellById.get(nbId);
+		const nb = self.neighbors[i];
 		if (!nb) continue;
 		const nbData = fetchCellData(nb, cellById);
 		const nbHexRadius = meanHexRadius(nbData.corners);
