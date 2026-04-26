@@ -58,6 +58,20 @@
 			// Poll perf at 4 Hz — keeps the overlay readable without thrashing
 			perf = engine.perf;
 			perfTimer = setInterval(() => { if (engine) perf = engine.perf; }, 250);
+
+			// Debug toggle: press D to swap to per-hex hash-color rendering
+			// (useful for spotting geometry gaps and mismatched seams).
+			let debugOn = false;
+			window.addEventListener('keydown', (e) => {
+				if (e.key === 'd' || e.key === 'D') {
+					if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+					debugOn = !debugOn;
+					engine?.setDebugMode(debugOn);
+					console.log('[Globe] debug coloring:', debugOn ? 'ON' : 'OFF');
+				}
+			});
+			// Also expose on window so the console can call it directly.
+			(window as unknown as { engine: typeof engine }).engine = engine;
 		} catch (e) {
 			error = String(e);
 			loading = false;

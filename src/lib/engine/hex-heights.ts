@@ -95,54 +95,139 @@ export function computeSurfaceHeight(
 	return tierH + interiorNoiseH * NOISE_AMP;
 }
 
+/** Compute the mean corner-distance of a cell — same formula as
+ *  computeHexRadius in globe-mesh.ts. Defined locally so cliff erosion
+ *  can compute the neighbor's hexRadius for symmetric cliff distance. */
+function cellHexRadius(cell: HexCell): number {
+	const n = cell.corners.length;
+	let r = 0;
+	for (let i = 0; i < n; i++) {
+		const dx = cell.corners[i].x - cell.center.x;
+		const dy = cell.corners[i].y - cell.center.y;
+		const dz = cell.corners[i].z - cell.center.z;
+		r += Math.sqrt(dx * dx + dy * dy + dz * dz);
+	}
+	return r / n;
+}
+
+/** Apply one cliff edge's contribution to bestMu/bestMidH if it produces a
+ *  smaller mu than the current best. Used by both the self-edge loop and
+ *  the neighbor-edge loop so they stay byte-identical. */
+function applyCliffEdge(
+	ux: number, uy: number, uz: number,
+	a: { x: number; y: number; z: number },
+	b: { x: number; y: number; z: number },
+	isSteep: boolean,
+	ownerHexRadius: number,
+	cliffNoise: number,
+	midNoise: number,
+	selfTierH: number,
+	otherTierH: number,
+	bestMu: number,
+	bestMidH: number,
+): { bestMu: number; bestMidH: number } {
+	const dist = distToSegment(ux, uy, uz, a.x, a.y, a.z, b.x, b.y, b.z);
+	let mu: number;
+	if (isSteep) {
+		const rampWidth = ownerHexRadius * 0.2;
+		const perturbedDist = Math.max(0, dist + cliffNoise * ownerHexRadius * 0.25);
+		const t = Math.min(perturbedDist / rampWidth, 1.0);
+		mu = t * (2 - t);
+	} else {
+		const rampWidth = ownerHexRadius * 0.7;
+		const t = Math.min(dist / rampWidth, 1.0);
+		mu = (1 - Math.cos(t * Math.PI)) / 2;
+	}
+	if (mu < bestMu) {
+		const midTierH = (selfTierH + otherTierH) / 2;
+		return {
+			bestMu: mu,
+			bestMidH: midTierH + (Math.abs(midNoise) + 0.15) * NOISE_AMP * 0.3,
+		};
+	}
+	return { bestMu, bestMidH };
+}
+
 /** Compute height with per-edge-type handling:
  *  - Steep cliff edges (2+ level diff): narrow parabolic ramp → steep geometry → cliff texture
  *  - Gentle slope edges (1-level diff): wide cosine ramp → smooth geometry → no cliff texture
- *  The min-mu logic naturally handles corners where different edge types meet. */
+ *
+ *  Symmetry: each side of a non-cliff shared edge sees the SAME set of
+ *  cliff edges (own + 1-hop neighbors' cliff edges) and uses each cliff
+ *  edge's *owner* hexRadius for ramp/perturbation. So at every shared
+ *  point, both sides compute identical mu and identical heights — no
+ *  geometry gap along seams adjacent to a cliff. */
 export function computeHeightWithCliffErosion(
 	ux: number, uy: number, uz: number,
 	cell: HexCell, borderInfo: HexBorderInfo,
 	hexRadius: number, tierH: number, isWaterHex: boolean,
-	cellById: Map<number, HexCell>
+	cellById: Map<number, HexCell>,
+	borderInfoById?: Map<number, HexBorderInfo>,
 ): number {
 	const h = computeSurfaceHeight(ux, uy, uz, cell, borderInfo, hexRadius, tierH, isWaterHex);
-	if (!borderInfo.hasCliff) return h;
 
-	const n = cell.corners.length;
 	const cliffNoise = fbmNoise(ux * 120 + 500, uy * 120 + 500, uz * 120 + 500);
 	const midNoise = fbmNoise(ux * NOISE_SCALE, uy * NOISE_SCALE, uz * NOISE_SCALE);
 
 	let bestMu = 1.0;
 	let bestMidH = h;
+	const n = cell.corners.length;
 
-	for (let i = 0; i < n; i++) {
-		if (!borderInfo.cliffEdges[i]) continue;
-		const a = cell.corners[i];
-		const b = cell.corners[(i + 1) % n];
-		const dist = distToSegment(ux, uy, uz, a.x, a.y, a.z, b.x, b.y, b.z);
-
-		const isSteep = borderInfo.steepCliffEdges[i];
-		let mu: number;
-
-		if (isSteep) {
-			// Steep cliff (2+ level): narrow parabolic ramp → creates steep faces
-			const rampWidth = hexRadius * 0.2;
-			const perturbedDist = Math.max(0, dist + cliffNoise * hexRadius * 0.25);
-			const t = Math.min(perturbedDist / rampWidth, 1.0);
-			mu = t * (2 - t);
-		} else {
-			// Gentle slope (1-level): wide cosine ramp → smooth faces, no cliff texture
-			const rampWidth = hexRadius * 0.7;
-			const t = Math.min(dist / rampWidth, 1.0);
-			mu = (1 - Math.cos(t * Math.PI)) / 2;
-		}
-
-		if (mu < bestMu) {
-			bestMu = mu;
+	// 1) Self's own cliff edges.
+	if (borderInfo.hasCliff) {
+		for (let i = 0; i < n; i++) {
+			if (!borderInfo.cliffEdges[i]) continue;
+			const a = cell.corners[i];
+			const b = cell.corners[(i + 1) % n];
 			const nb = findNeighborAcrossEdge(cell, i, cellById);
 			const neighborHeight = nb ? getLevelHeight(nb.heightLevel) : 0;
-			const midTierH = (tierH + neighborHeight) / 2;
-			bestMidH = midTierH + (Math.abs(midNoise) + 0.15) * NOISE_AMP * 0.3;
+			const isSteep = borderInfo.steepCliffEdges[i];
+			const out = applyCliffEdge(
+				ux, uy, uz, a, b, isSteep,
+				hexRadius, cliffNoise, midNoise,
+				tierH, neighborHeight, bestMu, bestMidH,
+			);
+			bestMu = out.bestMu; bestMidH = out.bestMidH;
+		}
+	}
+
+	// 2) Neighbor cliff edges (1-hop) so both sides of any shared edge
+	//    see the same cliff distance field. Without this, two same-tier
+	//    neighbors near a common cliff compute different cliff-erosion
+	//    pulls along their shared edge → height drift → visible gap.
+	//
+	//    For each non-cliff edge of self, look up the across-neighbor
+	//    and consider its cliff edges in the distance calculation.
+	//    Each cliff edge's *owner* hexRadius drives its ramp width and
+	//    perturbation, so the calculation for that edge is identical
+	//    regardless of which adjacent cell triggered the inclusion.
+	if (borderInfoById) {
+		for (let i = 0; i < n; i++) {
+			if (borderInfo.cliffEdges[i]) continue; // already in (1)
+			const nb = findNeighborAcrossEdge(cell, i, cellById);
+			if (!nb) continue;
+			const nbInfo = borderInfoById.get(nb.id);
+			if (!nbInfo || !nbInfo.hasCliff) continue;
+			const nbHexRadius = cellHexRadius(nb);
+			const nbTierH = getLevelHeight(nb.heightLevel);
+			const nbN = nb.corners.length;
+			for (let j = 0; j < nbN; j++) {
+				if (!nbInfo.cliffEdges[j]) continue;
+				// Skip neighbor's edge that's the same shared edge with self
+				// (we'd be double-counting from self's perspective if it
+				// were a cliff edge — but it's not since we filtered above).
+				const a = nb.corners[j];
+				const b = nb.corners[(j + 1) % nbN];
+				const nbNb = findNeighborAcrossEdge(nb, j, cellById);
+				const nbNbHeight = nbNb ? getLevelHeight(nbNb.heightLevel) : 0;
+				const isSteep = nbInfo.steepCliffEdges[j];
+				const out = applyCliffEdge(
+					ux, uy, uz, a, b, isSteep,
+					nbHexRadius, cliffNoise, midNoise,
+					nbTierH, nbNbHeight, bestMu, bestMidH,
+				);
+				bestMu = out.bestMu; bestMidH = out.bestMidH;
+			}
 		}
 	}
 
