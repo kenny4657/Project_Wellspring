@@ -418,6 +418,105 @@ export function dumpSeamPair(cells: HexCell[], cellAId: number, cellBId: number)
 	console.log(`  → B.h=${simB.h.toFixed(6)} target=${simB.borderTarget.toFixed(4)} bestMu=${simB.bestMu.toFixed(3)}`);
 }
 
+/** Find actual gaps in the rendered GPU mesh by computing the
+ *  shader's height (via the sim, which mirrors shader output) at
+ *  every vertex of every flat chunk, then grouping vertices that
+ *  share a world-direction bucket and diffing their world-space
+ *  rendered positions. The position diff IS the visible gap.
+ *
+ *  Returns the top-K gaps with hex IDs, world positions, and
+ *  classification of why they differ (different cliffs, different
+ *  border targets, etc.). */
+export interface RenderedGap {
+	hexAId: number;
+	hexBId: number;
+	unitDir: [number, number, number];
+	hA: number;
+	hB: number;
+	worldGapKm: number;
+	notesA: string;
+	notesB: string;
+}
+
+export function findRenderedMeshGaps(
+	cells: HexCell[],
+	flatChunks: { mesh: { getVerticesData: (kind: string) => number[] | Float32Array | null }; cellIds: number[] }[],
+	planetRadius: number,
+	topK = 30,
+): { gaps: RenderedGap[]; totalEdgeMatches: number; print: () => void } {
+	const cellById = new Map<number, HexCell>();
+	for (const c of cells) cellById.set(c.id, c);
+
+	// Bucket vertex positions by a coarse spatial key. Two vertices in the
+	// same bucket from different hexes are candidates for a shared seam.
+	const STEP = 1e-4;
+	type Sample = { hexId: number; ux: number; uy: number; uz: number; h: number; sim: ShaderSimResult };
+	const buckets = new Map<string, Sample[]>();
+
+	for (const chunk of flatChunks) {
+		const positions = chunk.mesh.getVerticesData('position');
+		const hexIds = chunk.mesh.getVerticesData('hexId');
+		if (!positions || !hexIds) continue;
+
+		const seen = new Set<string>();
+		for (let i = 0; i < hexIds.length; i++) {
+			const ux = positions[i * 3];
+			const uy = positions[i * 3 + 1];
+			const uz = positions[i * 3 + 2];
+			const hexId = Math.round(hexIds[i]);
+			const dedupKey = `${hexId}|${Math.round(ux / STEP)},${Math.round(uy / STEP)},${Math.round(uz / STEP)}`;
+			if (seen.has(dedupKey)) continue;
+			seen.add(dedupKey);
+			const cell = cellById.get(hexId);
+			if (!cell) continue;
+			const u = new Vector3(ux, uy, uz);
+			const sim = simulateShaderHeight(u, cell, cellById);
+			const bk = `${Math.round(ux / STEP)},${Math.round(uy / STEP)},${Math.round(uz / STEP)}`;
+			let list = buckets.get(bk);
+			if (!list) { list = []; buckets.set(bk, list); }
+			list.push({ hexId, ux, uy, uz, h: sim.h, sim });
+		}
+	}
+
+	const gaps: RenderedGap[] = [];
+	let totalEdgeMatches = 0;
+	for (const [, list] of buckets) {
+		if (list.length < 2) continue;
+		// Compare pairs — we want the WORST diff per bucket.
+		for (let i = 0; i < list.length; i++) {
+			for (let j = i + 1; j < list.length; j++) {
+				const a = list[i], b = list[j];
+				if (a.hexId === b.hexId) continue;
+				totalEdgeMatches++;
+				const diff = Math.abs(a.h - b.h);
+				const worldGapKm = diff * planetRadius;
+				if (worldGapKm > 0.1) { // > 100m worth tracking
+					gaps.push({
+						hexAId: a.hexId, hexBId: b.hexId,
+						unitDir: [a.ux, a.uy, a.uz],
+						hA: a.h, hB: b.h,
+						worldGapKm,
+						notesA: `tier=${cellById.get(a.hexId)!.heightLevel} target=${a.sim.borderTarget.toFixed(4)} bestMu=${a.sim.bestMu.toFixed(3)} bestMidH=${a.sim.bestMidH.toFixed(5)}`,
+						notesB: `tier=${cellById.get(b.hexId)!.heightLevel} target=${b.sim.borderTarget.toFixed(4)} bestMu=${b.sim.bestMu.toFixed(3)} bestMidH=${b.sim.bestMidH.toFixed(5)}`,
+					});
+				}
+			}
+		}
+	}
+	gaps.sort((a, b) => b.worldGapKm - a.worldGapKm);
+
+	return {
+		gaps,
+		totalEdgeMatches,
+		print() {
+			console.log(`[mesh gap] ${gaps.length} gaps > 100m at vertex coincidences (out of ${totalEdgeMatches} compared pairs)`);
+			for (const g of gaps.slice(0, topK)) {
+				console.log(`  ${g.hexAId}↔${g.hexBId}: gap=${g.worldGapKm.toFixed(2)}km hA=${g.hA.toFixed(5)} hB=${g.hB.toFixed(5)} | A: ${g.notesA} | B: ${g.notesB}`);
+			}
+		},
+	};
+}
+
 export function diagnoseGpuDisplacement(
 	cells: HexCell[],
 	options: { sampleCellCount?: number; pointsPerCell?: number; topK?: number } = {},
