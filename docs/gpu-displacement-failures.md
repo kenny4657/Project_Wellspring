@@ -118,7 +118,38 @@ lower **land** hexes are NOT explained by any of:
 - tier-0 cells adjacent to tier-3+ (0 found)
 - water-sphere depth-discard incorrectness
 
-Whatever they are, none of the diagnostics I wrote catch them.
+### 12. `findVisibleCracks` looked like it found them, then turned out not to
+- Built a diagnostic that buckets every flat-mesh vertex at 5e-4 (~3km)
+  and reports max world-displaced position drift between any 2 cells in
+  the same bucket. Reported **8637 cracks > 100m, max 76km** — the
+  numbers looked completely consistent with what the user was seeing.
+- Tier-pair breakdown (2↔4: 4089, 1↔2: 1953, 2↔2: 1535, 0↔1: 1043)
+  matched the visual pattern (cliff bases, coasts).
+- Closed all but 9 with: corner-consensus h texture + drop
+  `isExcludedEdge` (use `noop` classification) + cliff-mu clamp.
+  Diagnostic dropped to 9 cracks max 796m.
+- **The user reload showed the same gaps PLUS a new field of bumps
+  across the grass.** None of the visible "gaps" had moved.
+- **Rule:** a diagnostic that reports a number you can drive to zero is
+  not the same as a diagnostic that catches the visible problem. The
+  fact that the diagnostic count goes from 8637 → 9 while the visible
+  state is unchanged proves the diagnostic is measuring the wrong
+  thing.
+
+### 13. The bumps in feature 12
+- Likely from the `noop` branch removing border-noise smoothing across
+  same-tier land-land edges, OR from the corner-snap pulling corners
+  toward consensus h while interior stays at higher noise. Either way,
+  the geometry of inland hexes changed visibly even though their h at
+  shared edges/corners now "matches."
+- **Rule:** any change that affects the noise/smoothing path for
+  EVERY land hex changes the look of EVERY land hex. Changes scoped to
+  cliff/coast logic should not touch the inland-interior code path.
+
+Whatever the visible "navy gaps" are, none of the diagnostics I wrote
+catch them — including the most aggressive one that reports thousands
+of multi-cell-cluster world-position drifts.
+
 Next attempt should start by writing a NEW diagnostic that catches them
 before changing any shader code.
 
@@ -132,3 +163,13 @@ before changing any shader code.
 3. Build a diagnostic that PROVES it catches the visible gap before
    trying to fix the gap. If you fix the diagnostic to "0" and the user
    still sees gaps, the diagnostic was wrong, not the code.
+4. **PROVING a diagnostic catches the visible problem** means: take a
+   specific visible gap from a screenshot, find its hex IDs from the
+   data (not by clicking — by some computable property: nearest hexes
+   to a known world coord, etc.), and verify those hex IDs appear in
+   the diagnostic's report. Until that link is established, the
+   diagnostic is not validated and "0 reported" means nothing.
+5. If user shows the same gaps after a fix, do NOT propose a follow-up
+   fix in the same exchange. Revert first, ask what diagnostic would
+   catch it. The repeated pattern of "fix → user shows same gap → I
+   propose another fix" is the failure mode.
