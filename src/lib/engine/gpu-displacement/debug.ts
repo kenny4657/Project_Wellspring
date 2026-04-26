@@ -140,7 +140,17 @@ function walkCliffEdges(
 		let mu: number;
 		if (steep) {
 			const rampWidth = ownerHexRadius * 0.2;
-			const perturbed = Math.max(0, dist + cliffNoise * ownerHexRadius * 0.25);
+			// CPU adds cliffNoise * radius * 0.25 to dist for irregular cliff
+			// edges, but at dist=0 (a shared cliff edge) the perturbation can
+			// shift mu away from 0, leaving h_base * mu in the lerp — and
+			// h_base differs by tier between the two cells. CPU smooths this
+			// in post; we don't have smoothing, so apply the perturbation
+			// only away from the shared edge: clamp to 0 once dist itself
+			// is below a small threshold.
+			const safeBand = ownerHexRadius * 0.05;
+			const perturbed = dist < safeBand
+				? dist
+				: Math.max(0, dist + cliffNoise * ownerHexRadius * 0.25);
 			const t = Math.min(perturbed / rampWidth, 1);
 			mu = t * (2 - t);
 		} else {
@@ -190,6 +200,55 @@ function findNeighborByCorners(cell: HexCell, edgeIdx: number, cellById: Map<num
 	return null;
 }
 
+/** For each canonical corner, compute the consensus target across all
+ *  cells that touch it — average of each cell's MAX-tie-break target
+ *  for the two edges meeting at that corner. This emulates the CPU
+ *  smoothing pass: each cell's vertex at a shared corner gets averaged
+ *  to a single value. Stored per corner Vector3 (canonical refs are
+ *  shared across cells after canonicalizeCells).
+ *
+ *  Replaces in-shader corner tie-break which picks different targets
+ *  from each side at corners shared by 3+ cells (the source of 76 km
+ *  gaps in the rendered mesh). */
+export function computeCornerCanonicalTargets(cells: HexCell[]): Map<Vector3, number> {
+	const cellById = new Map<number, HexCell>();
+	for (const c of cells) cellById.set(c.id, c);
+
+	const sums = new Map<Vector3, { sum: number; count: number }>();
+
+	for (const c of cells) {
+		const n = c.corners.length;
+		for (let k = 0; k < n; k++) {
+			const corner = c.corners[k];
+			// Two edges meet at corner k: edge (k-1, k) and edge (k, k+1).
+			const prevK = (k - 1 + n) % n;
+			const prevNb = findNeighborByCorners(c, prevK, cellById);
+			const nextNb = findNeighborByCorners(c, k, cellById);
+
+			const targets: number[] = [];
+			if (prevNb && !isExcludedEdge(c, prevNb, cellById)) {
+				targets.push(computeBorderTarget(c.heightLevel, prevNb.heightLevel));
+			}
+			if (nextNb && !isExcludedEdge(c, nextNb, cellById)) {
+				targets.push(computeBorderTarget(c.heightLevel, nextNb.heightLevel));
+			}
+			if (targets.length === 0) continue; // both excluded; cell doesn't contribute
+
+			// Cell's tie-break target at this corner (matches CPU's "highest").
+			const cellTarget = Math.max(...targets);
+
+			let data = sums.get(corner);
+			if (!data) { data = { sum: 0, count: 0 }; sums.set(corner, data); }
+			data.sum += cellTarget;
+			data.count += 1;
+		}
+	}
+
+	const out = new Map<Vector3, number>();
+	for (const [corner, d] of sums) out.set(corner, d.sum / d.count);
+	return out;
+}
+
 function fetchCellData(cell: HexCell, cellById: Map<number, HexCell>): CellData {
 	const n = cell.corners.length;
 	const neighbors: (HexCell | null)[] = [];
@@ -219,6 +278,7 @@ function simulateShaderHeight(
 	unitDir: Vector3,
 	cell: HexCell,
 	cellById: Map<number, HexCell>,
+	cornerTargets?: Map<Vector3, number>,
 	verbose = false,
 ): ShaderSimResult {
 	const self = fetchCellData(cell, cellById);
@@ -287,23 +347,44 @@ function simulateShaderHeight(
 		const a = self.corners[i];
 		const b = self.corners[(i + 1) % n];
 		const { dist, t } = distAndT(unitDir, a, b);
-		const target = computeBorderTarget(selfH, self.neighborH[i]);
+		const edgeTarget = computeBorderTarget(selfH, self.neighborH[i]);
 		const coast = isCoastEdge(selfH, self.neighborH[i]);
-		// CPU tie-break: at corners (multiple edges within EPS), pick highest target.
+
+		// Per-position target along edge: blend canonical corner targets at
+		// endpoints with the edge target at midpoint. This makes both sides
+		// of any shared edge agree on the target at every position — at
+		// corners they snap to the canonical value (averaged across all
+		// cells touching that corner), at midpoint they use the symmetric
+		// edge target.
+		let posTarget = edgeTarget;
+		if (cornerTargets) {
+			const cA = cornerTargets.get(a);
+			const cB = cornerTargets.get(b);
+			const wA = Math.max(0, 1 - 2 * t); // 1 at t=0, 0 at t≥0.5
+			const wB = Math.max(0, 2 * t - 1); // 0 at t≤0.5, 1 at t=1
+			const wEdge = 1 - wA - wB;
+			posTarget = (cA !== undefined ? wA * cA : wA * edgeTarget)
+			          + wEdge * edgeTarget
+			          + (cB !== undefined ? wB * cB : wB * edgeTarget);
+		}
+
+		// Tie-break still uses the per-position target. With cornerTargets
+		// active, both sides at a corner produce the SAME posTarget so the
+		// tie-break choice doesn't matter for symmetry.
 		if (dist < minDist - EPS) {
 			minDist = dist;
 			nearestEdgeIdx = i;
 			nearestEdgeT = t;
-			nearestBorderTarget = target;
+			nearestBorderTarget = posTarget;
 		} else if (dist < minDist + EPS) {
-			if (target > nearestBorderTarget) {
-				nearestBorderTarget = target;
+			if (posTarget > nearestBorderTarget) {
+				nearestBorderTarget = posTarget;
 				nearestEdgeIdx = i;
 				nearestEdgeT = t;
 			}
 			if (dist < minDist) minDist = dist;
 		}
-		if (coast && target === 0) {
+		if (coast && edgeTarget === 0) {
 			coastSmoothD = Number.isFinite(coastSmoothD) ? smoothMin(coastSmoothD, dist, coastK) : dist;
 			hasCoastEdge = true;
 		}
@@ -410,11 +491,12 @@ export function dumpSeamPair(cells: HexCell[], cellAId: number, cellBId: number)
 	const ml = Math.sqrt(m.x * m.x + m.y * m.y + m.z * m.z) || 1;
 	m.x /= ml; m.y /= ml; m.z /= ml;
 	console.log(`  m=(${m.x.toFixed(6)}, ${m.y.toFixed(6)}, ${m.z.toFixed(6)})`);
+	const cornerTargets = computeCornerCanonicalTargets(cells);
 	console.log(`A's edge walk:`);
-	const simA = simulateShaderHeight(m, A, cellById, true);
+	const simA = simulateShaderHeight(m, A, cellById, cornerTargets, true);
 	console.log(`  → A.h=${simA.h.toFixed(6)} target=${simA.borderTarget.toFixed(4)} bestMu=${simA.bestMu.toFixed(3)}`);
 	console.log(`B's edge walk:`);
-	const simB = simulateShaderHeight(m, B, cellById, true);
+	const simB = simulateShaderHeight(m, B, cellById, cornerTargets, true);
 	console.log(`  → B.h=${simB.h.toFixed(6)} target=${simB.borderTarget.toFixed(4)} bestMu=${simB.bestMu.toFixed(3)}`);
 }
 
@@ -447,6 +529,10 @@ export function findRenderedMeshGaps(
 	const cellById = new Map<number, HexCell>();
 	for (const c of cells) cellById.set(c.id, c);
 
+	// Precompute canonical corner targets so sim uses consensus values
+	// at corners (matches CPU smoothing behavior).
+	const cornerTargets = computeCornerCanonicalTargets(cells);
+
 	// Bucket vertex positions by a coarse spatial key. Two vertices in the
 	// same bucket from different hexes are candidates for a shared seam.
 	const STEP = 1e-4;
@@ -470,7 +556,7 @@ export function findRenderedMeshGaps(
 			const cell = cellById.get(hexId);
 			if (!cell) continue;
 			const u = new Vector3(ux, uy, uz);
-			const sim = simulateShaderHeight(u, cell, cellById);
+			const sim = simulateShaderHeight(u, cell, cellById, cornerTargets);
 			const bk = `${Math.round(ux / STEP)},${Math.round(uy / STEP)},${Math.round(uz / STEP)}`;
 			let list = buckets.get(bk);
 			if (!list) { list = []; buckets.set(bk, list); }
