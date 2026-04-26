@@ -25,8 +25,7 @@ import { VertexData } from '@babylonjs/core/Meshes/mesh.vertexData';
 import type { Scene } from '@babylonjs/core/scene';
 import type { HexCell } from '../icosphere';
 import type { ChunkAssignment } from '../globe-chunks';
-import { SUBDIVISIONS, subdivTriangle, subdivideEdge } from '../mesh-smoothing';
-import { findNeighborAcrossEdge } from '../hex-borders';
+import { SUBDIVISIONS, subdivTriangle } from '../mesh-smoothing';
 
 export interface FlatChunkMesh {
 	mesh: Mesh;
@@ -44,9 +43,6 @@ export function buildFlatChunkMeshes(
 	chunkAssignment: ChunkAssignment,
 ): FlatChunkMesh[] {
 	const chunks: FlatChunkMesh[] = [];
-
-	const cellById = new Map<number, HexCell>();
-	for (const c of cells) cellById.set(c.id, c);
 
 	for (let chunkIdx = 0; chunkIdx < chunkAssignment.cellsByChunk.length; chunkIdx++) {
 		const cellIds = chunkAssignment.cellsByChunk[chunkIdx];
@@ -106,52 +102,11 @@ export function buildFlatChunkMeshes(
 				}
 			}
 
-			// Walls — emit only where this cell is HIGHER than its neighbor
-			// across the edge (same rule as CPU buildCellWalls). Wall top
-			// shares the cell's edge corner positions; bottom shares the
-			// same direction but the shader drops it (wallFlag=1) to a
-			// height computed from the neighbor's tier or BASE_HEIGHT.
-			for (let i = 0; i < n; i++) {
-				const nb = findNeighborAcrossEdge(cell, i, cellById);
-				if (!nb) continue;
-				if (nb.heightLevel >= cell.heightLevel) continue; // only emit from higher hex
-
-				const c0 = cell.corners[i];
-				const c1 = cell.corners[(i + 1) % n];
-				const edgePoints: number[] = [];
-				subdivideEdge(c0.x, c0.y, c0.z, c1.x, c1.y, c1.z, SUBDIVISIONS, edgePoints);
-
-				for (let p = 0; p < edgePoints.length - 3; p += 3) {
-					const ux0 = edgePoints[p];
-					const uy0 = edgePoints[p + 1];
-					const uz0 = edgePoints[p + 2];
-					const ux1 = edgePoints[p + 3];
-					const uy1 = edgePoints[p + 4];
-					const uz1 = edgePoints[p + 5];
-
-					const wallOff = vOff;
-					// top0 (wallFlag=0)
-					positions.push(ux0, uy0, uz0);
-					hexIds.push(hexIdF); localUVs.push(0, 0);
-					wallFlags.push(0); neighborSlots.push(i);
-					// top1
-					positions.push(ux1, uy1, uz1);
-					hexIds.push(hexIdF); localUVs.push(0, 0);
-					wallFlags.push(0); neighborSlots.push(i);
-					// bot0 (wallFlag=1)
-					positions.push(ux0, uy0, uz0);
-					hexIds.push(hexIdF); localUVs.push(0, 0);
-					wallFlags.push(1); neighborSlots.push(i);
-					// bot1
-					positions.push(ux1, uy1, uz1);
-					hexIds.push(hexIdF); localUVs.push(0, 0);
-					wallFlags.push(1); neighborSlots.push(i);
-
-					indices.push(wallOff + 0, wallOff + 1, wallOff + 2);
-					indices.push(wallOff + 1, wallOff + 3, wallOff + 2);
-					vOff += 4;
-				}
-			}
+			// No walls. CPU mesh emits none either (the wall code in
+			// globe-mesh.ts:buildCellWalls is dead — both branches
+			// `continue` cover all neighbor heightLevels). The "cliff
+			// face" effect is created entirely by the steep slope of
+			// the top face dropping toward midTier at cliff edges.
 
 			cellVertexCount.set(ci, vOff - startVOff);
 		}
@@ -171,6 +126,14 @@ export function buildFlatChunkMeshes(
 		mesh.setVerticesData('localUV', localUVsF32, false, 2);
 		mesh.setVerticesData('wallFlag', wallFlagsF32, false, 1);
 		mesh.setVerticesData('neighborSlot', neighborSlotsF32, false, 1);
+		// Bounding info is computed from the input vertex positions
+		// (unit-sphere, radius 1). The shader displaces them to the
+		// actual world radius (~6371 km), so Babylon's frustum culling
+		// based on the input bounds is wrong — chunks vanish at oblique
+		// camera angles. Hemisphere chunk culling in the engine render
+		// loop already handles visibility, so disable Babylon's culling
+		// for these meshes.
+		mesh.alwaysSelectAsActiveMesh = true;
 		// Disabled by default — Phase 1 doesn't render this mesh.
 		mesh.setEnabled(false);
 

@@ -23,6 +23,7 @@ import { RawTexture } from '@babylonjs/core/Materials/Textures/rawTexture';
 import { Constants } from '@babylonjs/core/Engines/constants';
 import type { Scene } from '@babylonjs/core/scene';
 import type { HexCell } from '../icosphere';
+import { findNeighborAcrossEdge } from '../hex-borders';
 
 export interface HexDataTextures {
 	hexDataTex: RawTexture;
@@ -77,15 +78,18 @@ export function buildHexDataTextures(cells: HexCell[], scene: Scene): HexDataTex
 		dataBytes[off + 2] = (c.isPentagon ? 1 : 0) | (edgeCount << 4);
 		dataBytes[off + 3] = 0;
 
-		// hexNeighborsTex layout — up to 6 neighbor heightLevels,
-		// packed 4-bits each into 3 bytes (RGB), with A reserved.
-		// Order matches `cell.neighbors` insertion order. For
-		// pentagons the 6th slot is duplicated from the 5th.
-		const neighborIds = Array.from(c.neighbors);
+		// hexNeighborsTex layout — neighbor heightLevel PER EDGE,
+		// packed 4-bits each into 3 bytes (RGB). Slot k is the
+		// neighbor across edge k (corner k → corner (k+1)). Pentagons
+		// pad slot 5 with the cell's own heightLevel so cliff/coast
+		// detection sees a no-op there.
 		const heights: number[] = [];
 		for (let k = 0; k < 6; k++) {
-			const nbId = neighborIds[k] ?? neighborIds[neighborIds.length - 1];
-			const nb = cellByIdMap.get(nbId);
+			if (k >= edgeCount) {
+				heights.push(c.heightLevel);
+				continue;
+			}
+			const nb = findNeighborAcrossEdge(c, k, cellByIdMap);
 			heights.push(nb ? nb.heightLevel : c.heightLevel);
 		}
 		// Pack pairs into bytes (4 bits each, since heightLevel is 0–4).

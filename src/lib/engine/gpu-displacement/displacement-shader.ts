@@ -315,27 +315,7 @@ float displacementAt(vec3 unitDir, int selfId) {
 void main() {
     int id = int(hexId + 0.5);
     vec3 unitDir = normalize(position);
-
-    float h;
-    if (wallFlag > 0.5) {
-        // Wall bottom vertex. Drop to neighbor surface for gentle/coast,
-        // BASE_HEIGHT for steep cliffs.
-        int selfH, edgeCount;
-        readHexData(id, selfH, edgeCount);
-        int neighborH[6];
-        readNeighbors(id, neighborH);
-        int slot = int(neighborSlot + 0.5);
-        int nbH = neighborH[slot];
-        int diff = int(abs(float(selfH - nbH)));
-        bool nbIsWater = nbH <= 1;
-        if (diff <= 1 || nbIsWater) {
-            h = levelHeight(nbH);
-        } else {
-            h = baseHeight;
-        }
-    } else {
-        h = computeDisplacement(unitDir, id);
-    }
+    float h = computeDisplacement(unitDir, id);
 
     vec3 worldPos = unitDir * (planetRadius * (1.0 + h));
     vec4 wp = world * vec4(worldPos, 1.0);
