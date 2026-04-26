@@ -44,10 +44,14 @@ export interface NoiseBakeData {
 	resolution: number;
 }
 
-/** Bake noise into 6 face buffers. Pure CPU; no Babylon dependency. */
+/** Bake noise into 6 face buffers. Pure CPU; no Babylon dependency.
+ *  Uses RGBA layout because RG-Float cubemaps fail on some WebGL2
+ *  drivers (Invalid format/type/internalFormat combination). B and
+ *  A channels are unused (set to 0); cost is 2× memory but fully
+ *  portable. */
 export function bakeNoiseCubemapData(resolution = 1024): NoiseBakeData {
 	const faces: Float32Array[] = [];
-	const sz = resolution * resolution * 2;
+	const sz = resolution * resolution * 4;
 	for (let f = 0; f < 6; f++) {
 		const buf = new Float32Array(sz);
 		for (let py = 0; py < resolution; py++) {
@@ -59,9 +63,11 @@ export function bakeNoiseCubemapData(resolution = 1024): NoiseBakeData {
 				const ux = cx / len, uy = cy / len, uz = cz / len;
 				const raw = fbmNoise(ux * NOISE_SCALE, uy * NOISE_SCALE, uz * NOISE_SCALE);
 				const cliff = fbmNoise(ux * 120 + 500, uy * 120 + 500, uz * 120 + 500);
-				const i = (py * resolution + px) * 2;
+				const i = (py * resolution + px) * 4;
 				buf[i] = raw;
 				buf[i + 1] = cliff;
+				buf[i + 2] = 0;
+				buf[i + 3] = 0;
 			}
 		}
 		faces.push(buf);
@@ -79,7 +85,7 @@ export function uploadNoiseCubemap(data: NoiseBakeData, scene: Scene): RawCubeTe
 		scene,
 		data.faces,
 		data.resolution,
-		Constants.TEXTUREFORMAT_RG,
+		Constants.TEXTUREFORMAT_RGBA,
 		Constants.TEXTURETYPE_FLOAT,
 		false, // generateMipMaps
 		false, // invertY
@@ -144,6 +150,6 @@ function sampleBakedCubemap(
 	const v = 0.5 * (1 - tc / ma);
 	const px = Math.min(data.resolution - 1, Math.floor(u * data.resolution));
 	const py = Math.min(data.resolution - 1, Math.floor(v * data.resolution));
-	const i = (py * data.resolution + px) * 2;
+	const i = (py * data.resolution + px) * 4;
 	return { raw: data.faces[face][i], cliff: data.faces[face][i + 1] };
 }
