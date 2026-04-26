@@ -384,15 +384,16 @@ void main() {
         h = bestMidH * (1.0 - bestMu) + h * bestMu;
     }
 
-    // Land hexes: floor h above water-sphere height. The interior noise
-    // formula rawNoise + 0.3 goes negative when rawNoise < -0.3, which
-    // dips h below the water sphere (-0.0005) and exposes water sphere
-    // through the land surface. CPU smoothing pass averages neighboring
-    // vertices to keep the surface above water; we have no smoothing,
-    // so floor explicitly. Water hexes are unaffected (their interior
-    // is meant to be below water sphere = covered).
+    // Land hexes: floor h well above water-sphere height. The
+    // interior noise formula rawNoise + 0.3 goes negative when
+    // rawNoise < -0.3, which dips h below the water sphere (-0.0005)
+    // and exposes water sphere through the land surface. CPU smoothing
+    // averages neighboring vertices to keep the surface above water;
+    // without smoothing we floor explicitly. Use -0.0001 (3.2km above
+    // water sphere at planet scale) to stay well outside z-buffer
+    // precision and avoid any z-fighting flicker.
     if (!isWaterHex) {
-        h = max(h, -0.0004);
+        h = max(h, -0.0001);
     }
 
     vec3 worldPos = unitDir * (planetRadius * (1.0 + h));

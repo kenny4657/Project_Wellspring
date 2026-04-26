@@ -37,7 +37,7 @@ import { buildGlobeMesh, buildHexEdgeLines, updateCellTerrain } from '$lib/engin
 import { assignCellsToChunks, isChunkVisible } from '$lib/engine/globe-chunks';
 import { initGpuDisplacement, type GpuDisplacementResources } from '$lib/engine/gpu-displacement';
 import { canonicalizeCells } from '$lib/engine/gpu-displacement/hex-corners-tex';
-import { diagnoseGpuDisplacement, dumpSeamPair, dumpAtUnitDir, findRenderedMeshGaps, findLandUnderwaterVertices, type DiagnoseResult } from '$lib/engine/gpu-displacement/debug';
+import { diagnoseGpuDisplacement, dumpSeamPair, dumpAtUnitDir, findRenderedMeshGaps, findLandUnderwaterVertices, landHHistogram, type DiagnoseResult } from '$lib/engine/gpu-displacement/debug';
 import { createTerrainMaterial, applyTerrainSettings } from '$lib/engine/terrain-material';
 import { createHexDebugMaterial } from '$lib/engine/hex-debug-material';
 import { createWaterMaterial } from '$lib/engine/water-material';
@@ -84,6 +84,10 @@ export interface GlobeEngine {
 	 *  dips below the water-sphere height — explains the water-clipping
 	 *  pattern visible through green/brown surface. */
 	findUnderwaterLand(): Promise<void>;
+	/** Print histogram of land vertex h values around water-sphere
+	 *  boundary (-0.0005). Helps see clustering near boundary that
+	 *  could z-fight with water depth. */
+	landHistogram(): Promise<void>;
 	readonly hexCount: number;
 	readonly cells: HexCell[];
 	onHexClick: ((cellIndex: number) => void) | null;
@@ -453,6 +457,14 @@ export async function createGlobeEngine(
 			}
 			const r = findLandUnderwaterVertices(cells, gpuResources.flatChunks, EARTH_RADIUS_KM);
 			r.print();
+		},
+
+		async landHistogram() {
+			canonicalizeCells(cells);
+			if (!gpuResources) {
+				gpuResources = await initGpuDisplacement(cells, chunkAssignment, scene, EARTH_RADIUS_KM);
+			}
+			landHHistogram(cells, gpuResources.flatChunks);
 		},
 
 		async setGpuMode(enabled: boolean) {

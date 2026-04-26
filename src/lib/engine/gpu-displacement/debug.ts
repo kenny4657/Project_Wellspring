@@ -459,7 +459,7 @@ function simulateShaderHeight(
 	}
 
 	// Land hex: floor above water sphere — see shader for rationale.
-	if (!isWater) h = Math.max(h, -0.0004);
+	if (!isWater) h = Math.max(h, -0.0001);
 
 	return {
 		h,
@@ -669,6 +669,54 @@ export function findLandUnderwaterVertices(
 			}
 		},
 	};
+}
+
+/** Histogram of land vertex h values near the water sphere boundary
+ *  (-0.0005). Helps see if vertices clustered just above the boundary
+ *  could z-fight with water depth check. */
+export function landHHistogram(
+	cells: HexCell[],
+	flatChunks: { mesh: { getVerticesData: (kind: string) => number[] | Float32Array | null }; cellIds: number[] }[],
+): void {
+	const cellById = new Map<number, HexCell>();
+	for (const c of cells) cellById.set(c.id, c);
+	const cornerTargets = computeCornerCanonicalTargets(cells);
+
+	const buckets = new Map<string, number>();
+	const bumpBucket = (label: string) => buckets.set(label, (buckets.get(label) ?? 0) + 1);
+	const tier2Buckets = new Map<string, number>();
+	const bump2 = (label: string) => tier2Buckets.set(label, (tier2Buckets.get(label) ?? 0) + 1);
+
+	for (const chunk of flatChunks) {
+		const positions = chunk.mesh.getVerticesData('position');
+		const hexIds = chunk.mesh.getVerticesData('hexId');
+		if (!positions || !hexIds) continue;
+		for (let i = 0; i < hexIds.length; i++) {
+			const ux = positions[i * 3];
+			const uy = positions[i * 3 + 1];
+			const uz = positions[i * 3 + 2];
+			const hexId = Math.round(hexIds[i]);
+			const cell = cellById.get(hexId);
+			if (!cell || cell.heightLevel <= 1) continue;
+			const sim = simulateShaderHeight(new Vector3(ux, uy, uz), cell, cellById, cornerTargets);
+			const h = sim.h;
+			let label: string;
+			if (h < -0.0005) label = 'below water sphere';
+			else if (h < -0.0001) label = '-0.0005 to -0.0001 (just above water)';
+			else if (h < 0) label = '-0.0001 to 0';
+			else if (h < 0.0005) label = '0 to 0.0005';
+			else if (h < 0.001) label = '0.0005 to 0.001';
+			else if (h < 0.002) label = '0.001 to 0.002';
+			else if (h < 0.005) label = '0.002 to 0.005';
+			else label = '> 0.005';
+			bumpBucket(label);
+			if (cell.heightLevel === 2) bump2(label);
+		}
+	}
+	console.log(`[h histogram] ALL land:`);
+	for (const [k, v] of [...buckets.entries()].sort()) console.log(`  ${k}: ${v}`);
+	console.log(`[h histogram] tier 2 only:`);
+	for (const [k, v] of [...tier2Buckets.entries()].sort()) console.log(`  ${k}: ${v}`);
 }
 
 export function findRenderedMeshGaps(
