@@ -37,7 +37,7 @@ import { buildGlobeMesh, buildHexEdgeLines, updateCellTerrain } from '$lib/engin
 import { assignCellsToChunks, isChunkVisible } from '$lib/engine/globe-chunks';
 import { initGpuDisplacement, type GpuDisplacementResources } from '$lib/engine/gpu-displacement';
 import { canonicalizeCells } from '$lib/engine/gpu-displacement/hex-corners-tex';
-import { diagnoseGpuDisplacement, type DiagnoseResult } from '$lib/engine/gpu-displacement/debug';
+import { diagnoseGpuDisplacement, dumpSeamPair, type DiagnoseResult } from '$lib/engine/gpu-displacement/debug';
 import { createTerrainMaterial, applyTerrainSettings } from '$lib/engine/terrain-material';
 import { createHexDebugMaterial } from '$lib/engine/hex-debug-material';
 import { createWaterMaterial } from '$lib/engine/water-material';
@@ -69,6 +69,9 @@ export interface GlobeEngine {
 	/** Run a CPU diagnostic: compares CPU truth against a TS port of
 	 *  the GPU shader's logic. Logs top-K mismatches and seam errors. */
 	diagnoseGpuDisplacement(opts?: { sampleCellCount?: number; pointsPerCell?: number; topK?: number }): DiagnoseResult;
+	/** Verbose dump of one seam pair — logs edge-by-edge iteration so
+	 *  you can see why each side picks its nearest border. */
+	dumpSeam(cellAId: number, cellBId: number): void;
 	readonly hexCount: number;
 	readonly cells: HexCell[];
 	onHexClick: ((cellIndex: number) => void) | null;
@@ -405,6 +408,11 @@ export async function createGlobeEngine(
 			const r = diagnoseGpuDisplacement(cells, opts);
 			r.print();
 			return r;
+		},
+
+		dumpSeam(cellAId: number, cellBId: number) {
+			canonicalizeCells(cells);
+			dumpSeamPair(cells, cellAId, cellBId);
 		},
 
 		async setGpuMode(enabled: boolean) {

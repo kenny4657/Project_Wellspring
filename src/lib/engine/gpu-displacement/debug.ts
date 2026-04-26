@@ -195,6 +195,7 @@ function simulateShaderHeight(
 	unitDir: Vector3,
 	cell: HexCell,
 	cellById: Map<number, HexCell>,
+	verbose = false,
 ): ShaderSimResult {
 	const self = fetchCellData(cell, cellById);
 	const selfH = self.heightLevel;
@@ -251,7 +252,14 @@ function simulateShaderHeight(
 	for (let i = 0; i < n; i++) {
 		const nb = self.neighbors[i];
 		if (!nb) continue;
-		if (isExcludedEdge(cell, nb, cellById)) continue;
+		const excluded = isExcludedEdge(cell, nb, cellById);
+		if (verbose) {
+			const a0 = self.corners[i];
+			const b0 = self.corners[(i + 1) % n];
+			const { dist: d0 } = distAndT(unitDir, a0, b0);
+			console.log(`  cell ${cell.id} edge ${i}: nb=${nb.id} (tier ${nb.heightLevel}) dist=${d0.toFixed(7)} excluded=${excluded} target=${computeBorderTarget(selfH, self.neighborH[i]).toFixed(4)}`);
+		}
+		if (excluded) continue;
 		const a = self.corners[i];
 		const b = self.corners[(i + 1) % n];
 		const { dist, t } = distAndT(unitDir, a, b);
@@ -351,6 +359,39 @@ export interface DiagnoseResult {
 	maxCpuVsSim: number;
 	maxSeam: number;
 	print: () => void;
+}
+
+/** Verbose dump of one cell-pair's seam test. Logs each side's edge
+ *  iteration so you can see why each picks the target it does.
+ *  Use:  engine.dumpSeam(0, 9471) */
+export function dumpSeamPair(cells: HexCell[], cellAId: number, cellBId: number): void {
+	const cellById = new Map<number, HexCell>();
+	for (const c of cells) cellById.set(c.id, c);
+	const A = cellById.get(cellAId);
+	const B = cellById.get(cellBId);
+	if (!A || !B) {
+		console.log(`Missing cell: A=${A?.id} B=${B?.id}`);
+		return;
+	}
+	// Find the edge index of A facing B.
+	let edgeIdxA = -1;
+	for (let i = 0; i < A.corners.length; i++) {
+		const nb = findNeighborAcrossEdge(A, i, cellById);
+		if (nb && nb.id === B.id) { edgeIdxA = i; break; }
+	}
+	console.log(`A=${A.id} (tier ${A.heightLevel}) edgeIdxA=${edgeIdxA}`);
+	const a = A.corners[edgeIdxA];
+	const b = A.corners[(edgeIdxA + 1) % A.corners.length];
+	const m = new Vector3((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2);
+	const ml = Math.sqrt(m.x * m.x + m.y * m.y + m.z * m.z) || 1;
+	m.x /= ml; m.y /= ml; m.z /= ml;
+	console.log(`  m=(${m.x.toFixed(6)}, ${m.y.toFixed(6)}, ${m.z.toFixed(6)})`);
+	console.log(`A's edge walk:`);
+	const simA = simulateShaderHeight(m, A, cellById, true);
+	console.log(`  → A.h=${simA.h.toFixed(6)} target=${simA.borderTarget.toFixed(4)} bestMu=${simA.bestMu.toFixed(3)}`);
+	console.log(`B's edge walk:`);
+	const simB = simulateShaderHeight(m, B, cellById, true);
+	console.log(`  → B.h=${simB.h.toFixed(6)} target=${simB.borderTarget.toFixed(4)} bestMu=${simB.bestMu.toFixed(3)}`);
 }
 
 export function diagnoseGpuDisplacement(
