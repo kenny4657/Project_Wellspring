@@ -33,95 +33,126 @@ import { findNeighborAcrossEdge } from '../hex-borders';
  *  differ at the shared seam, so the same world position computes
  *  slightly different distances from each side → mu mismatch → seam
  *  gap. Canonicalizing forces both hexes to use the same value. */
-function buildCanonicalCorners(cells: HexCell[]): Map<string, Vector3> {
-	// Bucket size has to be much larger than typical FP drift between
-	// two hex copies of a shared corner (~1e-7 for slerp-derived points)
-	// AND much smaller than the spacing between distinct real corners
-	// (~hexRadius, ~1e-2 at res=40). 1e-4 lands safely between.
-	const STEP = 1e-4;
-	const groups = new Map<string, { sum: Vector3; count: number }>();
-	const keyOf = (v: Vector3) =>
-		`${Math.round(v.x / STEP)},${Math.round(v.y / STEP)},${Math.round(v.z / STEP)}`;
+// Maximum slerp-drift distance between two hex copies of the same physical
+// corner (observed up to ~3e-3 near pentagons). Two corners closer than
+// this are treated as the same point. Real distinct corners are ≥ hexRadius
+// (~1.2e-2 at res=40) apart, well outside this radius.
+const MERGE_RADIUS = 5e-3;
+const MERGE_RADIUS2 = MERGE_RADIUS * MERGE_RADIUS;
+const GRID_STEP = MERGE_RADIUS; // grid cell side equal to merge radius
+
+interface CanonHit { vec: Vector3 }
+
+/** For each input corner, find or create a canonical Vector3 for its
+ *  point cluster. Two corners within MERGE_RADIUS are clustered.
+ *  Spatial hash keeps lookup O(1) per query. */
+function buildCanonicalLookup(cells: HexCell[]): {
+	grid: Map<string, CanonHit[]>;
+	allCanon: CanonHit[];
+} {
+	const grid = new Map<string, CanonHit[]>();
+	const allCanon: CanonHit[] = [];
+
+	const findOrInsert = (corner: Vector3): CanonHit => {
+		const ix = Math.floor(corner.x / GRID_STEP);
+		const iy = Math.floor(corner.y / GRID_STEP);
+		const iz = Math.floor(corner.z / GRID_STEP);
+		// Check this cell + 26 neighbors for an existing canon within radius.
+		for (let dx = -1; dx <= 1; dx++) {
+			for (let dy = -1; dy <= 1; dy++) {
+				for (let dz = -1; dz <= 1; dz++) {
+					const k = `${ix + dx},${iy + dy},${iz + dz}`;
+					const list = grid.get(k);
+					if (!list) continue;
+					for (const c of list) {
+						const ddx = c.vec.x - corner.x;
+						const ddy = c.vec.y - corner.y;
+						const ddz = c.vec.z - corner.z;
+						if (ddx * ddx + ddy * ddy + ddz * ddz < MERGE_RADIUS2) return c;
+					}
+				}
+			}
+		}
+		// Not found — insert.
+		const hit: CanonHit = { vec: new Vector3(corner.x, corner.y, corner.z) };
+		const k = `${ix},${iy},${iz}`;
+		let list = grid.get(k);
+		if (!list) { list = []; grid.set(k, list); }
+		list.push(hit);
+		allCanon.push(hit);
+		return hit;
+	};
+
 	for (const c of cells) {
-		for (const corner of c.corners) {
-			const k = keyOf(corner);
-			const g = groups.get(k);
-			if (g) {
-				g.sum.x += corner.x; g.sum.y += corner.y; g.sum.z += corner.z;
-				g.count++;
-			} else {
-				groups.set(k, { sum: new Vector3(corner.x, corner.y, corner.z), count: 1 });
+		for (const corner of c.corners) findOrInsert(corner);
+	}
+	return { grid, allCanon };
+}
+
+function findCanon(grid: Map<string, CanonHit[]>, corner: Vector3): Vector3 | null {
+	const ix = Math.floor(corner.x / GRID_STEP);
+	const iy = Math.floor(corner.y / GRID_STEP);
+	const iz = Math.floor(corner.z / GRID_STEP);
+	for (let dx = -1; dx <= 1; dx++) {
+		for (let dy = -1; dy <= 1; dy++) {
+			for (let dz = -1; dz <= 1; dz++) {
+				const k = `${ix + dx},${iy + dy},${iz + dz}`;
+				const list = grid.get(k);
+				if (!list) continue;
+				for (const c of list) {
+					const ddx = c.vec.x - corner.x;
+					const ddy = c.vec.y - corner.y;
+					const ddz = c.vec.z - corner.z;
+					if (ddx * ddx + ddy * ddy + ddz * ddz < MERGE_RADIUS2) return c.vec;
+				}
 			}
 		}
 	}
-	const out = new Map<string, Vector3>();
-	for (const [k, g] of groups) {
-		const avg = new Vector3(g.sum.x / g.count, g.sum.y / g.count, g.sum.z / g.count);
-		const len = Math.sqrt(avg.x * avg.x + avg.y * avg.y + avg.z * avg.z) || 1;
-		avg.x /= len; avg.y /= len; avg.z /= len;
-		out.set(k, avg);
-	}
-	return out;
-}
-
-function canonKey(v: Vector3): string {
-	const STEP = 1e-4;
-	return `${Math.round(v.x / STEP)},${Math.round(v.y / STEP)},${Math.round(v.z / STEP)}`;
+	return null;
 }
 
 export function canonicalizeCells(cells: HexCell[]): void {
 	const cornersBefore = cells.reduce((s, c) => s + c.corners.length, 0);
-	const corner8s = cells.filter(c => c.corners.length >= 7).length;
+	const corner7sBefore = cells.filter(c => c.corners.length >= 7).length;
 
-	// Step 1: snap corner positions to a single canonical value across hexes.
-	const canon = buildCanonicalCorners(cells);
-	for (const c of cells) {
-		for (let k = 0; k < c.corners.length; k++) {
-			const cv = canon.get(canonKey(c.corners[k]));
-			if (cv) {
-				c.corners[k].x = cv.x;
-				c.corners[k].y = cv.y;
-				c.corners[k].z = cv.z;
-			}
-		}
-	}
+	// Step 1: build a canonical-vector lookup. Each cluster of corners
+	// within MERGE_RADIUS becomes a single canonical Vector3. Spatial
+	// hash makes the per-corner query O(1).
+	const { grid } = buildCanonicalLookup(cells);
 
-	// Step 2: dedupe per-cell corners. icosphere.ts's per-cell dedupe uses a
-	// distance threshold that misses near-pentagon cases where slerp drift
-	// from different ico triangles exceeds it. After canonicalization we
-	// can dedupe by exact canonical key.
+	// Step 2: snap each cell's corners to the canonical vector of their
+	// cluster, dedupe (multiple corners hitting the same canonical
+	// become one), and re-sort isn't needed because angular order is
+	// preserved (all cluster reps are sorted relative to each other).
 	for (const c of cells) {
-		const seen = new Set<string>();
+		const seen = new Set<Vector3>();
 		const kept: Vector3[] = [];
 		for (const corner of c.corners) {
-			const key = canonKey(corner);
-			if (!seen.has(key)) {
-				seen.add(key);
-				kept.push(corner);
+			const canon = findCanon(grid, corner);
+			if (canon && !seen.has(canon)) {
+				seen.add(canon);
+				kept.push(canon); // share the canonical Vector3 across all hexes
 			}
 		}
 		c.corners = kept;
 	}
 
-	// Step 3: rebuild neighbor sets from canonical corner overlap. Two
-	// hexes sharing ≥2 canonical corners share an edge → neighbors. The
-	// icosphere.ts neighbor build only links cells inside the same ico
-	// triangle's patch, missing some cross-triangle pairs (we observed
-	// cell 0 ↔ 9471 where one direction was missing).
-	const cornerToCells = new Map<string, number[]>();
+	// Step 3: rebuild neighbor sets from canonical corner overlap.
+	// Cells sharing ≥2 canonical corners are neighbors. icosphere.ts
+	// only links cells inside the same ico triangle's patch, so this
+	// rebuild also catches cross-triangle pairs that were missing.
+	const canonToCells = new Map<Vector3, number[]>();
 	for (const c of cells) {
 		for (const corner of c.corners) {
-			const key = canonKey(corner);
-			let list = cornerToCells.get(key);
-			if (!list) { list = []; cornerToCells.set(key, list); }
+			let list = canonToCells.get(corner);
+			if (!list) { list = []; canonToCells.set(corner, list); }
 			if (!list.includes(c.id)) list.push(c.id);
 		}
 	}
 	for (const c of cells) {
 		const counts = new Map<number, number>();
 		for (const corner of c.corners) {
-			const key = canonKey(corner);
-			const list = cornerToCells.get(key);
+			const list = canonToCells.get(corner);
 			if (!list) continue;
 			for (const cId of list) {
 				if (cId === c.id) continue;
@@ -135,8 +166,8 @@ export function canonicalizeCells(cells: HexCell[]): void {
 	}
 
 	const cornersAfter = cells.reduce((s, c) => s + c.corners.length, 0);
-	const corner8sAfter = cells.filter(c => c.corners.length >= 7).length;
-	console.log(`[canonicalize] corners: ${cornersBefore} → ${cornersAfter}, 7+ cells: ${corner8s} → ${corner8sAfter}, total cells: ${cells.length}`);
+	const corner7sAfter = cells.filter(c => c.corners.length >= 7).length;
+	console.log(`[canonicalize] corners: ${cornersBefore} → ${cornersAfter}, 7+ cells: ${corner7sBefore} → ${corner7sAfter}, total cells: ${cells.length}`);
 }
 
 export interface HexCornersTexture {
