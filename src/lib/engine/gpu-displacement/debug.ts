@@ -110,6 +110,13 @@ function meanHexRadius(corners: Vector3[]): number {
 	return r / n;
 }
 
+// Polynomial smooth-min from CPU hex-distance-fields.ts
+function smoothMin(a: number, b: number, k: number): number {
+	if (k <= 0) return Math.min(a, b);
+	const h = Math.max(k - Math.abs(a - b), 0) / k;
+	return Math.min(a, b) - h * h * k * 0.25;
+}
+
 // ── Cliff erosion walk (matches shader walkCliffEdges) ──────
 
 interface CliffWalkState { bestMu: number; bestMidH: number }
@@ -232,8 +239,8 @@ function simulateShaderHeight(
 	let nearestEdgeT = 0;
 	let nearestBorderTarget = -Infinity;
 	let hasBorder = false;
-	const coastK = 0.22;
-	let coastWeightSum = 0;
+	const coastK = hexRadius * 0.22; // matches CPU smoothDistanceToTargetEdges
+	let coastSmoothD = Infinity;     // polynomial smooth-min accumulator over coast edges
 	let hasCoastEdge = false;
 	const EPS = 1e-4;
 
@@ -260,7 +267,10 @@ function simulateShaderHeight(
 			}
 			if (dist < minDist) minDist = dist;
 		}
-		if (coast) { coastWeightSum += Math.exp(-dist / coastK); hasCoastEdge = true; }
+		if (coast && target === 0) {
+			coastSmoothD = Number.isFinite(coastSmoothD) ? smoothMin(coastSmoothD, dist, coastK) : dist;
+			hasCoastEdge = true;
+		}
 		hasBorder = true;
 	}
 
@@ -269,9 +279,8 @@ function simulateShaderHeight(
 		h = selfTierH + interiorNoiseH * NOISE_AMP;
 	} else {
 		let dist = minDist;
-		if (hasCoastEdge && nearestBorderTarget === 0 && coastWeightSum > 0) {
-			const smoothD = -Math.log(coastWeightSum) * coastK;
-			dist = Math.min(dist, smoothD);
+		if (hasCoastEdge && nearestBorderTarget === 0 && Number.isFinite(coastSmoothD)) {
+			dist = Math.min(dist, coastSmoothD);
 		}
 		const t01 = Math.min(dist / hexRadius, 1);
 		const mu = (1 - Math.cos(t01 * Math.PI)) / 2;
