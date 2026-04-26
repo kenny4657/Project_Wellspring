@@ -15,13 +15,18 @@ import type { ChunkAssignment } from '../globe-chunks';
 import { bakeNoiseCubemapData, uploadNoiseCubemap, verifyNoiseBake, type NoiseBakeData } from './noise-bake';
 import { buildFlatChunkMeshes, type FlatChunkMesh } from './flat-mesh';
 import { buildHexDataTextures, type HexDataTextures } from './hex-data-tex';
+import { buildHexCornersTexture, type HexCornersTexture } from './hex-corners-tex';
+import { createDisplacementMaterial } from './displacement-shader';
 import type { RawCubeTexture } from '@babylonjs/core/Materials/Textures/rawCubeTexture';
+import type { ShaderMaterial } from '@babylonjs/core/Materials/shaderMaterial';
 
 export interface GpuDisplacementResources {
 	noiseCubemap: RawCubeTexture;
 	noiseBakeData: NoiseBakeData;
 	hexTextures: HexDataTextures;
+	hexCorners: HexCornersTexture;
 	flatChunks: FlatChunkMesh[];
+	material: ShaderMaterial;
 	verify: () => { maxRawError: number; maxCliffError: number };
 }
 
@@ -29,6 +34,7 @@ export async function initGpuDisplacement(
 	cells: HexCell[],
 	chunkAssignment: ChunkAssignment,
 	scene: Scene,
+	planetRadius: number,
 	noiseRes = 1024,
 ): Promise<GpuDisplacementResources> {
 	const t0 = performance.now();
@@ -40,25 +46,39 @@ export async function initGpuDisplacement(
 	const t2 = performance.now();
 
 	const hexTextures = buildHexDataTextures(cells, scene);
+	const hexCorners = buildHexCornersTexture(cells, scene);
 	const t3 = performance.now();
 
 	const flatChunks = buildFlatChunkMeshes(cells, scene, chunkAssignment);
 	const t4 = performance.now();
 
+	const material = createDisplacementMaterial(scene, {
+		noiseCubemap,
+		hexTextures,
+		hexCorners,
+	}, planetRadius);
+	for (const chunk of flatChunks) {
+		chunk.mesh.material = material;
+	}
+	const t5 = performance.now();
+
 	console.log(
-		`[GPU displacement] Phase 1 init: ` +
+		`[GPU displacement] init: ` +
 		`bake=${(t1 - t0).toFixed(0)}ms, ` +
 		`upload=${(t2 - t1).toFixed(0)}ms, ` +
 		`hexTex=${(t3 - t2).toFixed(0)}ms, ` +
-		`flatMesh=${(t4 - t3).toFixed(0)}ms ` +
-		`(total ${(t4 - t0).toFixed(0)}ms)`,
+		`flatMesh=${(t4 - t3).toFixed(0)}ms, ` +
+		`material=${(t5 - t4).toFixed(0)}ms ` +
+		`(total ${(t5 - t0).toFixed(0)}ms)`,
 	);
 
 	return {
 		noiseCubemap,
 		noiseBakeData,
 		hexTextures,
+		hexCorners,
 		flatChunks,
+		material,
 		verify: () => verifyNoiseBake(noiseBakeData, 64),
 	};
 }

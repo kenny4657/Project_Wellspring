@@ -56,10 +56,14 @@ export interface GlobeEngine {
 	 *  adjacent hexes are visibly distinct — useful for tracking down
 	 *  geometry gaps and seam mismatches. */
 	setDebugMode(enabled: boolean): void;
-	/** Build the Phase 1 artifacts for the GPU displacement path
-	 *  (noise cubemap, per-hex data textures, flat-mesh per chunk).
-	 *  Does not change rendering — Phase 2 will wire in the shader. */
+	/** Build the GPU displacement artifacts (noise cubemap, hex
+	 *  data textures, flat-mesh per chunk, shader material) and
+	 *  return them. Idempotent — second call returns the cached
+	 *  result without rebuilding. */
 	initGpuDisplacement(): Promise<GpuDisplacementResources>;
+	/** Toggle between CPU mesh rendering and GPU displacement.
+	 *  Calls `initGpuDisplacement()` lazily on first true. */
+	setGpuMode(enabled: boolean): Promise<void>;
 	readonly hexCount: number;
 	readonly cells: HexCell[];
 	onHexClick: ((cellIndex: number) => void) | null;
@@ -285,6 +289,10 @@ export async function createGlobeEngine(
 	sceneInst.captureRenderTime = true;
 	const totalBuildMs = performance.now() - totalBuildStart;
 
+	// ── GPU displacement state (built on demand) ───────────
+	let gpuResources: GpuDisplacementResources | null = null;
+	let gpuModeOn = false;
+
 	// ── Render Loop ─────────────────────────────────────────
 	let waterTime = 0;
 	let visibleChunkCount = chunks.length;
@@ -314,16 +322,33 @@ export async function createGlobeEngine(
 		const camDirZ = cz / cl;
 		let visChunks = 0;
 		let visVerts = 0;
-		for (const chunk of chunks) {
-			const visible = isChunkVisible(chunk.centroid, camDirX, camDirY, camDirZ);
-			chunk.mesh.setEnabled(visible);
-			if (visible) {
-				visChunks++;
-				visVerts += chunk.mesh.getTotalVertices();
+		if (gpuModeOn && gpuResources) {
+			for (let i = 0; i < gpuResources.flatChunks.length; i++) {
+				const fc = gpuResources.flatChunks[i];
+				const visible = isChunkVisible(chunks[i].centroid, camDirX, camDirY, camDirZ);
+				fc.mesh.setEnabled(visible);
+				if (visible) {
+					visChunks++;
+					visVerts += fc.mesh.getTotalVertices();
+				}
+			}
+		} else {
+			for (const chunk of chunks) {
+				const visible = isChunkVisible(chunk.centroid, camDirX, camDirY, camDirZ);
+				chunk.mesh.setEnabled(visible);
+				if (visible) {
+					visChunks++;
+					visVerts += chunk.mesh.getTotalVertices();
+				}
 			}
 		}
 		visibleChunkCount = visChunks;
 		visibleVertCount = visVerts;
+
+		if (gpuModeOn && gpuResources) {
+			gpuResources.material.setVector3('sunDir', sunDirVec);
+			gpuResources.material.setVector3('cameraPos', camPos);
+		}
 
 		scene.render();
 	});
@@ -363,7 +388,24 @@ export async function createGlobeEngine(
 		},
 
 		async initGpuDisplacement() {
-			return initGpuDisplacement(cells, chunkAssignment, scene);
+			if (gpuResources) return gpuResources;
+			gpuResources = await initGpuDisplacement(cells, chunkAssignment, scene, EARTH_RADIUS_KM);
+			return gpuResources;
+		},
+
+		async setGpuMode(enabled: boolean) {
+			if (enabled) {
+				if (!gpuResources) {
+					gpuResources = await initGpuDisplacement(cells, chunkAssignment, scene, EARTH_RADIUS_KM);
+				}
+				gpuModeOn = true;
+				for (const c of chunks) c.mesh.setEnabled(false);
+				for (const fc of gpuResources.flatChunks) fc.mesh.setEnabled(true);
+			} else {
+				gpuModeOn = false;
+				if (gpuResources) for (const fc of gpuResources.flatChunks) fc.mesh.setEnabled(false);
+				// Visibility loop will re-enable CPU chunks on next frame.
+			}
 		},
 
 		get hexCount() { return cells.length; },
