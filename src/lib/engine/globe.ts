@@ -36,6 +36,7 @@ import { generateIcoHexGrid, type HexCell } from '$lib/engine/icosphere';
 import { buildGlobeMesh, buildHexEdgeLines, updateCellTerrain } from '$lib/engine/globe-mesh';
 import { assignCellsToChunks, isChunkVisible } from '$lib/engine/globe-chunks';
 import { initGpuDisplacement, type GpuDisplacementResources } from '$lib/engine/gpu-displacement';
+import { diagnoseGpuDisplacement, type DiagnoseResult } from '$lib/engine/gpu-displacement/debug';
 import { createTerrainMaterial, applyTerrainSettings } from '$lib/engine/terrain-material';
 import { createHexDebugMaterial } from '$lib/engine/hex-debug-material';
 import { createWaterMaterial } from '$lib/engine/water-material';
@@ -64,6 +65,9 @@ export interface GlobeEngine {
 	/** Toggle between CPU mesh rendering and GPU displacement.
 	 *  Calls `initGpuDisplacement()` lazily on first true. */
 	setGpuMode(enabled: boolean): Promise<void>;
+	/** Run a CPU diagnostic: compares CPU truth against a TS port of
+	 *  the GPU shader's logic. Logs top-K mismatches and seam errors. */
+	diagnoseGpuDisplacement(opts?: { sampleCellCount?: number; pointsPerCell?: number; topK?: number }): DiagnoseResult;
 	readonly hexCount: number;
 	readonly cells: HexCell[];
 	onHexClick: ((cellIndex: number) => void) | null;
@@ -391,6 +395,12 @@ export async function createGlobeEngine(
 			if (gpuResources) return gpuResources;
 			gpuResources = await initGpuDisplacement(cells, chunkAssignment, scene, EARTH_RADIUS_KM);
 			return gpuResources;
+		},
+
+		diagnoseGpuDisplacement(opts) {
+			const r = diagnoseGpuDisplacement(cells, opts);
+			r.print();
+			return r;
 		},
 
 		async setGpuMode(enabled: boolean) {
