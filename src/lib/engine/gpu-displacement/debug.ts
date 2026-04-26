@@ -458,6 +458,9 @@ function simulateShaderHeight(
 		h = state.bestMidH * (1 - state.bestMu) + hBase * state.bestMu;
 	}
 
+	// Land hex: floor above water sphere — see shader for rationale.
+	if (!isWater) h = Math.max(h, -0.0004);
+
 	return {
 		h,
 		hasBorder,
@@ -575,6 +578,97 @@ export interface RenderedGap {
 	worldGapKm: number;
 	notesA: string;
 	notesB: string;
+}
+
+/** Find vertices where a LAND hex (tier ≥ 2) computes h below the
+ *  water-sphere height (-0.0005). These show as dark water patches
+ *  through the green/brown surface — the user-reported "dotted
+ *  pattern" issue. Returns top-K worst offenders by how far below
+ *  water-sphere they dip, with the exact unit dir + per-step state. */
+export interface WaterClipVertex {
+	hexId: number;
+	tier: number;
+	unitDir: [number, number, number];
+	h: number;
+	belowWaterSphereM: number; // how far below water sphere in meters
+	notes: string;
+}
+
+export function findLandUnderwaterVertices(
+	cells: HexCell[],
+	flatChunks: { mesh: { getVerticesData: (kind: string) => number[] | Float32Array | null }; cellIds: number[] }[],
+	planetRadius: number,
+	topK = 30,
+): { offenders: WaterClipVertex[]; tierStats: Map<number, { total: number; underwater: number }>; print: () => void } {
+	const cellById = new Map<number, HexCell>();
+	for (const c of cells) cellById.set(c.id, c);
+	const cornerTargets = computeCornerCanonicalTargets(cells);
+
+	const WATER_SPHERE_H = -0.0005;
+	const offenders: WaterClipVertex[] = [];
+	const tierStats = new Map<number, { total: number; underwater: number }>();
+	const seenPerHex = new Map<number, Set<string>>();
+
+	for (const chunk of flatChunks) {
+		const positions = chunk.mesh.getVerticesData('position');
+		const hexIds = chunk.mesh.getVerticesData('hexId');
+		if (!positions || !hexIds) continue;
+
+		for (let i = 0; i < hexIds.length; i++) {
+			const ux = positions[i * 3];
+			const uy = positions[i * 3 + 1];
+			const uz = positions[i * 3 + 2];
+			const hexId = Math.round(hexIds[i]);
+			const cell = cellById.get(hexId);
+			if (!cell) continue;
+			// Dedupe per (hexId, position bucket) so we don't recount
+			// the same canonical vertex across multiple sub-tris.
+			const STEP = 1e-5;
+			const bucketKey = `${Math.round(ux / STEP)},${Math.round(uy / STEP)},${Math.round(uz / STEP)}`;
+			let seen = seenPerHex.get(hexId);
+			if (!seen) { seen = new Set(); seenPerHex.set(hexId, seen); }
+			if (seen.has(bucketKey)) continue;
+			seen.add(bucketKey);
+
+			const tier = cell.heightLevel;
+			let stats = tierStats.get(tier);
+			if (!stats) { stats = { total: 0, underwater: 0 }; tierStats.set(tier, stats); }
+			stats.total++;
+
+			if (tier <= 1) continue; // water hex; below-water is fine
+
+			const sim = simulateShaderHeight(
+				new Vector3(ux, uy, uz), cell, cellById, cornerTargets, undefined, undefined,
+			);
+			if (sim.h < WATER_SPHERE_H) {
+				stats.underwater++;
+				const belowM = (WATER_SPHERE_H - sim.h) * planetRadius * 1000;
+				offenders.push({
+					hexId, tier,
+					unitDir: [ux, uy, uz],
+					h: sim.h,
+					belowWaterSphereM: belowM,
+					notes: `hasBorder=${sim.hasBorder} target=${sim.borderTarget.toFixed(4)} bestMu=${sim.bestMu.toFixed(3)} bestMidH=${sim.bestMidH.toFixed(5)} hBase=${sim.hBase.toFixed(5)}`,
+				});
+			}
+		}
+	}
+	offenders.sort((a, b) => b.belowWaterSphereM - a.belowWaterSphereM);
+
+	return {
+		offenders, tierStats,
+		print() {
+			console.log(`[water-clip] tier stats:`);
+			for (const [tier, s] of [...tierStats.entries()].sort((a, b) => a[0] - b[0])) {
+				const pct = s.total > 0 ? (100 * s.underwater / s.total).toFixed(1) : '0';
+				console.log(`  tier ${tier}: ${s.underwater}/${s.total} verts below water sphere (${pct}%)`);
+			}
+			console.log(`[water-clip] top ${topK} offenders:`);
+			for (const o of offenders.slice(0, topK)) {
+				console.log(`  cell ${o.hexId} tier=${o.tier}: h=${o.h.toFixed(5)} (${o.belowWaterSphereM.toFixed(0)}m below water) | ${o.notes}`);
+			}
+		},
+	};
 }
 
 export function findRenderedMeshGaps(
