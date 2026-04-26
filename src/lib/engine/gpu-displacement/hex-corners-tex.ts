@@ -34,10 +34,11 @@ import { findNeighborAcrossEdge } from '../hex-borders';
  *  slightly different distances from each side → mu mismatch → seam
  *  gap. Canonicalizing forces both hexes to use the same value. */
 // Maximum slerp-drift distance between two hex copies of the same physical
-// corner (observed up to ~3e-3 near pentagons). Two corners closer than
-// this are treated as the same point. Real distinct corners are ≥ hexRadius
-// (~1.2e-2 at res=40) apart, well outside this radius.
-const MERGE_RADIUS = 5e-3;
+// corner. Drift is observed up to ~8e-3 near pentagon vertices (where 5
+// ico triangles meet and their slerps disagree). Real distinct corners
+// are ≥ ~1.05e-2 apart (cell 0's observed min pairwise dist), so an
+// 8.5e-3 merge radius sits safely between drift and corner spacing.
+const MERGE_RADIUS = 8.5e-3;
 const MERGE_RADIUS2 = MERGE_RADIUS * MERGE_RADIUS;
 const GRID_STEP = MERGE_RADIUS; // grid cell side equal to merge radius
 
