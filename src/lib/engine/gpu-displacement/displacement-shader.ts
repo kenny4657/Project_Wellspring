@@ -226,7 +226,14 @@ void walkCliffEdges(
         float mu;
         if (steep) {
             float rampWidth = ownerHexRadius * 0.2;
-            float perturbed = max(0.0, dist + cliffNoise * ownerHexRadius * 0.25);
+            // Cliff safe-band: at very small dist, skip the cliffNoise
+            // perturbation. Without this, cliffNoise shifts mu away
+            // from 0 at shared cliff edges, leaving asymmetric h_base
+            // contribution in the lerp.
+            float safeBand = ownerHexRadius * 0.05;
+            float perturbed = dist < safeBand
+                ? dist
+                : max(0.0, dist + cliffNoise * ownerHexRadius * 0.25);
             float t = min(perturbed / rampWidth, 1.0);
             mu = t * (2.0 - t);
         } else {
@@ -310,16 +317,12 @@ void main() {
     }
 
     float h;
-    // CPU short-circuit for water hex with all same-tier neighbors:
-    // skip border smoothing, use pure interior height.
-    bool allSameHeight = true;
-    for (int i = 0; i < 6; i++) {
-        if (i >= edgeCount) break;
-        if (neighborH[i] != selfH) { allSameHeight = false; break; }
-    }
-    if (isWaterHex && allSameHeight) {
-        h = selfTierH + interiorNoiseH * noiseAmp;
-    } else if (!hasBorder) {
+    // CPU's allSameHeight short-circuit produces asymmetric h values
+    // when adjacent cells take different formula paths (one shortcuts,
+    // the other does the full border walk). Skip it — the border walk
+    // gives equivalent values for genuine all-same cases but stays
+    // symmetric across seams.
+    if (!hasBorder) {
         h = selfTierH + interiorNoiseH * noiseAmp;
     } else {
         borderTarget = nearestBorderTarget;
