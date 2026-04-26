@@ -25,7 +25,8 @@ import { VertexData } from '@babylonjs/core/Meshes/mesh.vertexData';
 import type { Scene } from '@babylonjs/core/scene';
 import type { HexCell } from '../icosphere';
 import type { ChunkAssignment } from '../globe-chunks';
-import { SUBDIVISIONS, subdivTriangle } from '../mesh-smoothing';
+import { SUBDIVISIONS, subdivTriangle, subdivideEdge } from '../mesh-smoothing';
+import { findNeighborAcrossEdge } from '../hex-borders';
 
 export interface FlatChunkMesh {
 	mesh: Mesh;
@@ -44,12 +45,16 @@ export function buildFlatChunkMeshes(
 ): FlatChunkMesh[] {
 	const chunks: FlatChunkMesh[] = [];
 
+	const cellById = new Map<number, HexCell>();
+	for (const c of cells) cellById.set(c.id, c);
+
 	for (let chunkIdx = 0; chunkIdx < chunkAssignment.cellsByChunk.length; chunkIdx++) {
 		const cellIds = chunkAssignment.cellsByChunk[chunkIdx];
 		const positions: number[] = [];
 		const hexIds: number[] = [];
 		const localUVs: number[] = [];
 		const wallFlags: number[] = [];
+		const neighborSlots: number[] = [];
 		const indices: number[] = [];
 		const cellLocalStart = new Map<number, number>();
 		const cellVertexCount = new Map<number, number>();
@@ -93,16 +98,61 @@ export function buildFlatChunkMeshes(
 						const uz = triVerts[j + k * 3 + 2];
 						positions.push(ux, uy, uz);
 						hexIds.push(hexIdF);
-						// localUV = (k==1 ? 1 : 0, k==2 ? 1 : 0). Identifies
-						// which corner of the sub-tri this vertex is. The
-						// fragment shader can use this for terrain blending
-						// across the hex once Phase 2 wires it up.
 						localUVs.push(k === 1 ? 1 : 0, k === 2 ? 1 : 0);
 						wallFlags.push(0);
+						neighborSlots.push(0);
 						indices.push(vOff++);
 					}
 				}
 			}
+
+			// Walls — emit only where this cell is HIGHER than its neighbor
+			// across the edge (same rule as CPU buildCellWalls). Wall top
+			// shares the cell's edge corner positions; bottom shares the
+			// same direction but the shader drops it (wallFlag=1) to a
+			// height computed from the neighbor's tier or BASE_HEIGHT.
+			for (let i = 0; i < n; i++) {
+				const nb = findNeighborAcrossEdge(cell, i, cellById);
+				if (!nb) continue;
+				if (nb.heightLevel >= cell.heightLevel) continue; // only emit from higher hex
+
+				const c0 = cell.corners[i];
+				const c1 = cell.corners[(i + 1) % n];
+				const edgePoints: number[] = [];
+				subdivideEdge(c0.x, c0.y, c0.z, c1.x, c1.y, c1.z, SUBDIVISIONS, edgePoints);
+
+				for (let p = 0; p < edgePoints.length - 3; p += 3) {
+					const ux0 = edgePoints[p];
+					const uy0 = edgePoints[p + 1];
+					const uz0 = edgePoints[p + 2];
+					const ux1 = edgePoints[p + 3];
+					const uy1 = edgePoints[p + 4];
+					const uz1 = edgePoints[p + 5];
+
+					const wallOff = vOff;
+					// top0 (wallFlag=0)
+					positions.push(ux0, uy0, uz0);
+					hexIds.push(hexIdF); localUVs.push(0, 0);
+					wallFlags.push(0); neighborSlots.push(i);
+					// top1
+					positions.push(ux1, uy1, uz1);
+					hexIds.push(hexIdF); localUVs.push(0, 0);
+					wallFlags.push(0); neighborSlots.push(i);
+					// bot0 (wallFlag=1)
+					positions.push(ux0, uy0, uz0);
+					hexIds.push(hexIdF); localUVs.push(0, 0);
+					wallFlags.push(1); neighborSlots.push(i);
+					// bot1
+					positions.push(ux1, uy1, uz1);
+					hexIds.push(hexIdF); localUVs.push(0, 0);
+					wallFlags.push(1); neighborSlots.push(i);
+
+					indices.push(wallOff + 0, wallOff + 1, wallOff + 2);
+					indices.push(wallOff + 1, wallOff + 3, wallOff + 2);
+					vOff += 4;
+				}
+			}
+
 			cellVertexCount.set(ci, vOff - startVOff);
 		}
 
@@ -110,6 +160,7 @@ export function buildFlatChunkMeshes(
 		const hexIdsF32 = new Float32Array(hexIds);
 		const localUVsF32 = new Float32Array(localUVs);
 		const wallFlagsF32 = new Float32Array(wallFlags);
+		const neighborSlotsF32 = new Float32Array(neighborSlots);
 
 		const mesh = new Mesh(`gpuFlatChunk_${chunkIdx}`, scene);
 		const vd = new VertexData();
@@ -119,6 +170,7 @@ export function buildFlatChunkMeshes(
 		mesh.setVerticesData('hexId', hexIdsF32, false, 1);
 		mesh.setVerticesData('localUV', localUVsF32, false, 2);
 		mesh.setVerticesData('wallFlag', wallFlagsF32, false, 1);
+		mesh.setVerticesData('neighborSlot', neighborSlotsF32, false, 1);
 		// Disabled by default — Phase 1 doesn't render this mesh.
 		mesh.setEnabled(false);
 
