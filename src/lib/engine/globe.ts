@@ -450,10 +450,14 @@ export async function createGlobeEngine(
 				gpuModeOn = true;
 				for (const c of chunks) c.mesh.setEnabled(false);
 				for (const fc of gpuResources.flatChunks) fc.mesh.setEnabled(true);
+				// Switch depth renderer to use flat chunks so water sphere
+				// occludes correctly under GPU-displaced land.
+				depthTexture.renderList = gpuResources.flatChunks.map(c => c.mesh);
 			} else {
 				gpuModeOn = false;
 				if (gpuResources) for (const fc of gpuResources.flatChunks) fc.mesh.setEnabled(false);
 				// Visibility loop will re-enable CPU chunks on next frame.
+				depthTexture.renderList = chunks.map(c => c.mesh);
 			}
 		},
 
