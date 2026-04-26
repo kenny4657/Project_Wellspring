@@ -70,6 +70,9 @@ function canonKey(v: Vector3): string {
 }
 
 export function canonicalizeCells(cells: HexCell[]): void {
+	const cornersBefore = cells.reduce((s, c) => s + c.corners.length, 0);
+	const corner8s = cells.filter(c => c.corners.length >= 7).length;
+
 	// Step 1: snap corner positions to a single canonical value across hexes.
 	const canon = buildCanonicalCorners(cells);
 	for (const c of cells) {
@@ -130,6 +133,10 @@ export function canonicalizeCells(cells: HexCell[]): void {
 			if (count >= 2) c.neighbors.add(cId);
 		}
 	}
+
+	const cornersAfter = cells.reduce((s, c) => s + c.corners.length, 0);
+	const corner8sAfter = cells.filter(c => c.corners.length >= 7).length;
+	console.log(`[canonicalize] corners: ${cornersBefore} → ${cornersAfter}, 7+ cells: ${corner8s} → ${corner8sAfter}, total cells: ${cells.length}`);
 }
 
 export interface HexCornersTexture {
