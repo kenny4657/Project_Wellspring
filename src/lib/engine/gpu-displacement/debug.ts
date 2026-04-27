@@ -214,29 +214,6 @@ function findNeighborByCorners(cell: HexCell, edgeIdx: number, cellById: Map<num
  *  Returned map keys are canonical Vector3 refs (shared across cells
  *  after canonicalizeCells), values are pre-noise heights — the noise
  *  contribution is added in shader so per-frame noise mods still work. */
-/** Average shader-mirror h at every canonical corner. Use this (NOT
- *  computeCornerCanonicalHeights) when baking a per-corner h texture
- *  for the GPU shader to snap to: the values come from the same
- *  algorithm the shader runs, so corner-snap doesn't introduce a
- *  CPU-vs-GPU bias bump. */
-export function computeShaderCornerCanonicalHeights(cells: HexCell[]): Map<Vector3, number> {
-	const cellById = new Map<number, HexCell>();
-	for (const c of cells) cellById.set(c.id, c);
-	const sums = new Map<Vector3, { sum: number; count: number }>();
-	for (const c of cells) {
-		for (const corner of c.corners) {
-			const sim = simulateShaderHeight(corner, c, cellById);
-			let d = sums.get(corner);
-			if (!d) { d = { sum: 0, count: 0 }; sums.set(corner, d); }
-			d.sum += sim.h;
-			d.count += 1;
-		}
-	}
-	const out = new Map<Vector3, number>();
-	for (const [corner, d] of sums) out.set(corner, d.sum / d.count);
-	return out;
-}
-
 export function computeCornerCanonicalHeights(cells: HexCell[]): Map<Vector3, number> {
 	const cellById = new Map<number, HexCell>();
 	for (const c of cells) cellById.set(c.id, c);
