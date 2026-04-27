@@ -431,26 +431,6 @@ void main() {
 
         walkCliffEdges(unitDir, nbHL, nbEdgeCount, nbNeighborH, nbCorners,
                        nbHexRadius, cliffNoise, midNoise, nbTierH, bestMu, midWeightSum, midWeightedH);
-
-        // Also accumulate the neighbor's water-step edges (tier-0 ↔ tier-1)
-        // into minWaterStepDist. Without this, two same-tier-shallow-water
-        // cells sharing an edge each measure dist to their OWN nearest
-        // deep-water nbr, different geometries → different waterMu → fissure
-        // (e.g. 12774/12775 with 2 vs 3 tier-0 neighbors). 1-hop unifies
-        // the visible water-step edge set on either side of any shared edge.
-        for (int j = 0; j < 12; j++) {
-            if (j >= nbEdgeCount) break;
-            int nbnbH = nbNeighborH[j];
-            bool sw = nbHL <= 1;
-            bool nw = nbnbH <= 1;
-            if (!(sw && nw && nbHL != nbnbH)) continue;
-            vec3 a = nbCorners[j];
-            int nextIdx = (j + 1) == nbEdgeCount ? 0 : (j + 1);
-            vec3 b = nbCorners[nextIdx];
-            float dist = distToSegment(unitDir, a, b);
-            minWaterStepDist = min(minWaterStepDist, dist);
-            hasWaterStepEdge = true;
-        }
     }
 
     if (bestMu < 1.0 && midWeightSum > 0.0) {

@@ -475,19 +475,6 @@ function simulateShaderHeight(
 		const nbTierH = getLevelHeight(nbData.heightLevel);
 		walkCliffEdges(unitDir, nbData.heightLevel, nbData.corners, nbData.neighborH,
 			nbHexRadius, cliffNoise, midNoise, nbTierH, state);
-		// 1-hop water-step edges (mirrors shader)
-		const nbN2 = nbData.corners.length;
-		for (let j = 0; j < nbN2; j++) {
-			const nbnbH = nbData.neighborH[j];
-			const sw = nbData.heightLevel <= 1;
-			const nw = nbnbH <= 1;
-			if (!(sw && nw && nbData.heightLevel !== nbnbH)) continue;
-			const a = nbData.corners[j];
-			const b = nbData.corners[(j + 1) % nbN2];
-			const { dist } = distAndT(unitDir, a, b);
-			if (dist < minWaterStepDist) minWaterStepDist = dist;
-			hasWaterStepEdge = true;
-		}
 	}
 
 	let bestMidH = hBase;
