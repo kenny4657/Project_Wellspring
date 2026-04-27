@@ -475,6 +475,19 @@ function simulateShaderHeight(
 		const nbTierH = getLevelHeight(nbData.heightLevel);
 		walkCliffEdges(unitDir, nbData.heightLevel, nbData.corners, nbData.neighborH,
 			nbHexRadius, cliffNoise, midNoise, nbTierH, state);
+		// 1-hop coast edges (mirrors shader)
+		const nbN2 = nbData.corners.length;
+		for (let j = 0; j < nbN2; j++) {
+			const nbnbH = nbData.neighborH[j];
+			if (!isCoastEdge(nbData.heightLevel, nbnbH)) continue;
+			const a = nbData.corners[j];
+			const b = nbData.corners[(j + 1) % nbN2];
+			const { dist } = distAndT(unitDir, a, b);
+			coastWeightSum += Math.exp(-dist / coastK);
+			coastN++;
+			if (dist < minCoastDist) minCoastDist = dist;
+			hasCoastEdge = true;
+		}
 	}
 
 	let bestMidH = hBase;
