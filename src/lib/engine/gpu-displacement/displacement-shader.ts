@@ -389,8 +389,10 @@ void main() {
             : interiorNoiseH;
         h = selfTierH * mu + borderTarget * (1.0 - mu) + noiseH * noiseCoeff;
 
-        // COAST_ROUNDING dip at coastal edge midpoint
-        if (borderTarget == 0.0 && nearestEdgeIdx >= 0) {
+        // COAST_ROUNDING dip at coastal edge midpoint — water only.
+        // For land, nearestEdgeT/mu are per-cell-asymmetric on shared
+        // land-land edges, producing a fissure at midpoints.
+        if (isWaterHex && borderTarget == 0.0 && nearestEdgeIdx >= 0) {
             float coastMid = 4.0 * nearestEdgeT * (1.0 - nearestEdgeT);
             float coastBlend = mu * (1.0 - mu);
             h -= coastRounding * coastMid * coastBlend * 4.0;
@@ -458,7 +460,14 @@ void main() {
     // nearest-edge classification. Closes the discontinuity between
     // coast and water-water target zones (e.g. 12922/12961/12960).
     // Runs LAST so coast dominates at any coast-touching corner.
-    if (hasCoastEdge) {
+    // Water-only: minCoastDist is each cell's hard-min over its OWN
+    // coast edges. For a land cell sharing an edge with another land
+    // cell of different "coastal-ness", this pass multiplies h by
+    // different coastMu's on each side of the shared edge — the source
+    // of the residual midpoint fissure at 12926/12964/12965 after the
+    // mu-independent-noise fix. Border walk's tier ramp already pulls
+    // land h to 0 at coast edges, so the post-pass is redundant for land.
+    if (isWaterHex && hasCoastEdge) {
         float coastT = clamp(minCoastDist / (hexRadius * 0.7), 0.0, 1.0);
         float coastMu = (1.0 - cos(coastT * 3.14159265)) / 2.0;
         h = h * coastMu;
