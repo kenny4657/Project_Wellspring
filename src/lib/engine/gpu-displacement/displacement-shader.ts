@@ -292,9 +292,14 @@ void main() {
     float nearestBorderTarget = 0.0;
     bool hasBorder = false;
 
-    // For coast smooth-min: accumulate exp(-d/k) for coast edges only
+    // For coast smooth-min: accumulate exp(-d/k) for coast edges only.
+    // smoothD = -log(sum/N) * k. Normalizing by N keeps the soft-min
+    // edge-count-invariant — without /N, an 8-coast-edge hex gets
+    // smoothD lower by k*log(8/6)=0.064 unit-sphere = ~408km vs a
+    // 6-coast-edge hex, mashing its interior toward sea level.
     float coastSmoothK = 0.22;
     float coastWeightSum = 0.0;
+    int coastN = 0;
     bool hasCoastEdge = false;
 
     for (int i = 0; i < 12; i++) {
@@ -320,6 +325,7 @@ void main() {
         }
         if (coast) {
             coastWeightSum += exp(-dist / coastSmoothK);
+            coastN++;
             hasCoastEdge = true;
         }
         hasBorder = true;
@@ -336,7 +342,7 @@ void main() {
         // Coast smooth-min: rounds the corner where two coast edges meet
         float dist = minDist;
         if (hasCoastEdge && nearestBorderTarget == 0.0 && coastWeightSum > 0.0) {
-            float smoothD = -log(coastWeightSum) * coastSmoothK;
+            float smoothD = -log(coastWeightSum / float(coastN)) * coastSmoothK;
             dist = min(dist, smoothD);
         }
         float t01 = clamp(dist / hexRadius, 0.0, 1.0);

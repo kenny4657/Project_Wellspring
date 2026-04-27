@@ -360,8 +360,11 @@ function simulateShaderHeight(
 	let nearestEdgeT = 0;
 	let nearestBorderTarget = -Infinity;
 	let hasBorder = false;
-	const coastK = hexRadius * 0.22; // matches CPU smoothDistanceToTargetEdges
-	let coastSmoothD = Infinity;     // polynomial smooth-min accumulator over coast edges
+	// Coast smooth-min: exp soft-min with N normalization, mirrors
+	// the shader. smoothD = -log((sum exp(-d_i / k)) / N) * k.
+	const coastK = 0.22;
+	let coastWeightSum = 0;
+	let coastN = 0;
 	let hasCoastEdge = false;
 	// EPS for corner tie-break. CPU uses 1e-4, but at unit-sphere-normalized
 	// edge midpoints the chord-to-sphere drift is ~7e-5 — that drift is the
@@ -411,7 +414,8 @@ function simulateShaderHeight(
 			if (dist < minDist) minDist = dist;
 		}
 		if (coast && edgeTarget === 0) {
-			coastSmoothD = Number.isFinite(coastSmoothD) ? smoothMin(coastSmoothD, dist, coastK) : dist;
+			coastWeightSum += Math.exp(-dist / coastK);
+			coastN++;
 			hasCoastEdge = true;
 		}
 		hasBorder = true;
@@ -422,8 +426,9 @@ function simulateShaderHeight(
 		h = selfTierH + interiorNoiseH * NOISE_AMP;
 	} else {
 		let dist = minDist;
-		if (hasCoastEdge && nearestBorderTarget === 0 && Number.isFinite(coastSmoothD)) {
-			dist = Math.min(dist, coastSmoothD);
+		if (hasCoastEdge && nearestBorderTarget === 0 && coastWeightSum > 0) {
+			const smoothD = -Math.log(coastWeightSum / coastN) * coastK;
+			dist = Math.min(dist, smoothD);
 		}
 		const t01 = Math.min(dist / hexRadius, 1);
 		const mu = (1 - Math.cos(t01 * Math.PI)) / 2;
