@@ -36,6 +36,7 @@ import { generateIcoHexGrid, type HexCell } from '$lib/engine/icosphere';
 import { buildGlobeMesh, buildHexEdgeLines, updateCellTerrain } from '$lib/engine/globe-mesh';
 import { assignCellsToChunks, isChunkVisible } from '$lib/engine/globe-chunks';
 import { initGpuDisplacement, type GpuDisplacementResources } from '$lib/engine/gpu-displacement';
+import { applyDisplacementSettings } from '$lib/engine/gpu-displacement/displacement-shader';
 import { canonicalizeCells } from '$lib/engine/gpu-displacement/hex-corners-tex';
 import { diagnoseGpuDisplacement, dumpSeamPair, dumpAtUnitDir, dumpHAtUnitDir, findRenderedMeshGaps, findLandUnderwaterVertices, landHHistogram, findVisibleCracks, findOverhangTriangles, findWedgeGaps, type DiagnoseResult } from '$lib/engine/gpu-displacement/debug';
 import { createTerrainMaterial, applyTerrainSettings } from '$lib/engine/terrain-material';
@@ -429,6 +430,7 @@ export async function createGlobeEngine(
 
 		setTerrainSettings(settings: TerrainSettings) {
 			applyTerrainSettings(terrainMat, settings);
+			if (gpuResources) applyDisplacementSettings(gpuResources.material, settings);
 		},
 
 		setDebugMode(enabled: boolean) {
