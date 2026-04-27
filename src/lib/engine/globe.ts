@@ -37,7 +37,7 @@ import { buildGlobeMesh, buildHexEdgeLines, updateCellTerrain } from '$lib/engin
 import { assignCellsToChunks, isChunkVisible } from '$lib/engine/globe-chunks';
 import { initGpuDisplacement, type GpuDisplacementResources } from '$lib/engine/gpu-displacement';
 import { canonicalizeCells } from '$lib/engine/gpu-displacement/hex-corners-tex';
-import { diagnoseGpuDisplacement, dumpSeamPair, dumpAtUnitDir, dumpHAtUnitDir, findRenderedMeshGaps, findLandUnderwaterVertices, landHHistogram, findVisibleCracks, findOverhangTriangles, type DiagnoseResult } from '$lib/engine/gpu-displacement/debug';
+import { diagnoseGpuDisplacement, dumpSeamPair, dumpAtUnitDir, dumpHAtUnitDir, findRenderedMeshGaps, findLandUnderwaterVertices, landHHistogram, findVisibleCracks, findOverhangTriangles, findWedgeGaps, type DiagnoseResult } from '$lib/engine/gpu-displacement/debug';
 import { createTerrainMaterial, applyTerrainSettings } from '$lib/engine/terrain-material';
 import { createHexDebugMaterial } from '$lib/engine/hex-debug-material';
 import { createWaterMaterial } from '$lib/engine/water-material';
@@ -92,6 +92,10 @@ export interface GlobeEngine {
 	findOverhangs(): Promise<unknown>;
 	/** Toggle backface culling on the GPU displacement material at runtime. */
 	setBackfaceCulling(enabled: boolean): void;
+	/** Walk around every canonical corner and verify the cells touching
+	 *  it tile a full 360° wedge. If the chain doesn't close, there's
+	 *  a topological gap — pixels in that wedge have no triangle. */
+	findWedgeGaps(): unknown;
 	/** Dump tier, corners, neighbors, and shared corners for a list of cells. */
 	dumpCells(...ids: number[]): void;
 	/** Find vertices on land hexes (tier ≥ 2) where the computed h
@@ -525,6 +529,13 @@ export async function createGlobeEngine(
 			if (gpuResources) {
 				gpuResources.material.backFaceCulling = enabled;
 			}
+		},
+
+		findWedgeGaps() {
+			canonicalizeCells(cells);
+			const r = findWedgeGaps(cells);
+			r.print();
+			return r;
 		},
 
 		async findCracks(thresholdM = 100, bucketSize = 5e-4) {

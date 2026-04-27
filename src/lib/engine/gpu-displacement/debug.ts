@@ -753,6 +753,137 @@ export function landHHistogram(
 	for (const [k, v] of [...tier2Buckets.entries()].sort()) console.log(`  ${k}: ${v}`);
 }
 
+/** Topological wedge-gap detector.
+ *
+ *  For every canonical corner C (a Vector3 ref shared by ≥2 cells after
+ *  canonicalize), find all cells whose `corners` contain C. Each such
+ *  cell has exactly two edges meeting at C — they cover an angular
+ *  wedge from one neighbor-across-edge direction to the other.
+ *
+ *  If the cells' wedges don't tile the full 360° around C, there's a
+ *  topological gap: some angular region around C has NO cell covering
+ *  it. Visible result on screen: missing geometry / planet shows
+ *  through. Backface culling has nothing to do with it — there's
+ *  literally no triangle there.
+ *
+ *  Reports each corner with:
+ *    - cells touching it
+ *    - the chain of cells walking around C (start cell → next cell via
+ *      shared edge → next cell, etc.)
+ *    - whether the chain closes back to start
+ *    - if not, the gap location (which two cells are not connected at C). */
+export interface WedgeGap {
+	corner: [number, number, number];
+	cellsAtCorner: number[];
+	chain: number[]; // sequence walked starting from first cell
+	closed: boolean;
+	missingFromCells: number[]; // cells at corner that the chain didn't visit
+}
+export function findWedgeGaps(
+	cells: HexCell[],
+	topK = 30,
+): { count: number; gaps: WedgeGap[]; print: () => void } {
+	const cellById = new Map<number, HexCell>();
+	for (const c of cells) cellById.set(c.id, c);
+
+	// Build: corner Vector3 ref → list of cells touching it.
+	const cellsAtCorner = new Map<Vector3, HexCell[]>();
+	for (const c of cells) {
+		for (const corner of c.corners) {
+			let list = cellsAtCorner.get(corner);
+			if (!list) { list = []; cellsAtCorner.set(corner, list); }
+			list.push(c);
+		}
+	}
+
+	const gaps: WedgeGap[] = [];
+	for (const [corner, list] of cellsAtCorner) {
+		if (list.length < 2) {
+			// Single-cell corner — only valid at the planet boundary, which
+			// shouldn't exist on a closed sphere. Flag it.
+			gaps.push({
+				corner: [corner.x, corner.y, corner.z],
+				cellsAtCorner: list.map(c => c.id),
+				chain: list.map(c => c.id),
+				closed: false,
+				missingFromCells: [],
+			});
+			continue;
+		}
+
+		// Skip midpoint corners: when 2 cells share 3+ consecutive corners
+		// (multi-edge shared boundary), an interior corner has both edges
+		// of each cell going to the same neighbor. These cover 360°
+		// between just 2 cells; not a topology gap.
+		if (list.length === 2) {
+			const A = list[0], B = list[1];
+			const idxA = A.corners.indexOf(corner);
+			const nA = A.corners.length;
+			const nbA1 = findNeighborByCorners(A, (idxA - 1 + nA) % nA, cellById);
+			const nbA2 = findNeighborByCorners(A, idxA, cellById);
+			if (nbA1 && nbA2 && nbA1.id === B.id && nbA2.id === B.id) {
+				continue; // midpoint, not a gap
+			}
+		}
+
+		// Walk: start at list[0]. From it, find the two edges meeting at
+		// `corner`. Each edge has a neighbor cell. Pick one neighbor →
+		// repeat. Build chain. If chain closes back to start with all cells
+		// visited, the wedge tiles fully. Otherwise gap.
+		const startCell = list[0];
+		const visited = new Set<number>([startCell.id]);
+		const chain: number[] = [startCell.id];
+
+		let currCell = startCell;
+		let prevCell: HexCell | null = null;
+		let safety = 0;
+		const maxIters = list.length + 5;
+		let closed = false;
+		while (safety++ < maxIters) {
+			// Find the corner-index of `corner` in currCell.
+			const idx = currCell.corners.indexOf(corner);
+			if (idx < 0) break;
+			const n = currCell.corners.length;
+			// The two edges meeting at corner are (idx-1, idx) and (idx, idx+1).
+			// Each edge's neighbor:
+			const nbA = findNeighborByCorners(currCell, (idx - 1 + n) % n, cellById); // edge ending at corner
+			const nbB = findNeighborByCorners(currCell, idx, cellById); // edge starting at corner
+			// Pick the neighbor that ISN'T prevCell.
+			let next: HexCell | null = null;
+			if (nbA && (!prevCell || nbA.id !== prevCell.id)) next = nbA;
+			else if (nbB && (!prevCell || nbB.id !== prevCell.id)) next = nbB;
+			if (!next) break;
+			if (next.id === startCell.id) { closed = true; break; }
+			if (visited.has(next.id)) break;
+			visited.add(next.id);
+			chain.push(next.id);
+			prevCell = currCell;
+			currCell = next;
+		}
+
+		if (!closed || visited.size !== list.length) {
+			gaps.push({
+				corner: [corner.x, corner.y, corner.z],
+				cellsAtCorner: list.map(c => c.id),
+				chain,
+				closed,
+				missingFromCells: list.map(c => c.id).filter(id => !visited.has(id)),
+			});
+		}
+	}
+
+	return {
+		count: gaps.length,
+		gaps,
+		print() {
+			console.log(`[wedge-gap] ${gaps.length} corners with topology gaps (out of ${cellsAtCorner.size} canonical corners)`);
+			for (const g of gaps.slice(0, topK)) {
+				console.log(`  corner (${g.corner.map(x => x.toFixed(5)).join(', ')}): cells=[${g.cellsAtCorner.join(',')}] chain=[${g.chain.join('→')}] closed=${g.closed} missing=[${g.missingFromCells.join(',')}]`);
+			}
+		},
+	};
+}
+
 /** Walk every triangle in every flat chunk, compute the displaced
  *  world positions of its 3 vertices, and check whether the triangle
  *  has flipped — its face normal points INWARD (toward planet center)
