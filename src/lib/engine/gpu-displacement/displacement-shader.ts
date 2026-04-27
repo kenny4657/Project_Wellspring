@@ -637,20 +637,21 @@ vec3 computeTerrainColor(int id, float heightAboveR, float tierH, float scratchy
 }
 
 void main() {
-    // Per-vertex analytic smooth normal everywhere — Gouraud-style
-    // shading across triangle boundaries. Previously we blended toward
-    // the dFdx/dFdy face normal where the two disagreed (intended to
-    // keep cliffs sharp), but that fired on every gap=1 tier boundary
-    // because the analytic normal doesn't include cliff erosion. Result:
-    // dark hex-outline shadows along every cross-tier hex boundary.
-    // Cliff faces still read sharp because the rock-color/slab/steepness
-    // logic doesn't depend on the geometric normal — only the LIGHTING
-    // becomes smooth, which is what we want.
-    // For face normal still useful: the steepness check uses dFdx/dFdy.
-    vec3 N = normalize(vSmoothNormal);
+    // Per-vertex analytic smooth normal (interpolated by rasterizer)
+    // gives Gouraud-style smooth shading across triangles instead of
+    // the faceted look that dFdx/dFdy face normals produce. The
+    // analytic normal ignores cliff erosion (simplified — see vertex
+    // shader); for cliff faces we blend in the face normal so steep
+    // drops still read correctly.
+    vec3 N_smooth = normalize(vSmoothNormal);
     vec3 dx = dFdx(vWorldPos);
     vec3 dy = dFdy(vWorldPos);
     vec3 N_face = normalize(cross(dy, dx));
+    // Blend toward face normal where the smooth and face normals
+    // disagree strongly (i.e. cliffs and other sharp transitions).
+    float disagreement = 1.0 - max(0.0, dot(N_smooth, N_face));
+    float blend = smoothstep(0.05, 0.30, disagreement);
+    vec3 N = normalize(mix(N_smooth, N_face, blend));
 
     int terrainId = clamp(vTerrainId, 0, 9);
     float tierHKm = vTierH * planetRadius;     // unit-sphere → world km
@@ -689,11 +690,7 @@ void main() {
     // Surface steepness from displaced geometry — cliff faces have steep
     // gradients; flat tops do not. Used to gate both the cliff face render
     // and the cliff-foot sand mix.
-    // Steepness from the FACE normal — the analytic smooth normal
-    // ignores cliff erosion, so it doesn't see the cliff drop. Face
-    // normal correctly reflects the geometric slope and is what gates
-    // the cliff rock rendering.
-    float steepness = 1.0 - dot(N_face, normalize(vWorldPos));
+    float steepness = 1.0 - dot(N, normalize(vWorldPos));
 
     // Beach color (sand) — used by both cliff foot blend and beach overlay
     vec3 beachColor = vec3(0.68, 0.60, 0.42) * (1.0 + scratchy * 0.10);
