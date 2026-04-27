@@ -285,7 +285,10 @@ void walkCliffEdges(
         midWeightSum += w;
         midWeightedH += w * midH;
         if (mu < bestMu) bestMu = mu;
-        if (rock && mu < rockMu) rockMu = mu;
+        // Rocky cliff coloring only for STEEP cliffs (gap≥2 land or water
+        // vs tall land). Gentle 1-tier land slopes still smooth-ramp via
+        // the height-blend above but render with terrain color, not rock.
+        if (steep && rock && mu < rockMu) rockMu = mu;
     }
 }
 

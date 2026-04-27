@@ -169,7 +169,7 @@ function walkCliffEdges(
 		state.midWeightSum += w;
 		state.midWeightedH += w * midH;
 		if (mu < state.bestMu) state.bestMu = mu;
-		if (rock && mu < state.rockMu) state.rockMu = mu;
+		if (steep && rock && mu < state.rockMu) state.rockMu = mu;
 	}
 }
 
