@@ -69,6 +69,7 @@ flat out int vHeightLevel;
 flat out int vNeighborTerrainId;
 out float vNearestEdgeDist;
 out float vCoastDist;
+out vec3 vSmoothNormal;
 
 float levelHeight(int level) {
     if (level <= 0) return levelHeights.x;
@@ -443,6 +444,33 @@ void main() {
         }
     }
 
+    // Analytic normal via finite differences. We sample the noise-driven
+    // height function at two tangent offsets and derive the surface
+    // normal from the displaced positions. SIMPLIFIED: ignores cliff
+    // erosion in the offset samples — for non-cliff areas this matches
+    // the real gradient, which is what controls the smoothness the user
+    // wants. At cliff faces, the cliff erosion still drives the actual
+    // displacement, so the geometry is correct; the normal is slightly
+    // softer than a true analytic normal would be, which is fine because
+    // cliff fragments get the slab-textured rock color anyway.
+    vec3 up = abs(unitDir.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 t1 = normalize(cross(unitDir, up));
+    vec3 t2 = cross(unitDir, t1);
+    float eps = 0.001;
+    vec3 dir1 = normalize(unitDir + t1 * eps);
+    vec3 dir2 = normalize(unitDir + t2 * eps);
+    float n1 = textureLod(noiseCubemap, dir1, 0.0).r;
+    float n2 = textureLod(noiseCubemap, dir2, 0.0).r;
+    float interiorNoise1 = isWaterHex ? abs(n1) : (n1 + 0.3);
+    float interiorNoise2 = isWaterHex ? abs(n2) : (n2 + 0.3);
+    float h1 = selfTierH + interiorNoise1 * noiseAmp;
+    float h2 = selfTierH + interiorNoise2 * noiseAmp;
+    vec3 p0 = unitDir * (1.0 + h);
+    vec3 p1 = dir1 * (1.0 + h1);
+    vec3 p2 = dir2 * (1.0 + h2);
+    vec3 nLocal = normalize(cross(p1 - p0, p2 - p0));
+    vSmoothNormal = normalize(mat3(world) * nLocal);
+
     vec3 worldPos = unitDir * (planetRadius * (1.0 + h));
     vec4 wp = world * vec4(worldPos, 1.0);
     vWorldPos = wp.xyz;
@@ -472,6 +500,7 @@ flat in int vHeightLevel;
 flat in int vNeighborTerrainId;
 in float vNearestEdgeDist;
 in float vCoastDist;
+in vec3 vSmoothNormal;
 
 uniform vec3 sunDir;
 uniform vec3 fillDir;
@@ -608,9 +637,21 @@ vec3 computeTerrainColor(int id, float heightAboveR, float tierH, float scratchy
 }
 
 void main() {
+    // Per-vertex analytic smooth normal (interpolated by rasterizer)
+    // gives Gouraud-style smooth shading across triangles instead of
+    // the faceted look that dFdx/dFdy face normals produce. The
+    // analytic normal ignores cliff erosion (simplified — see vertex
+    // shader); for cliff faces we blend in the face normal so steep
+    // drops still read correctly.
+    vec3 N_smooth = normalize(vSmoothNormal);
     vec3 dx = dFdx(vWorldPos);
     vec3 dy = dFdy(vWorldPos);
-    vec3 N = normalize(cross(dy, dx));
+    vec3 N_face = normalize(cross(dy, dx));
+    // Blend toward face normal where the smooth and face normals
+    // disagree strongly (i.e. cliffs and other sharp transitions).
+    float disagreement = 1.0 - max(0.0, dot(N_smooth, N_face));
+    float blend = smoothstep(0.05, 0.30, disagreement);
+    vec3 N = normalize(mix(N_smooth, N_face, blend));
 
     int terrainId = clamp(vTerrainId, 0, 9);
     float tierHKm = vTierH * planetRadius;     // unit-sphere → world km
