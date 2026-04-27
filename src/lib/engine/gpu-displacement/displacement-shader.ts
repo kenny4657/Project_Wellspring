@@ -270,7 +270,7 @@ void walkCliffEdges(
 // Water-step erosion — same shape as walkCliffEdges (cosine ramp,
 // weighted-avg midH for cell-symmetry) but for water-water cross-tier
 // edges (tier-0 ↔ tier-1). Separate from cliff erosion because the
-// fragment shader paints `vCliffMu > 0.5` brown — sharing the cliff
+// fragment shader paints vCliffMu > 0.5 brown — sharing the cliff
 // accumulators would draw underwater steps as land cliffs.
 void walkWaterStepEdges(
     vec3 unitDir,
