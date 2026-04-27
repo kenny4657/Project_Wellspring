@@ -455,7 +455,8 @@ function simulateShaderHeight(
 	}
 
 	if (state.bestMu < 1) {
-		h = state.bestMidH * (1 - state.bestMu) + hBase * state.bestMu;
+		const clamped = Math.max(0, (state.bestMu - 0.05) / 0.95);
+		h = state.bestMidH * (1 - clamped) + hBase * clamped;
 	}
 
 	// Land hex: floor above water sphere — see shader for rationale.
@@ -493,6 +494,39 @@ export interface DiagnoseResult {
 	maxCpuVsSim: number;
 	maxSeam: number;
 	print: () => void;
+}
+
+/** Compute and print final h for each given cell at a unit direction.
+ *  Useful when debugging multi-cell corners (3+ cells meeting). */
+export function dumpHAtUnitDir(
+	cells: HexCell[], cellIds: number[],
+	ux: number, uy: number, uz: number,
+	planetRadius = 6371,
+): void {
+	const cellById = new Map<number, HexCell>();
+	for (const c of cells) cellById.set(c.id, c);
+	const u = new Vector3(ux, uy, uz);
+	console.log(`[dumpH] at (${ux.toFixed(6)}, ${uy.toFixed(6)}, ${uz.toFixed(6)}):`);
+	const results: { id: number; h: number; tier: number; bestMu: number; bestMidH: number; target: number }[] = [];
+	for (const id of cellIds) {
+		const c = cellById.get(id);
+		if (!c) { console.log(`  cell ${id}: NOT FOUND`); continue; }
+		const sim = simulateShaderHeight(u, c, cellById);
+		results.push({ id, h: sim.h, tier: c.heightLevel, bestMu: sim.bestMu, bestMidH: sim.bestMidH, target: sim.borderTarget });
+	}
+	for (const r of results) {
+		console.log(`  cell ${r.id} tier ${r.tier}: h=${r.h.toFixed(6)} bestMu=${r.bestMu.toFixed(3)} bestMidH=${r.bestMidH.toFixed(6)} target=${r.target.toFixed(4)}`);
+	}
+	if (results.length >= 2) {
+		let maxDiff = 0;
+		for (let i = 0; i < results.length; i++) {
+			for (let j = i + 1; j < results.length; j++) {
+				const d = Math.abs(results[i].h - results[j].h);
+				if (d > maxDiff) maxDiff = d;
+			}
+		}
+		console.log(`  max h-diff = ${maxDiff.toFixed(6)} (${(maxDiff * planetRadius * 1000).toFixed(0)}m world)`);
+	}
 }
 
 /** Dump verbose sim for both cells at a specific unit direction.

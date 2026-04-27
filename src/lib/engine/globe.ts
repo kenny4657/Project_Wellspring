@@ -37,7 +37,7 @@ import { buildGlobeMesh, buildHexEdgeLines, updateCellTerrain } from '$lib/engin
 import { assignCellsToChunks, isChunkVisible } from '$lib/engine/globe-chunks';
 import { initGpuDisplacement, type GpuDisplacementResources } from '$lib/engine/gpu-displacement';
 import { canonicalizeCells } from '$lib/engine/gpu-displacement/hex-corners-tex';
-import { diagnoseGpuDisplacement, dumpSeamPair, dumpAtUnitDir, findRenderedMeshGaps, findLandUnderwaterVertices, landHHistogram, findVisibleCracks, type DiagnoseResult } from '$lib/engine/gpu-displacement/debug';
+import { diagnoseGpuDisplacement, dumpSeamPair, dumpAtUnitDir, dumpHAtUnitDir, findRenderedMeshGaps, findLandUnderwaterVertices, landHHistogram, findVisibleCracks, type DiagnoseResult } from '$lib/engine/gpu-displacement/debug';
 import { createTerrainMaterial, applyTerrainSettings } from '$lib/engine/terrain-material';
 import { createHexDebugMaterial } from '$lib/engine/hex-debug-material';
 import { createWaterMaterial } from '$lib/engine/water-material';
@@ -75,6 +75,8 @@ export interface GlobeEngine {
 	dumpSeam(cellAId: number, cellBId: number): void;
 	/** Verbose dump of two cells at a specific unit direction. */
 	dumpAt(cellAId: number, cellBId: number, ux: number, uy: number, uz: number): void;
+	/** Compute and print final h for each given cell at a unit-direction. */
+	dumpH(cellIds: number[], ux: number, uy: number, uz: number): void;
 	/** Find and print the actual rendered-mesh gaps. Iterates every
 	 *  vertex of every flat chunk, computes its sim height (matches
 	 *  shader output), groups coincident vertices by canonical
@@ -84,6 +86,8 @@ export interface GlobeEngine {
 	 *  multi-cell cluster, report the max world-displaced position drift.
 	 *  This catches actual visible cracks regardless of h-equality. */
 	findCracks(thresholdM?: number, bucketSize?: number): Promise<unknown>;
+	/** Dump tier, corners, neighbors, and shared corners for a list of cells. */
+	dumpCells(...ids: number[]): void;
 	/** Find vertices on land hexes (tier ≥ 2) where the computed h
 	 *  dips below the water-sphere height — explains the water-clipping
 	 *  pattern visible through green/brown surface. */
@@ -445,6 +449,11 @@ export async function createGlobeEngine(
 			dumpAtUnitDir(cells, cellAId, cellBId, ux, uy, uz);
 		},
 
+		dumpH(cellIds: number[], ux: number, uy: number, uz: number) {
+			canonicalizeCells(cells);
+			dumpHAtUnitDir(cells, cellIds, ux, uy, uz, EARTH_RADIUS_KM);
+		},
+
 		async findRenderedGaps() {
 			canonicalizeCells(cells);
 			if (!gpuResources) {
@@ -469,6 +478,31 @@ export async function createGlobeEngine(
 				gpuResources = await initGpuDisplacement(cells, chunkAssignment, scene, EARTH_RADIUS_KM);
 			}
 			landHHistogram(cells, gpuResources.flatChunks);
+		},
+
+		dumpCells(...ids: number[]) {
+			canonicalizeCells(cells);
+			const cellById = new Map<number, HexCell>();
+			for (const c of cells) cellById.set(c.id, c);
+			for (const id of ids) {
+				const c = cellById.get(id);
+				if (!c) { console.log(`cell ${id}: NOT FOUND`); continue; }
+				console.log(`cell ${id} tier=${c.heightLevel} corners=${c.corners.length} neighbors=[${[...c.neighbors].sort((a, b) => a - b).join(',')}]`);
+				for (let i = 0; i < c.corners.length; i++) {
+					const cn = c.corners[i];
+					console.log(`  corner ${i}: (${cn.x.toFixed(6)}, ${cn.y.toFixed(6)}, ${cn.z.toFixed(6)})`);
+				}
+			}
+			for (let i = 0; i < ids.length; i++) {
+				for (let j = i + 1; j < ids.length; j++) {
+					const a = cellById.get(ids[i]);
+					const b = cellById.get(ids[j]);
+					if (!a || !b) continue;
+					const shared = a.corners.filter(cn => b.corners.includes(cn));
+					console.log(`shared corners ${ids[i]}↔${ids[j]}: ${shared.length}`);
+					for (const cn of shared) console.log(`  (${cn.x.toFixed(6)}, ${cn.y.toFixed(6)}, ${cn.z.toFixed(6)})`);
+				}
+			}
 		},
 
 		async findCracks(thresholdM = 100, bucketSize = 5e-4) {

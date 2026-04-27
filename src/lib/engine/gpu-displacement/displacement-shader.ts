@@ -365,7 +365,18 @@ void main() {
     }
 
     if (bestMu < 1.0) {
-        h = bestMidH * (1.0 - bestMu) + h * bestMu;
+        // Float-precision leak fix: at exact cliff-edge mesh vertices,
+        // dist isn't exactly 0 due to fp rounding (input position vs
+        // canonical corner). That leaves bestMu slightly > 0 (e.g.
+        // 0.008-0.023 on steep cliffs), and the blend leaks
+        // (h_base_A - h_base_B) * bestMu of own-tier difference between
+        // the two cliff-adjacent cells — visible as h-mismatch at the
+        // shared edge midpoint. Clamping bestMu in (0, 0.05] to 0
+        // forces the cliff face to bestMidH at the edge (symmetric
+        // across both cells). Verified against engine.dumpH() at
+        // 8614↔8615 and 8614↔8654 cliff edge midpoints.
+        float clamped = max(0.0, (bestMu - 0.05) / 0.95);
+        h = bestMidH * (1.0 - clamped) + h * clamped;
     }
 
     vec3 worldPos = unitDir * (planetRadius * (1.0 + h));
