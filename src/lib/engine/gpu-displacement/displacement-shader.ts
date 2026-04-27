@@ -453,19 +453,22 @@ float snoise(vec3 v) {
     return 42.0 * dot(m * m, vec4(dot(p0, x0), dot(p1, x1), dot(p2, x2), dot(p3, x3)));
 }
 
-// Scratchy texture: 2 octaves (vs 4 in terrain-material.ts) and a
-// single dominant-axis projection (vs full triplanar) — about a 6×
-// drop in per-fragment snoise calls, which was the GPU bottleneck.
+// Full 4-octave triplanar scratchy on land — same as terrain-material.ts.
+// Water fragments skip this entirely (gated at the call site).
 float scratchyPattern(vec2 uv) {
-    float n1 = snoise(vec3(uv * 18.0, 0.0)) * 0.5;
-    float n2 = snoise(vec3(uv * 70.0, 3.0)) * 0.25;
-    return n1 + n2;
+    float n1 = snoise(vec3(uv * 18.0, 0.0)) * 0.4;
+    float n2 = snoise(vec3(uv * 35.0, 1.5)) * 0.3;
+    float n3 = snoise(vec3(uv * 70.0, 3.0)) * 0.2;
+    float n4 = snoise(vec3(uv * 140.0, 5.0)) * 0.1;
+    return n1 + n2 + n3 + n4;
 }
-float dominantAxisScratchy(vec3 worldPos, vec3 normal, float scale) {
-    vec3 a = abs(normal);
-    if (a.x >= a.y && a.x >= a.z) return scratchyPattern(worldPos.yz * scale);
-    if (a.y >= a.z)               return scratchyPattern(worldPos.xz * scale);
-    return scratchyPattern(worldPos.xy * scale);
+float triplanarScratchy(vec3 worldPos, vec3 normal, float scale) {
+    vec3 blend = abs(normal);
+    blend = blend / (blend.x + blend.y + blend.z + 0.001);
+    float tx = scratchyPattern(worldPos.yz * scale);
+    float ty = scratchyPattern(worldPos.xz * scale);
+    float tz = scratchyPattern(worldPos.xy * scale);
+    return tx * blend.x + ty * blend.y + tz * blend.z;
 }
 
 // ── Per-terrain palette lookup + 4-band height blend ─────────
@@ -516,7 +519,7 @@ void main() {
     // grain and we already get specular highlights below. Halves the
     // fragment cost for the entire ocean.
     bool isWaterFrag = vHeightLevel <= 1;
-    float scratchy = isWaterFrag ? 0.0 : dominantAxisScratchy(vWorldPos, N, 0.004);
+    float scratchy = isWaterFrag ? 0.0 : triplanarScratchy(vWorldPos, N, 0.004);
 
     // Own terrain color, height-banded. Clamp height above the shore band
     // so shore color appears only on the actual shoreline (we don't have
