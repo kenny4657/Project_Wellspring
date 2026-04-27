@@ -208,7 +208,12 @@ float meanHexRadius(vec3 corners[12], int edgeCount) {
 }
 
 // Walk a hex's edges (up to 12) and apply cliff erosion for every cliff
-// edge to (bestMu, bestMidH). Used both for self and 1-hop neighbors.
+// edge. Each cliff contributes (midH, weight=exp(-mu/k)) to a running
+// weighted sum, plus updates min mu. Used both for self and 1-hop
+// neighbors. Symmetric accumulation closes 3-cell-corner gaps where
+// the old "pick the lowest-mu cliff" rule produced a different winner
+// per cell. midWeightSum/midWeightedH must be reduced to bestMidH after
+// all walks complete.
 void walkCliffEdges(
     vec3 unitDir,
     int selfH,
@@ -220,8 +225,10 @@ void walkCliffEdges(
     float midNoise,
     float selfTierH,
     inout float bestMu,
-    inout float bestMidH
+    inout float midWeightSum,
+    inout float midWeightedH
 ) {
+    float kernelK = 0.05;
     for (int i = 0; i < 12; i++) {
         if (i >= edgeCount) break;
         if (!isCliffEdge(selfH, neighborH[i])) continue;
@@ -251,11 +258,12 @@ void walkCliffEdges(
             float t = min(dist / rampWidth, 1.0);
             mu = (1.0 - cos(t * 3.14159265)) / 2.0;
         }
-        if (mu < bestMu) {
-            float midTier = (selfTierH + levelHeight(neighborH[i])) * 0.5;
-            bestMu = mu;
-            bestMidH = midTier + (abs(midNoise) + 0.15) * noiseAmp * 0.3;
-        }
+        float midTier = (selfTierH + levelHeight(neighborH[i])) * 0.5;
+        float midH = midTier + (abs(midNoise) + 0.15) * noiseAmp * 0.3;
+        float w = exp(-mu / kernelK);
+        midWeightSum += w;
+        midWeightedH += w * midH;
+        if (mu < bestMu) bestMu = mu;
     }
 }
 
@@ -379,9 +387,10 @@ void main() {
 
     // ── Cliff erosion: self ─────────────────────────────────
     float bestMu = 1.0;
-    float bestMidH = h;
+    float midWeightSum = 0.0;
+    float midWeightedH = 0.0;
     walkCliffEdges(unitDir, selfH, edgeCount, neighborH, corners,
-                   hexRadius, cliffNoise, midNoise, selfTierH, bestMu, bestMidH);
+                   hexRadius, cliffNoise, midNoise, selfTierH, bestMu, midWeightSum, midWeightedH);
 
     // ── Cliff erosion: 1-hop neighbors ──────────────────────
     // For EVERY edge of self, walk that neighbor's cliff edges using
@@ -407,11 +416,14 @@ void main() {
         float nbTierH = levelHeight(nbHL);
 
         walkCliffEdges(unitDir, nbHL, nbEdgeCount, nbNeighborH, nbCorners,
-                       nbHexRadius, cliffNoise, midNoise, nbTierH, bestMu, bestMidH);
+                       nbHexRadius, cliffNoise, midNoise, nbTierH, bestMu, midWeightSum, midWeightedH);
     }
 
-    if (bestMu < 1.0) {
-        // Float-precision leak fix — see commit b54b6c3 for full notes.
+    if (bestMu < 1.0 && midWeightSum > 0.0) {
+        // Weighted average over all visible cliffs — symmetric across
+        // cells that share the same cliff set (own + 1-hop). Floating-point
+        // bestMu clamp from b54b6c3 retained for the blend strength.
+        float bestMidH = midWeightedH / midWeightSum;
         float clamped = max(0.0, (bestMu - 0.05) / 0.95);
         h = bestMidH * (1.0 - clamped) + h * clamped;
     }

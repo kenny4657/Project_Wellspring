@@ -117,7 +117,7 @@ function smoothMin(a: number, b: number, k: number): number {
 
 // ── Cliff erosion walk (matches shader walkCliffEdges) ──────
 
-interface CliffWalkState { bestMu: number; bestMidH: number }
+interface CliffWalkState { bestMu: number; midWeightSum: number; midWeightedH: number }
 
 function walkCliffEdges(
 	unitDir: Vector3,
@@ -158,11 +158,12 @@ function walkCliffEdges(
 			const t = Math.min(dist / rampWidth, 1);
 			mu = (1 - Math.cos(t * Math.PI)) / 2;
 		}
-		if (mu < state.bestMu) {
-			const midTier = (selfTierH + getLevelHeight(neighborH[i])) * 0.5;
-			state.bestMu = mu;
-			state.bestMidH = midTier + (Math.abs(midNoise) + 0.15) * NOISE_AMP * 0.3;
-		}
+		const midTier = (selfTierH + getLevelHeight(neighborH[i])) * 0.5;
+		const midH = midTier + (Math.abs(midNoise) + 0.15) * NOISE_AMP * 0.3;
+		const w = Math.exp(-mu / 0.05);
+		state.midWeightSum += w;
+		state.midWeightedH += w * midH;
+		if (mu < state.bestMu) state.bestMu = mu;
 	}
 }
 
@@ -329,6 +330,7 @@ function simulateShaderHeight(
 			return {
 				h: ch, hasBorder: false, borderTarget: 0,
 				bestMu: 0, bestMidH: ch, hBase: ch,
+				// (corner-snap shortcut returns; bestMidH preserved for callers)
 			};
 		}
 	}
@@ -456,7 +458,7 @@ function simulateShaderHeight(
 	}
 	const hBase = h;
 
-	const state: CliffWalkState = { bestMu: 1, bestMidH: h };
+	const state: CliffWalkState = { bestMu: 1, midWeightSum: 0, midWeightedH: 0 };
 	walkCliffEdges(unitDir, selfH, self.corners, self.neighborH, hexRadius,
 		cliffNoise, midNoise, selfTierH, state);
 
@@ -470,9 +472,11 @@ function simulateShaderHeight(
 			nbHexRadius, cliffNoise, midNoise, nbTierH, state);
 	}
 
-	if (state.bestMu < 1) {
+	let bestMidH = hBase;
+	if (state.bestMu < 1 && state.midWeightSum > 0) {
+		bestMidH = state.midWeightedH / state.midWeightSum;
 		const clamped = Math.max(0, (state.bestMu - 0.05) / 0.95);
-		h = state.bestMidH * (1 - clamped) + hBase * clamped;
+		h = bestMidH * (1 - clamped) + hBase * clamped;
 	}
 
 	// Water-step pass first, then coast pass — see shader for ordering rationale.
@@ -496,7 +500,7 @@ function simulateShaderHeight(
 		hasBorder,
 		borderTarget: nearestBorderTarget,
 		bestMu: state.bestMu,
-		bestMidH: state.bestMidH,
+		bestMidH,
 		hBase,
 	};
 }
