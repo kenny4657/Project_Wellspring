@@ -453,21 +453,34 @@ void main() {
     // displacement, so the geometry is correct; the normal is slightly
     // softer than a true analytic normal would be, which is fine because
     // cliff fragments get the slab-textured rock color anyway.
+    // Analytic smooth normal — for SHADING only, not lit geometry.
+    // Uses a uniform tier-and-water-AGNOSTIC height function so adjacent
+    // cells at any shared boundary compute the SAME smooth normal:
+    //   h_for_normal = (rawNoise + 0.3) * noiseAmp
+    // Without this, two cells of different tiers (or land vs water) at
+    // their shared edge produced different smooth normals → visible
+    // dark hex outlines along every cross-tier boundary. With this,
+    // both cells see the same noise-gradient surface, so the rasterizer
+    // gets matching normals on adjacent triangles → smooth shading.
+    // The smooth normal is approximate (ignores tier offsets and cliff
+    // erosion) but cliff/coast visual sharpness is driven by rock color
+    // + slab textures + steepness-from-face-normal in the fragment shader,
+    // not by the lit normal.
     vec3 up = abs(unitDir.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
     vec3 t1 = normalize(cross(unitDir, up));
     vec3 t2 = cross(unitDir, t1);
     float eps = 0.001;
     vec3 dir1 = normalize(unitDir + t1 * eps);
     vec3 dir2 = normalize(unitDir + t2 * eps);
-    float n1 = textureLod(noiseCubemap, dir1, 0.0).r;
-    float n2 = textureLod(noiseCubemap, dir2, 0.0).r;
-    float interiorNoise1 = isWaterHex ? abs(n1) : (n1 + 0.3);
-    float interiorNoise2 = isWaterHex ? abs(n2) : (n2 + 0.3);
-    float h1 = selfTierH + interiorNoise1 * noiseAmp;
-    float h2 = selfTierH + interiorNoise2 * noiseAmp;
-    vec3 p0 = unitDir * (1.0 + h);
-    vec3 p1 = dir1 * (1.0 + h1);
-    vec3 p2 = dir2 * (1.0 + h2);
+    float n0_normal = rawNoise;
+    float n1_normal = textureLod(noiseCubemap, dir1, 0.0).r;
+    float n2_normal = textureLod(noiseCubemap, dir2, 0.0).r;
+    float h0_normal = (n0_normal + 0.3) * noiseAmp;
+    float h1_normal = (n1_normal + 0.3) * noiseAmp;
+    float h2_normal = (n2_normal + 0.3) * noiseAmp;
+    vec3 p0 = unitDir * (1.0 + h0_normal);
+    vec3 p1 = dir1 * (1.0 + h1_normal);
+    vec3 p2 = dir2 * (1.0 + h2_normal);
     vec3 nLocal = normalize(cross(p1 - p0, p2 - p0));
     vSmoothNormal = normalize(mat3(world) * nLocal);
 
