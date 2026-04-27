@@ -37,7 +37,7 @@ import { buildGlobeMesh, buildHexEdgeLines, updateCellTerrain } from '$lib/engin
 import { assignCellsToChunks, isChunkVisible } from '$lib/engine/globe-chunks';
 import { initGpuDisplacement, type GpuDisplacementResources } from '$lib/engine/gpu-displacement';
 import { canonicalizeCells } from '$lib/engine/gpu-displacement/hex-corners-tex';
-import { diagnoseGpuDisplacement, dumpSeamPair, dumpAtUnitDir, dumpHAtUnitDir, findRenderedMeshGaps, findLandUnderwaterVertices, landHHistogram, findVisibleCracks, type DiagnoseResult } from '$lib/engine/gpu-displacement/debug';
+import { diagnoseGpuDisplacement, dumpSeamPair, dumpAtUnitDir, dumpHAtUnitDir, findRenderedMeshGaps, findLandUnderwaterVertices, landHHistogram, findVisibleCracks, findOverhangTriangles, type DiagnoseResult } from '$lib/engine/gpu-displacement/debug';
 import { createTerrainMaterial, applyTerrainSettings } from '$lib/engine/terrain-material';
 import { createHexDebugMaterial } from '$lib/engine/hex-debug-material';
 import { createWaterMaterial } from '$lib/engine/water-material';
@@ -86,6 +86,12 @@ export interface GlobeEngine {
 	 *  multi-cell cluster, report the max world-displaced position drift.
 	 *  This catches actual visible cracks regardless of h-equality. */
 	findCracks(thresholdM?: number, bucketSize?: number): Promise<unknown>;
+	/** Walk every rendered triangle, compute post-displacement world
+	 *  positions, and report ones whose face normal flipped inward
+	 *  (overhangs — cliff steeper than vertical, dropped by backface culling). */
+	findOverhangs(): Promise<unknown>;
+	/** Toggle backface culling on the GPU displacement material at runtime. */
+	setBackfaceCulling(enabled: boolean): void;
 	/** Dump tier, corners, neighbors, and shared corners for a list of cells. */
 	dumpCells(...ids: number[]): void;
 	/** Find vertices on land hexes (tier ≥ 2) where the computed h
@@ -502,6 +508,22 @@ export async function createGlobeEngine(
 					console.log(`shared corners ${ids[i]}↔${ids[j]}: ${shared.length}`);
 					for (const cn of shared) console.log(`  (${cn.x.toFixed(6)}, ${cn.y.toFixed(6)}, ${cn.z.toFixed(6)})`);
 				}
+			}
+		},
+
+		async findOverhangs() {
+			canonicalizeCells(cells);
+			if (!gpuResources) {
+				gpuResources = await initGpuDisplacement(cells, chunkAssignment, scene, EARTH_RADIUS_KM);
+			}
+			const r = findOverhangTriangles(cells, gpuResources.flatChunks, EARTH_RADIUS_KM);
+			r.print();
+			return r;
+		},
+
+		setBackfaceCulling(enabled: boolean) {
+			if (gpuResources) {
+				gpuResources.material.backFaceCulling = enabled;
 			}
 		},
 

@@ -753,6 +753,98 @@ export function landHHistogram(
 	for (const [k, v] of [...tier2Buckets.entries()].sort()) console.log(`  ${k}: ${v}`);
 }
 
+/** Walk every triangle in every flat chunk, compute the displaced
+ *  world positions of its 3 vertices, and check whether the triangle
+ *  has flipped — its face normal points INWARD (toward planet center)
+ *  instead of outward. Flipped triangles are overhangs (cliff steeper
+ *  than vertical) and are dropped by backface culling. */
+export interface OverhangTri {
+	hexId: number;
+	tier: number;
+	centroid: [number, number, number];
+	dotRadial: number;
+	hValues: [number, number, number];
+}
+export function findOverhangTriangles(
+	cells: HexCell[],
+	flatChunks: { mesh: { getVerticesData: (kind: string) => number[] | Float32Array | null; getIndices?: () => unknown }; cellIds: number[] }[],
+	planetRadius: number,
+	topK = 30,
+): { count: number; samples: OverhangTri[]; tierCounts: Map<number, number>; totalTris: number; print: () => void } {
+	const cellById = new Map<number, HexCell>();
+	for (const c of cells) cellById.set(c.id, c);
+	const samples: OverhangTri[] = [];
+	const tierCounts = new Map<number, number>();
+	let totalTris = 0;
+	let count = 0;
+	for (const chunk of flatChunks) {
+		const positions = chunk.mesh.getVerticesData('position');
+		const hexIds = chunk.mesh.getVerticesData('hexId');
+		const indicesRaw = chunk.mesh.getIndices?.() as ArrayLike<number> | null;
+		if (!positions || !hexIds || !indicesRaw) continue;
+		for (let t = 0; t < indicesRaw.length; t += 3) {
+			const i0 = indicesRaw[t], i1 = indicesRaw[t + 1], i2 = indicesRaw[t + 2];
+			const ud0 = new Vector3(positions[i0 * 3], positions[i0 * 3 + 1], positions[i0 * 3 + 2]);
+			const ud1 = new Vector3(positions[i1 * 3], positions[i1 * 3 + 1], positions[i1 * 3 + 2]);
+			const ud2 = new Vector3(positions[i2 * 3], positions[i2 * 3 + 1], positions[i2 * 3 + 2]);
+			const id0 = Math.round(hexIds[i0]);
+			const id1 = Math.round(hexIds[i1]);
+			const id2 = Math.round(hexIds[i2]);
+			const c0 = cellById.get(id0);
+			const c1 = cellById.get(id1);
+			const c2 = cellById.get(id2);
+			if (!c0 || !c1 || !c2) continue;
+			totalTris++;
+			const h0 = simulateShaderHeight(ud0, c0, cellById).h;
+			const h1 = simulateShaderHeight(ud1, c1, cellById).h;
+			const h2 = simulateShaderHeight(ud2, c2, cellById).h;
+			const k0 = (1 + h0), k1 = (1 + h1), k2 = (1 + h2);
+			const w0x = ud0.x * k0, w0y = ud0.y * k0, w0z = ud0.z * k0;
+			const w1x = ud1.x * k1, w1y = ud1.y * k1, w1z = ud1.z * k1;
+			const w2x = ud2.x * k2, w2y = ud2.y * k2, w2z = ud2.z * k2;
+			const ax = w1x - w0x, ay = w1y - w0y, az = w1z - w0z;
+			const bx = w2x - w0x, by = w2y - w0y, bz = w2z - w0z;
+			const nx = ay * bz - az * by;
+			const ny = az * bx - ax * bz;
+			const nz = ax * by - ay * bx;
+			const cx = (w0x + w1x + w2x) / 3;
+			const cy = (w0y + w1y + w2y) / 3;
+			const cz = (w0z + w1z + w2z) / 3;
+			const cl = Math.sqrt(cx * cx + cy * cy + cz * cz) || 1;
+			// Flat mesh fan winds (center, c[i+1], c[i]) which is CW from
+			// outside, so default cross product points INWARD. Flip sign so
+			// dotRadial > 0 = normal triangle, < 0 = overhang/flipped.
+			const dot = -(nx * cx + ny * cy + nz * cz) / cl;
+			if (dot < 0) {
+				count++;
+				const t0 = c0.heightLevel;
+				tierCounts.set(t0, (tierCounts.get(t0) ?? 0) + 1);
+				samples.push({
+					hexId: id0,
+					tier: t0,
+					centroid: [cx / cl, cy / cl, cz / cl],
+					dotRadial: dot,
+					hValues: [h0, h1, h2],
+				});
+			}
+		}
+	}
+	samples.sort((a, b) => a.dotRadial - b.dotRadial);
+	return {
+		count, samples, tierCounts, totalTris,
+		print() {
+			console.log(`[overhang] ${count}/${totalTris} triangles flipped inward`);
+			for (const [t, n] of [...tierCounts.entries()].sort((a, b) => a[0] - b[0])) {
+				console.log(`  tier ${t}: ${n}`);
+			}
+			console.log(`[overhang] worst ${topK} (most-flipped first):`);
+			for (const s of samples.slice(0, topK)) {
+				console.log(`  cell ${s.hexId} (tier ${s.tier}) dot=${s.dotRadial.toExponential(2)} h=[${s.hValues.map(x => x.toFixed(5)).join(',')}]`);
+			}
+		},
+	};
+}
+
 /** ──────────────────────────────────────────────────────────
  *  findVisibleCracks: the diagnostic that catches what the user sees.
  *
