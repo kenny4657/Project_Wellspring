@@ -94,12 +94,19 @@ export function buildHexDataTextures(cells: HexCell[], scene: Scene): HexDataTex
 		//   R = heightLevel (0–4)
 		//   G = terrain     (0–14)
 		//   B = isPentagon flag in bit 0, edgeCount in bits 4..7
-		//   A = reserved
+		//   A = bit 0: hasCliffNbr (any cross-tier neighbor) — lets the
+		//        shader skip 1-hop fetches into neighbors that can't
+		//        contribute any cliff erosion.
 		dataBytes[off + 0] = c.heightLevel;
 		dataBytes[off + 1] = c.terrain;
 		const edgeCount = c.corners.length;
 		dataBytes[off + 2] = (c.isPentagon ? 1 : 0) | (edgeCount << 4);
-		dataBytes[off + 3] = 0;
+		let hasCliffNbr = 0;
+		for (let k = 0; k < edgeCount; k++) {
+			const nb = findNeighborByCorners(c, k, cellByIdMap);
+			if (nb && nb.heightLevel !== c.heightLevel) { hasCliffNbr = 1; break; }
+		}
+		dataBytes[off + 3] = hasCliffNbr;
 
 		// hexNeighborsTex layout — neighbor heightLevel PER EDGE,
 		// packed 4-bits each across 2 RGBA8 pixels (rows). Pixel 0:

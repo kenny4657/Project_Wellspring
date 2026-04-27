@@ -192,16 +192,18 @@ void readNeighbors(int id, out int nb[12]) {
     nb[11] = (n5 >> 4) & 0xf;
 }
 
-void readHexData(int id, out int heightLevel, out int edgeCount) {
+void readHexData(int id, out int heightLevel, out int edgeCount, out bool hasCliffNbr) {
     vec4 d = texelFetch(hexDataTex, hexCoord(id), 0);
     heightLevel = int(d.r * 255.0 + 0.5);
     int packed = int(d.b * 255.0 + 0.5);
     edgeCount = (packed >> 4) & 0xf;
     if (edgeCount < 5) edgeCount = 6;
+    hasCliffNbr = (int(d.a * 255.0 + 0.5) & 1) != 0;
 }
 
-void readCornersAndNeighborIds(int id, out vec3 corners[12], out int nbIds[12]) {
+void readCornersAndNeighborIds(int id, int edgeCount, out vec3 corners[12], out int nbIds[12]) {
     for (int i = 0; i < 12; i++) {
+        if (i >= edgeCount) break;
         vec4 v = readCornerPixel(id, i);
         corners[i] = v.rgb;
         nbIds[i] = int(v.a + 0.5);
@@ -283,12 +285,13 @@ void main() {
 
     // Self data
     int selfH, edgeCount;
-    readHexData(id, selfH, edgeCount);
+    bool selfHasCliffNbr;
+    readHexData(id, selfH, edgeCount, selfHasCliffNbr);
     int neighborH[12];
     readNeighbors(id, neighborH);
     vec3 corners[12];
     int nbIds[12];
-    readCornersAndNeighborIds(id, corners, nbIds);
+    readCornersAndNeighborIds(id, edgeCount, corners, nbIds);
 
     // Noise
     vec4 noiseRGBA = textureLod(noiseCubemap, unitDir, 0.0);
@@ -321,13 +324,21 @@ void main() {
         int nbId = nbIds[i];
         if (nbId < 0) continue;
 
+        // Cheap probe: just one texelFetch for the neighbor's hexData.
+        // If the neighbor has no cross-tier neighbors of its own, no
+        // cliff edges can come from it — skip the rest of the reads
+        // (saves ~14 texelFetches per skipped neighbor for the bulk
+        // of the planet that's deep-interior single-tier).
         int nbHL, nbEdgeCount;
-        readHexData(nbId, nbHL, nbEdgeCount);
+        bool nbHasCliffNbr;
+        readHexData(nbId, nbHL, nbEdgeCount, nbHasCliffNbr);
+        if (!nbHasCliffNbr) continue;
+
         int nbNeighborH[12];
         readNeighbors(nbId, nbNeighborH);
         vec3 nbCorners[12];
         int nbNbIds[12];
-        readCornersAndNeighborIds(nbId, nbCorners, nbNbIds);
+        readCornersAndNeighborIds(nbId, nbEdgeCount, nbCorners, nbNbIds);
         float nbHexRadius = meanHexRadius(nbCorners, nbEdgeCount);
         float nbTierH = levelHeight(nbHL);
 
