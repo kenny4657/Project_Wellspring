@@ -107,13 +107,23 @@ void distAndT(vec3 p, vec3 a, vec3 b, out float dist, out float t) {
 //           OR cliff (water+tall-land), so border smoothing
 //           doesn't pull the surface toward sea level there.
 bool isCliffEdge(int selfH, int nbH) {
+    // Any tier transition runs through cliff erosion's smooth-ramp logic.
+    // Includes land-shallow-water (coast) and shallow-deep-water (water step)
+    // — replaces the old coast and water-step special-case passes.
+    return selfH != nbH;
+}
+// "Rock" cliffs that should render with the brown cliff-face shader.
+// Smooth coast/water-step transitions use the same h-blend math but
+// don't qualify as rocky → fragment stays normal tier color.
+bool isRockCliff(int selfH, int nbH) {
     bool selfWater = selfH <= 1;
     bool nbWater = nbH <= 1;
     if (selfWater && nbWater) return false;
     int gap = int(abs(float(selfH - nbH)));
+    if (gap == 0) return false;
     if (selfWater && nbH <= 2) return false;
     if (nbWater && selfH <= 2) return false;
-    return gap > 0;
+    return true;
 }
 bool isSteepCliffEdge(int selfH, int nbH) {
     bool selfWater = selfH <= 1;
@@ -225,28 +235,24 @@ void walkCliffEdges(
     float midNoise,
     float selfTierH,
     inout float bestMu,
+    inout float rockMu,
     inout float midWeightSum,
     inout float midWeightedH
 ) {
     float kernelK = 0.05;
     for (int i = 0; i < 12; i++) {
         if (i >= edgeCount) break;
-        if (!isCliffEdge(selfH, neighborH[i])) continue;
+        int nbH = neighborH[i];
+        if (!isCliffEdge(selfH, nbH)) continue;
         vec3 a = corners[i];
         int nextIdx = (i + 1) == edgeCount ? 0 : (i + 1);
         vec3 b = corners[nextIdx];
         float dist = distToSegment(unitDir, a, b);
-        bool steep = isSteepCliffEdge(selfH, neighborH[i]);
+        bool steep = isSteepCliffEdge(selfH, nbH);
+        bool rock = isRockCliff(selfH, nbH);
         float mu;
         if (steep) {
             float rampWidth = ownerHexRadius * 0.2;
-            // safeBand: don't apply cliffNoise perturbation when we're
-            // very close to the cliff edge. Without this, positive
-            // cliffNoise pushes perturbed away from 0 even at dist=0,
-            // making mu large and h close to h_base. Two adjacent cells
-            // then see h_base_A vs h_base_B at the SAME shared cliff
-            // edge — a ~55km vertical gap between meshes for tier-4
-            // vs tier-2. Mirrors the CPU sim, which had this all along.
             float safeBand = ownerHexRadius * 0.05;
             float perturbed = dist < safeBand
                 ? dist
@@ -258,54 +264,16 @@ void walkCliffEdges(
             float t = min(dist / rampWidth, 1.0);
             mu = (1.0 - cos(t * 3.14159265)) / 2.0;
         }
-        float midTier = (selfTierH + levelHeight(neighborH[i])) * 0.5;
-        float midH = midTier + (abs(midNoise) + 0.15) * noiseAmp * 0.3;
-        float w = exp(-mu / kernelK);
-        midWeightSum += w;
-        midWeightedH += w * midH;
-        if (mu < bestMu) bestMu = mu;
-    }
-}
-
-// Water-step erosion — same shape as walkCliffEdges (cosine ramp,
-// weighted-avg midH for cell-symmetry) but for water-water cross-tier
-// edges (tier-0 ↔ tier-1). Separate from cliff erosion because the
-// fragment shader paints vCliffMu > 0.5 brown — sharing the cliff
-// accumulators would draw underwater steps as land cliffs.
-void walkWaterStepEdges(
-    vec3 unitDir,
-    int selfH,
-    int edgeCount,
-    int neighborH[12],
-    vec3 corners[12],
-    float ownerHexRadius,
-    float midNoise,
-    float selfTierH,
-    inout float bestMu,
-    inout float midWeightSum,
-    inout float midWeightedH
-) {
-    float kernelK = 0.05;
-    for (int i = 0; i < 12; i++) {
-        if (i >= edgeCount) break;
-        int nbH = neighborH[i];
-        if (selfH > 1 || nbH > 1) continue;
-        if (selfH == nbH) continue;
-        vec3 a = corners[i];
-        int nextIdx = (i + 1) == edgeCount ? 0 : (i + 1);
-        vec3 b = corners[nextIdx];
-        float dist = distToSegment(unitDir, a, b);
-        float rampWidth = ownerHexRadius * 0.7;
-        float t = min(dist / rampWidth, 1.0);
-        float mu = (1.0 - cos(t * 3.14159265)) / 2.0;
-        // Smaller noise contribution than land cliffs — underwater terrain
-        // shouldn't have rocky cliff bumps.
+        // Noise scaled smaller for non-rock transitions — underwater
+        // and coastal smooth ramps shouldn't have rocky bumps.
+        float midNoiseScale = rock ? 0.3 : 0.1;
         float midTier = (selfTierH + levelHeight(nbH)) * 0.5;
-        float midH = midTier + (abs(midNoise) + 0.15) * noiseAmp * 0.1;
+        float midH = midTier + (abs(midNoise) + 0.15) * noiseAmp * midNoiseScale;
         float w = exp(-mu / kernelK);
         midWeightSum += w;
         midWeightedH += w * midH;
         if (mu < bestMu) bestMu = mu;
+        if (rock && mu < rockMu) rockMu = mu;
     }
 }
 
@@ -331,121 +299,23 @@ void main() {
     bool isWaterHex = selfH <= 1;
     float selfTierH = levelHeight(selfH);
     float interiorNoiseH = isWaterHex ? abs(rawNoise) : (rawNoise + 0.3);
-    float borderNoiseH = abs(rawNoise) + 0.15;
     float hexRadius = meanHexRadius(corners, edgeCount);
 
-    // ── Walk non-excluded edges to find nearest border ─────
-    float minDist = 1e9;
-    float borderTarget = 0.0;
-    int nearestEdgeIdx = -1;
-    float nearestEdgeT = 0.0;
-    float nearestBorderTarget = 0.0;
-    bool hasBorder = false;
+    // h_base: pure interior height. The unified cliff/transition erosion
+    // below blends toward midH at every cross-tier boundary. No separate
+    // border walk, coast pass, water-step pass, or rounding dip — every
+    // tier transition (land→shallow water, shallow→deep, land cliff)
+    // goes through the same symmetric smooth-ramp logic.
+    float h = selfTierH + interiorNoiseH * noiseAmp;
 
-    // For coast smooth-min: accumulate exp(-d/k) for coast edges only.
-    // smoothD = -log(sum/N) * k. Normalizing by N keeps the soft-min
-    // edge-count-invariant — without /N, an 8-coast-edge hex gets
-    // smoothD lower by k*log(8/6)=0.064 unit-sphere = ~408km vs a
-    // 6-coast-edge hex, mashing its interior toward sea level.
-    // minCoastDist tracks the hard min for the coast-erosion pass below.
-    float coastSmoothK = 0.22;
-    float coastWeightSum = 0.0;
-    int coastN = 0;
-    float minCoastDist = 1e9;
-    bool hasCoastEdge = false;
-    // (water-step pass removed — tier-0/tier-1 boundaries now go through
-    // cliff erosion, which produces a symmetric smooth ramp.)
-
-    for (int i = 0; i < 12; i++) {
-        if (i >= edgeCount) break;
-        int nbH = neighborH[i];
-        if (isExcludedEdge(selfH, nbH)) continue;
-
-        vec3 a = corners[i];
-        int nextIdx = (i + 1) == edgeCount ? 0 : (i + 1);
-        vec3 b = corners[nextIdx];
-
-        float dist; float tEdge;
-        distAndT(unitDir, a, b, dist, tEdge);
-
-        float target = computeBorderTarget(selfH, nbH);
-        bool coast = isCoastEdge(selfH, nbH);
-
-        if (dist < minDist) {
-            minDist = dist;
-            nearestEdgeIdx = i;
-            nearestEdgeT = tEdge;
-            nearestBorderTarget = target;
-        }
-        if (coast) {
-            coastWeightSum += exp(-dist / coastSmoothK);
-            coastN++;
-            minCoastDist = min(minCoastDist, dist);
-            hasCoastEdge = true;
-        }
-        hasBorder = true;
-    }
-
-    float h;
-    if (!hasBorder) {
-        // All edges excluded (typical for an inland land hex with only
-        // land neighbors). Pure interior height — cliff erosion below
-        // will pull it toward midTier near any cliff edge.
-        h = selfTierH + interiorNoiseH * noiseAmp;
-    } else {
-        borderTarget = nearestBorderTarget;
-        // Coast smooth-min: rounds the corner where two coast edges meet
-        float dist = minDist;
-        if (hasCoastEdge && nearestBorderTarget == 0.0 && coastWeightSum > 0.0) {
-            float smoothD = -log(coastWeightSum / float(coastN)) * coastSmoothK;
-            dist = min(dist, smoothD);
-        }
-        float t01 = clamp(dist / hexRadius, 0.0, 1.0);
-        float mu = (1.0 - cos(t01 * 3.14159265)) / 2.0;
-
-        bool isWaterNeighborBorder = borderTarget < -0.001;
-        float borderNoiseCoeff = isWaterNeighborBorder ? noiseAmp : noiseAmp * 0.3;
-        // For LAND cells: use mu-INDEPENDENT noise (interior flavor, full amp).
-        // The mu-blend used to taper noise toward border at coasts but it
-        // also introduced a per-cell asymmetry on shared land-land edges:
-        // each cell uses its OWN nearest non-excluded edge for mu, so a
-        // coastal cell (low mu, border-flavored) and an inland cell (high
-        // mu, interior-flavored) sharing an edge produce different h along
-        // the entire edge. Mu-independent noise eliminates this for land.
-        // Water keeps the mu-blend — shoreline behavior depends on it.
-        float noiseCoeff = isWaterHex
-            ? (noiseAmp * mu + borderNoiseCoeff * (1.0 - mu))
-            : noiseAmp;
-        float noiseH = isWaterHex
-            ? (interiorNoiseH * mu + borderNoiseH * (1.0 - mu))
-            : interiorNoiseH;
-        h = selfTierH * mu + borderTarget * (1.0 - mu) + noiseH * noiseCoeff;
-
-        // COAST_ROUNDING dip at coastal edge midpoint — water only.
-        // For land cells, nearestEdgeT/mu are per-cell-asymmetric on shared
-        // land-land edges, producing a fissure at midpoints.
-        if (isWaterHex && borderTarget == 0.0 && nearestEdgeIdx >= 0) {
-            float coastMid = 4.0 * nearestEdgeT * (1.0 - nearestEdgeT);
-            float coastBlend = mu * (1.0 - mu);
-            h -= coastRounding * coastMid * coastBlend * 4.0;
-        }
-    }
-
-    // ── Cliff erosion: self ─────────────────────────────────
+    // ── Tier-transition erosion (self + 1-hop) ─────────────
     float bestMu = 1.0;
+    float rockMu = 1.0;  // gates fragment-shader cliff coloring
     float midWeightSum = 0.0;
     float midWeightedH = 0.0;
     walkCliffEdges(unitDir, selfH, edgeCount, neighborH, corners,
-                   hexRadius, cliffNoise, midNoise, selfTierH, bestMu, midWeightSum, midWeightedH);
-
-    // ── Cliff erosion: 1-hop neighbors ──────────────────────
-    // For EVERY edge of self, walk that neighbor's cliff edges using
-    // the neighbor's own data. Walking all 6 neighbors (not just
-    // non-cliff edges) ensures both sides of any shared edge see the
-    // same set of nearby cliffs, so they compute identical bestMu.
-    // Without this, a cliff hex C adjacent to both A and B would only
-    // be 1-hop visited from the side where A-B is non-cliff, making
-    // the seam mismatch.
+                   hexRadius, cliffNoise, midNoise, selfTierH,
+                   bestMu, rockMu, midWeightSum, midWeightedH);
     for (int i = 0; i < 12; i++) {
         if (i >= edgeCount) break;
         int nbId = nbIds[i];
@@ -462,68 +332,14 @@ void main() {
         float nbTierH = levelHeight(nbHL);
 
         walkCliffEdges(unitDir, nbHL, nbEdgeCount, nbNeighborH, nbCorners,
-                       nbHexRadius, cliffNoise, midNoise, nbTierH, bestMu, midWeightSum, midWeightedH);
+                       nbHexRadius, cliffNoise, midNoise, nbTierH,
+                       bestMu, rockMu, midWeightSum, midWeightedH);
     }
 
     if (bestMu < 1.0 && midWeightSum > 0.0) {
-        // Weighted average over all visible cliffs — symmetric across
-        // cells that share the same cliff set (own + 1-hop). Floating-point
-        // bestMu clamp from b54b6c3 retained for the blend strength.
         float bestMidH = midWeightedH / midWeightSum;
         float clamped = max(0.0, (bestMu - 0.05) / 0.95);
         h = bestMidH * (1.0 - clamped) + h * clamped;
-    }
-
-    // ── Water-step erosion (gentle ramp between tier-0 / tier-1) ──
-    // Same shape as cliff erosion but for water-water cross-tier; uses
-    // separate accumulators so vCliffMu (cliff coloring) isn't triggered.
-    float wsBestMu = 1.0;
-    float wsMidWeightSum = 0.0;
-    float wsMidWeightedH = 0.0;
-    walkWaterStepEdges(unitDir, selfH, edgeCount, neighborH, corners,
-                       hexRadius, midNoise, selfTierH, wsBestMu, wsMidWeightSum, wsMidWeightedH);
-    for (int i = 0; i < 12; i++) {
-        if (i >= edgeCount) break;
-        int nbId = nbIds[i];
-        if (nbId < 0) continue;
-        int nbHL, nbEdgeCount;
-        readHexData(nbId, nbHL, nbEdgeCount);
-        int nbNeighborH[12];
-        readNeighbors(nbId, nbNeighborH);
-        vec3 nbCorners[12];
-        int nbNbIds[12];
-        readCornersAndNeighborIds(nbId, nbCorners, nbNbIds);
-        float nbHexRadius = meanHexRadius(nbCorners, nbEdgeCount);
-        float nbTierH = levelHeight(nbHL);
-        walkWaterStepEdges(unitDir, nbHL, nbEdgeCount, nbNeighborH, nbCorners,
-                           nbHexRadius, midNoise, nbTierH, wsBestMu, wsMidWeightSum, wsMidWeightedH);
-    }
-    if (wsBestMu < 1.0 && wsMidWeightSum > 0.0) {
-        float wsMidH = wsMidWeightedH / wsMidWeightSum;
-        float clamped = max(0.0, (wsBestMu - 0.05) / 0.95);
-        h = wsMidH * (1.0 - clamped) + h * clamped;
-    }
-
-    // ── Coast-erosion pass ─────────────────────────────────
-    // Pulls h toward sea level (0) based on hard-min coast distance.
-    // Always applies when coast edges exist; independent of border-walk
-    // nearest-edge classification. Closes the discontinuity between
-    // coast and water-water target zones (e.g. 12922/12961/12960).
-    // Runs LAST so coast dominates at any coast-touching corner.
-    // Water-only: pulls water h up toward LAND'S natural coast-edge h
-    // ((rawNoise+0.3)*noiseAmp), not toward 0. With land's coast post-pass
-    // disabled, land sits at (rawNoise+0.3)*noiseAmp at its coast edges,
-    // not at sea level. Pulling water to 0 at coast leaves a vertical step
-    // between land and water — instead, water rises to meet land.
-    //
-    // Land has no coast post-pass (land's coast h comes from the border
-    // walk's selfTierH*mu + target*(1-mu) = 0 + noiseH*noiseCoeff = the
-    // mu-independent (rawNoise+0.3)*noiseAmp value).
-    if (isWaterHex && hasCoastEdge) {
-        float coastT = clamp(minCoastDist / (hexRadius * 0.7), 0.0, 1.0);
-        float coastMu = (1.0 - cos(coastT * 3.14159265)) / 2.0;
-        float landTarget = (rawNoise + 0.3) * noiseAmp;
-        h = landTarget * (1.0 - coastMu) + h * coastMu;
     }
 
     vec3 worldPos = unitDir * (planetRadius * (1.0 + h));
@@ -532,7 +348,7 @@ void main() {
     vLocalUV = localUV;
     vHeight = h;
     vTierH = selfTierH;
-    vCliffMu = 1.0 - bestMu;
+    vCliffMu = 1.0 - rockMu;
     gl_Position = viewProjection * wp;
 }
 `;

@@ -30,13 +30,17 @@ import {
 // ── Shader-equivalent classifiers (must match displacement-shader.ts) ──
 
 function isCliffEdge(selfH: number, nbH: number): boolean {
+	return selfH !== nbH;
+}
+function isRockCliff(selfH: number, nbH: number): boolean {
 	const selfWater = selfH <= 1;
 	const nbWater = nbH <= 1;
 	if (selfWater && nbWater) return false;
 	const gap = Math.abs(selfH - nbH);
+	if (gap === 0) return false;
 	if (selfWater && nbH <= 2) return false;
 	if (nbWater && selfH <= 2) return false;
-	return gap > 0;
+	return true;
 }
 
 function isSteepCliffEdge(selfH: number, nbH: number): boolean {
@@ -117,7 +121,12 @@ function smoothMin(a: number, b: number, k: number): number {
 
 // ── Cliff erosion walk (matches shader walkCliffEdges) ──────
 
-interface CliffWalkState { bestMu: number; midWeightSum: number; midWeightedH: number }
+interface CliffWalkState {
+	bestMu: number;
+	rockMu: number;
+	midWeightSum: number;
+	midWeightedH: number;
+}
 
 function walkCliffEdges(
 	unitDir: Vector3,
@@ -132,21 +141,16 @@ function walkCliffEdges(
 ): void {
 	const n = corners.length;
 	for (let i = 0; i < n; i++) {
-		if (!isCliffEdge(selfH, neighborH[i])) continue;
+		const nbH = neighborH[i];
+		if (!isCliffEdge(selfH, nbH)) continue;
 		const a = corners[i];
 		const b = corners[(i + 1) % n];
 		const { dist } = distAndT(unitDir, a, b);
-		const steep = isSteepCliffEdge(selfH, neighborH[i]);
+		const steep = isSteepCliffEdge(selfH, nbH);
+		const rock = isRockCliff(selfH, nbH);
 		let mu: number;
 		if (steep) {
 			const rampWidth = ownerHexRadius * 0.2;
-			// CPU adds cliffNoise * radius * 0.25 to dist for irregular cliff
-			// edges, but at dist=0 (a shared cliff edge) the perturbation can
-			// shift mu away from 0, leaving h_base * mu in the lerp — and
-			// h_base differs by tier between the two cells. CPU smooths this
-			// in post; we don't have smoothing, so apply the perturbation
-			// only away from the shared edge: clamp to 0 once dist itself
-			// is below a small threshold.
 			const safeBand = ownerHexRadius * 0.05;
 			const perturbed = dist < safeBand
 				? dist
@@ -158,43 +162,14 @@ function walkCliffEdges(
 			const t = Math.min(dist / rampWidth, 1);
 			mu = (1 - Math.cos(t * Math.PI)) / 2;
 		}
-		const midTier = (selfTierH + getLevelHeight(neighborH[i])) * 0.5;
-		const midH = midTier + (Math.abs(midNoise) + 0.15) * NOISE_AMP * 0.3;
-		const w = Math.exp(-mu / 0.05);
-		state.midWeightSum += w;
-		state.midWeightedH += w * midH;
-		if (mu < state.bestMu) state.bestMu = mu;
-	}
-}
-
-// Water-step erosion (mirrors shader walkWaterStepEdges)
-function walkWaterStepEdges(
-	unitDir: Vector3,
-	selfH: number,
-	corners: Vector3[],
-	neighborH: number[],
-	ownerHexRadius: number,
-	midNoise: number,
-	selfTierH: number,
-	state: CliffWalkState,
-): void {
-	const n = corners.length;
-	for (let i = 0; i < n; i++) {
-		const nbH = neighborH[i];
-		if (selfH > 1 || nbH > 1) continue;
-		if (selfH === nbH) continue;
-		const a = corners[i];
-		const b = corners[(i + 1) % n];
-		const { dist } = distAndT(unitDir, a, b);
-		const rampWidth = ownerHexRadius * 0.7;
-		const t = Math.min(dist / rampWidth, 1);
-		const mu = (1 - Math.cos(t * Math.PI)) / 2;
+		const midNoiseScale = rock ? 0.3 : 0.1;
 		const midTier = (selfTierH + getLevelHeight(nbH)) * 0.5;
-		const midH = midTier + (Math.abs(midNoise) + 0.15) * NOISE_AMP * 0.1;
+		const midH = midTier + (Math.abs(midNoise) + 0.15) * NOISE_AMP * midNoiseScale;
 		const w = Math.exp(-mu / 0.05);
 		state.midWeightSum += w;
 		state.midWeightedH += w * midH;
 		if (mu < state.bestMu) state.bestMu = mu;
+		if (rock && mu < state.rockMu) state.rockMu = mu;
 	}
 }
 
@@ -376,117 +351,16 @@ function simulateShaderHeight(
 	const midNoise = rawNoise;
 
 	const interiorNoiseH = isWater ? Math.abs(rawNoise) : (rawNoise + 0.3);
-	const borderNoiseH = Math.abs(rawNoise) + 0.15;
-
-	// CPU's allSameHeight short-circuit produces ASYMMETRIC results when
-	// adjacent cells take different paths (one takes the short-circuit,
-	// the other does the full border walk). For water-water seams that
-	// gives 7+ km gaps between adjacent same-tier hexes. Skipping it —
-	// the border walk produces equivalent values for genuine all-same
-	// cases but stays symmetric across the seam.
 
 	const hexRadius = meanHexRadius(self.corners);
 	const n = self.corners.length;
 
-	let minDist = Infinity;
-	let nearestEdgeIdx = -1;
-	let nearestEdgeT = 0;
-	let nearestBorderTarget = -Infinity;
-	let hasBorder = false;
-	// Coast smooth-min: exp soft-min with N normalization, mirrors
-	// the shader. smoothD = -log((sum exp(-d_i / k)) / N) * k.
-	// minCoastDist tracks the hard min for the coast-erosion pass below.
-	const coastK = 0.22;
-	let coastWeightSum = 0;
-	let coastN = 0;
-	let minCoastDist = Infinity;
-	let hasCoastEdge = false;
-	// EPS for corner tie-break. CPU uses 1e-4, but at unit-sphere-normalized
-	// edge midpoints the chord-to-sphere drift is ~7e-5 — that drift is the
-	// same magnitude as 1e-4, causing the tie-break to fire on midpoints
-	// (non-corners) and pick wrong-target edges. 1e-7 catches genuine
-	// corner ties (where two edges meet at the same vertex) without
-	// false-positives at midpoints.
-	const EPS = 1e-7;
-
-	for (let i = 0; i < n; i++) {
-		const nb = self.neighbors[i];
-		if (!nb) continue;
-		const excluded = isExcludedEdge(cell, nb, cellById);
-		if (verbose) {
-			const a0 = self.corners[i];
-			const b0 = self.corners[(i + 1) % n];
-			const { dist: d0 } = distAndT(unitDir, a0, b0);
-			console.log(`  cell ${cell.id} edge ${i}: nb=${nb.id} (tier ${nb.heightLevel}) dist=${d0.toFixed(7)} excluded=${excluded} target=${computeBorderTarget(selfH, self.neighborH[i]).toFixed(4)}`);
-		}
-		if (excluded) continue;
-		const a = self.corners[i];
-		const b = self.corners[(i + 1) % n];
-		const { dist, t } = distAndT(unitDir, a, b);
-		const edgeTarget = computeBorderTarget(selfH, self.neighborH[i]);
-		const coast = isCoastEdge(selfH, self.neighborH[i]);
-
-		// Per-position target = edge_target (computeBorderTarget is
-		// symmetric per edge, so this is the same from both sides for
-		// any shared edge). Corner cases handled by the corner-snap
-		// at the top of simulateShaderHeight.
-		const posTarget = edgeTarget;
-
-		// Tie-break still uses the per-position target. With cornerTargets
-		// active, both sides at a corner produce the SAME posTarget so the
-		// tie-break choice doesn't matter for symmetry.
-		if (dist < minDist - EPS) {
-			minDist = dist;
-			nearestEdgeIdx = i;
-			nearestEdgeT = t;
-			nearestBorderTarget = posTarget;
-		} else if (dist < minDist + EPS) {
-			if (posTarget > nearestBorderTarget) {
-				nearestBorderTarget = posTarget;
-				nearestEdgeIdx = i;
-				nearestEdgeT = t;
-			}
-			if (dist < minDist) minDist = dist;
-		}
-		if (coast && edgeTarget === 0) {
-			coastWeightSum += Math.exp(-dist / coastK);
-			coastN++;
-			if (dist < minCoastDist) minCoastDist = dist;
-			hasCoastEdge = true;
-		}
-		hasBorder = true;
-	}
-
-	let h: number;
-	if (!hasBorder) {
-		h = selfTierH + interiorNoiseH * NOISE_AMP;
-	} else {
-		let dist = minDist;
-		if (hasCoastEdge && nearestBorderTarget === 0 && coastWeightSum > 0) {
-			const smoothD = -Math.log(coastWeightSum / coastN) * coastK;
-			dist = Math.min(dist, smoothD);
-		}
-		const t01 = Math.min(dist / hexRadius, 1);
-		const mu = (1 - Math.cos(t01 * Math.PI)) / 2;
-		const isWaterNeighborBorder = nearestBorderTarget < -0.001;
-		const borderNoiseCoeff = isWaterNeighborBorder ? NOISE_AMP : NOISE_AMP * 0.3;
-		// LAND: mu-independent noise (see shader rationale)
-		const noiseCoeff = isWater
-			? (NOISE_AMP * mu + borderNoiseCoeff * (1 - mu))
-			: NOISE_AMP;
-		const noiseH = isWater
-			? (interiorNoiseH * mu + borderNoiseH * (1 - mu))
-			: interiorNoiseH;
-		h = selfTierH * mu + nearestBorderTarget * (1 - mu) + noiseH * noiseCoeff;
-		if (isWater && nearestBorderTarget === 0 && nearestEdgeIdx >= 0) {
-			const coastMid = 4 * nearestEdgeT * (1 - nearestEdgeT);
-			const coastBlend = mu * (1 - mu);
-			h -= COAST_ROUNDING * coastMid * coastBlend * 4;
-		}
-	}
+	// h_base: pure interior — unified cliff/transition erosion handles
+	// every cross-tier boundary (land cliffs, coast, water-step) below.
+	let h = selfTierH + interiorNoiseH * NOISE_AMP;
 	const hBase = h;
 
-	const state: CliffWalkState = { bestMu: 1, midWeightSum: 0, midWeightedH: 0 };
+	const state: CliffWalkState = { bestMu: 1, rockMu: 1, midWeightSum: 0, midWeightedH: 0 };
 	walkCliffEdges(unitDir, selfH, self.corners, self.neighborH, hexRadius,
 		cliffNoise, midNoise, selfTierH, state);
 
@@ -507,38 +381,10 @@ function simulateShaderHeight(
 		h = bestMidH * (1 - clamped) + hBase * clamped;
 	}
 
-	const wsState: CliffWalkState = { bestMu: 1, midWeightSum: 0, midWeightedH: 0 };
-	walkWaterStepEdges(unitDir, selfH, self.corners, self.neighborH, hexRadius,
-		midNoise, selfTierH, wsState);
-	for (let i = 0; i < n; i++) {
-		const nb = self.neighbors[i];
-		if (!nb) continue;
-		const nbData = fetchCellData(nb, cellById);
-		const nbHexRadius = meanHexRadius(nbData.corners);
-		const nbTierH = getLevelHeight(nbData.heightLevel);
-		walkWaterStepEdges(unitDir, nbData.heightLevel, nbData.corners, nbData.neighborH,
-			nbHexRadius, midNoise, nbTierH, wsState);
-	}
-	if (wsState.bestMu < 1 && wsState.midWeightSum > 0) {
-		const wsMid = wsState.midWeightedH / wsState.midWeightSum;
-		const clamped = Math.max(0, (wsState.bestMu - 0.05) / 0.95);
-		h = wsMid * (1 - clamped) + h * clamped;
-	}
-
-	if (isWater && hasCoastEdge) {
-		const coastT = Math.min(Math.max(minCoastDist / (hexRadius * 0.7), 0), 1);
-		const coastMu = (1 - Math.cos(coastT * Math.PI)) / 2;
-		const landTarget = (rawNoise + 0.3) * NOISE_AMP;
-		h = landTarget * (1 - coastMu) + h * coastMu;
-	}
-
-	// Land hex: floor above water sphere — see shader for rationale.
-	if (!isWater) h = Math.max(h, -0.0001);
-
 	return {
 		h,
-		hasBorder,
-		borderTarget: nearestBorderTarget,
+		hasBorder: state.bestMu < 1,
+		borderTarget: 0,
 		bestMu: state.bestMu,
 		bestMidH,
 		hBase,
