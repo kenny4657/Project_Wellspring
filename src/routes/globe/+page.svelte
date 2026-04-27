@@ -16,6 +16,8 @@
 	let hexCount = $state(0);
 	let gridVisible = $state(false);
 	let inspectMode = $state(false);
+	let gpuMode = $state(false);
+	let waterSphereVisible = $state(true);
 	let inspectedHex = $state<{ id: number; terrain: number; heightLevel: number; isPentagon: boolean; neighborCount: number; lat: number; lng: number } | null>(null);
 
 	let activeTab = $state<'paint' | 'colors' | 'cliffs'>('paint');
@@ -72,6 +74,11 @@
 			});
 			// Also expose on window so the console can call it directly.
 			(window as unknown as { engine: typeof engine }).engine = engine;
+
+			// Default to GPU mode + water sphere on. Mirrors the toggle UI.
+			await engine.setGpuMode(true);
+			gpuMode = true;
+			engine.setWaterSphereVisible(waterSphereVisible);
 		} catch (e) {
 			error = String(e);
 			loading = false;
@@ -142,6 +149,14 @@
 			<label class="flex items-center gap-2 text-xs cursor-pointer">
 				<input type="checkbox" bind:checked={inspectMode} class="accent-[#C4A96A]" />
 				Inspect mode (click hex for ID)
+			</label>
+			<label class="flex items-center gap-2 text-xs cursor-pointer">
+				<input type="checkbox" bind:checked={gpuMode} onchange={() => engine?.setGpuMode(gpuMode)} class="accent-[#C4A96A]" />
+				GPU displacement
+			</label>
+			<label class="flex items-center gap-2 text-xs cursor-pointer">
+				<input type="checkbox" bind:checked={waterSphereVisible} onchange={() => engine?.setWaterSphereVisible(waterSphereVisible)} class="accent-[#C4A96A]" />
+				Water sphere
 			</label>
 			<div class="flex gap-1 flex-wrap mt-1">
 				<button class="tool-btn" onclick={() => engine?.flyTo(48.86, 2.35, 500)}>Paris</button>
