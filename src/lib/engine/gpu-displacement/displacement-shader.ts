@@ -416,37 +416,28 @@ void main() {
         h = bestMidH * (1.0 - clamped) + h * clamped;
     }
 
-    // ── Coast-erosion pass ─────────────────────────────────
-    // Mirrors cliff erosion's structure: ALWAYS applies when coast edges
-    // exist, independent of which border edge the walk picked as
-    // "nearest". Without this pass, h has a discontinuity where the
-    // border walk's nearest-edge classification flips from coast
-    // (target=0) to water-water (target=lh(min)) — visible as the 38km
-    // vertical wall at coastal water hex corners (e.g. 12922/12961/12960).
-    //
-    // Uses HARD MIN over coast edges. A normalized soft-min
-    // (-log(sum/N)*k) overestimates min when one edge is at dist=0 and
-    // others far — gives positive coastDist at corners where it should
-    // be 0. Hard min is N-invariant and gives correct corner behavior.
-    // coastMu ramps from 0 at coast (h fully pulled to sea level) to 1
-    // at hexRadius * 0.7 (no pull). Same falloff shape as non-steep cliff.
-    if (hasCoastEdge) {
-        float coastT = clamp(minCoastDist / (hexRadius * 0.7), 0.0, 1.0);
-        float coastMu = (1.0 - cos(coastT * 3.14159265)) / 2.0;
-        h = h * coastMu;
-    }
-
     // ── Water-step erosion pass ────────────────────────────
-    // Same shape as coast pass but pulls h toward the deeper tier's
-    // level (lh(0)) wherever a tier-0 ↔ tier-1 edge is nearby. From
-    // tier-1 (shallow): smoothly descends to deep level at the edge.
-    // From tier-0 (already at deep level): no-op. Eliminates the
-    // step-shaped wall at every shallow/deep boundary corner.
+    // Pulls h toward lh(0) (deep water level) wherever a tier-0 ↔ tier-1
+    // edge is nearby. Smooths shallow→deep boundaries the same way the
+    // coast pass smooths land→water. Runs BEFORE coast pass so coast
+    // wins at 3-cell land/shallow/deep corners.
     if (hasWaterStepEdge) {
         float deepTarget = levelHeights.x; // lh(0) = -0.020
         float waterT = clamp(minWaterStepDist / (hexRadius * 0.7), 0.0, 1.0);
         float waterMu = (1.0 - cos(waterT * 3.14159265)) / 2.0;
         h = deepTarget * (1.0 - waterMu) + h * waterMu;
+    }
+
+    // ── Coast-erosion pass ─────────────────────────────────
+    // Pulls h toward sea level (0) based on hard-min coast distance.
+    // Always applies when coast edges exist; independent of border-walk
+    // nearest-edge classification. Closes the discontinuity between
+    // coast and water-water target zones (e.g. 12922/12961/12960).
+    // Runs LAST so coast dominates at any coast-touching corner.
+    if (hasCoastEdge) {
+        float coastT = clamp(minCoastDist / (hexRadius * 0.7), 0.0, 1.0);
+        float coastMu = (1.0 - cos(coastT * 3.14159265)) / 2.0;
+        h = h * coastMu;
     }
 
     vec3 worldPos = unitDir * (planetRadius * (1.0 + h));

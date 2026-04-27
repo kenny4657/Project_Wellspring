@@ -475,19 +475,17 @@ function simulateShaderHeight(
 		h = state.bestMidH * (1 - clamped) + hBase * clamped;
 	}
 
-	// Coast-erosion pass: mirror of shader. Hard min over coast edges.
-	if (hasCoastEdge) {
-		const coastT = Math.min(Math.max(minCoastDist / (hexRadius * 0.7), 0), 1);
-		const coastMu = (1 - Math.cos(coastT * Math.PI)) / 2;
-		h = h * coastMu;
-	}
-
-	// Water-step pass: mirror of shader. Hard min over deep↔shallow edges.
+	// Water-step pass first, then coast pass — see shader for ordering rationale.
 	if (hasWaterStepEdge) {
 		const deepTarget = LEVEL_HEIGHTS[0];
 		const waterT = Math.min(Math.max(minWaterStepDist / (hexRadius * 0.7), 0), 1);
 		const waterMu = (1 - Math.cos(waterT * Math.PI)) / 2;
 		h = deepTarget * (1 - waterMu) + h * waterMu;
+	}
+	if (hasCoastEdge) {
+		const coastT = Math.min(Math.max(minCoastDist / (hexRadius * 0.7), 0), 1);
+		const coastMu = (1 - Math.cos(coastT * Math.PI)) / 2;
+		h = h * coastMu;
 	}
 
 	// Land hex: floor above water sphere — see shader for rationale.
