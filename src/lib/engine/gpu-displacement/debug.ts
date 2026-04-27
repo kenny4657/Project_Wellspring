@@ -368,7 +368,10 @@ function simulateShaderHeight(
 	let coastN = 0;
 	let minCoastDist = Infinity;
 	let hasCoastEdge = false;
-	let minWaterStepDist = Infinity;
+	const waterStepK = 0.22;
+	let waterStepWeightSum = 0;
+	let waterStepN = 0;
+	let waterStepLowestTier = 99;
 	let hasWaterStepEdge = false;
 	// EPS for corner tie-break. CPU uses 1e-4, but at unit-sphere-normalized
 	// edge midpoints the chord-to-sphere drift is ~7e-5 — that drift is the
@@ -426,7 +429,9 @@ function simulateShaderHeight(
 		// Water-water with different tiers (deep ↔ shallow):
 		const nbH2 = self.neighborH[i];
 		if (selfH <= 1 && nbH2 <= 1 && selfH !== nbH2) {
-			if (dist < minWaterStepDist) minWaterStepDist = dist;
+			waterStepWeightSum += Math.exp(-dist / waterStepK);
+			waterStepN++;
+			waterStepLowestTier = Math.min(waterStepLowestTier, Math.min(selfH, nbH2));
 			hasWaterStepEdge = true;
 		}
 		hasBorder = true;
@@ -437,18 +442,26 @@ function simulateShaderHeight(
 		h = selfTierH + interiorNoiseH * NOISE_AMP;
 	} else {
 		let dist = minDist;
-		if (hasCoastEdge && nearestBorderTarget === 0 && coastWeightSum > 0) {
+		let borderTarget = nearestBorderTarget;
+		if (hasCoastEdge && borderTarget === 0 && coastWeightSum > 0) {
 			const smoothD = -Math.log(coastWeightSum / coastN) * coastK;
 			dist = Math.min(dist, smoothD);
 		}
+		if (hasWaterStepEdge && waterStepWeightSum > 0) {
+			const smoothDw = -Math.log(waterStepWeightSum / waterStepN) * waterStepK;
+			if (smoothDw < dist) {
+				dist = smoothDw;
+				borderTarget = LEVEL_HEIGHTS[waterStepLowestTier];
+			}
+		}
 		const t01 = Math.min(dist / hexRadius, 1);
 		const mu = (1 - Math.cos(t01 * Math.PI)) / 2;
-		const isWaterNeighborBorder = nearestBorderTarget < -0.001;
+		const isWaterNeighborBorder = borderTarget < -0.001;
 		const borderNoiseCoeff = isWaterNeighborBorder ? NOISE_AMP : NOISE_AMP * 0.3;
 		const noiseCoeff = NOISE_AMP * mu + borderNoiseCoeff * (1 - mu);
 		const noiseH = interiorNoiseH * mu + borderNoiseH * (1 - mu);
-		h = selfTierH * mu + nearestBorderTarget * (1 - mu) + noiseH * noiseCoeff;
-		if (nearestBorderTarget === 0 && nearestEdgeIdx >= 0) {
+		h = selfTierH * mu + borderTarget * (1 - mu) + noiseH * noiseCoeff;
+		if (borderTarget === 0 && nearestEdgeIdx >= 0) {
 			const coastMid = 4 * nearestEdgeT * (1 - nearestEdgeT);
 			const coastBlend = mu * (1 - mu);
 			h -= COAST_ROUNDING * coastMid * coastBlend * 4;
@@ -475,13 +488,6 @@ function simulateShaderHeight(
 		h = state.bestMidH * (1 - clamped) + hBase * clamped;
 	}
 
-	// Water-step pass first, then coast pass — see shader for ordering rationale.
-	if (hasWaterStepEdge) {
-		const deepTarget = LEVEL_HEIGHTS[0];
-		const waterT = Math.min(Math.max(minWaterStepDist / (hexRadius * 0.7), 0), 1);
-		const waterMu = (1 - Math.cos(waterT * Math.PI)) / 2;
-		h = deepTarget * (1 - waterMu) + h * waterMu;
-	}
 	if (hasCoastEdge) {
 		const coastT = Math.min(Math.max(minCoastDist / (hexRadius * 0.7), 0), 1);
 		const coastMu = (1 - Math.cos(coastT * Math.PI)) / 2;

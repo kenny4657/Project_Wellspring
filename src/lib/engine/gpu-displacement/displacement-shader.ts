@@ -303,10 +303,13 @@ void main() {
     int coastN = 0;
     float minCoastDist = 1e9;
     bool hasCoastEdge = false;
-    // Water-step pass: same logic as coast pass but for water-water edges
-    // with different tiers (deep ↔ shallow). Pulls h toward the deeper
-    // tier's level via hard min over those edges.
-    float minWaterStepDist = 1e9;
+    // Water-step: water-water edges with different tiers (deep ↔ shallow).
+    // Soft-min into the border walk (like coast) so 3-cell corners round
+    // toward the deeper tier without overwriting the cell's noise.
+    float waterStepK = 0.22;
+    float waterStepWeightSum = 0.0;
+    int waterStepN = 0;
+    int waterStepLowestTier = 99;
     bool hasWaterStepEdge = false;
 
     for (int i = 0; i < 12; i++) {
@@ -340,7 +343,9 @@ void main() {
         bool selfWaterE = selfH <= 1;
         bool nbWaterE = nbH <= 1;
         if (selfWaterE && nbWaterE && selfH != nbH) {
-            minWaterStepDist = min(minWaterStepDist, dist);
+            waterStepWeightSum += exp(-dist / waterStepK);
+            waterStepN++;
+            waterStepLowestTier = min(waterStepLowestTier, min(selfH, nbH));
             hasWaterStepEdge = true;
         }
         hasBorder = true;
@@ -359,6 +364,18 @@ void main() {
         if (hasCoastEdge && nearestBorderTarget == 0.0 && coastWeightSum > 0.0) {
             float smoothD = -log(coastWeightSum / float(coastN)) * coastSmoothK;
             dist = min(dist, smoothD);
+        }
+        // Water-step soft-min: rounds 3-cell shallow/shallow/deep corners.
+        // If the soft-min over water-step edges is closer than the current
+        // dist, switch the border target to the deeper tier and use that
+        // smaller dist. Border smoothing then ramps from selfTierH (interior)
+        // to deeper-tier h at the edge, *with* noise preserved on top.
+        if (hasWaterStepEdge && waterStepWeightSum > 0.0) {
+            float smoothDw = -log(waterStepWeightSum / float(waterStepN)) * waterStepK;
+            if (smoothDw < dist) {
+                dist = smoothDw;
+                borderTarget = levelHeight(waterStepLowestTier);
+            }
         }
         float t01 = clamp(dist / hexRadius, 0.0, 1.0);
         float mu = (1.0 - cos(t01 * 3.14159265)) / 2.0;
@@ -414,18 +431,6 @@ void main() {
         // Float-precision leak fix — see commit b54b6c3 for full notes.
         float clamped = max(0.0, (bestMu - 0.05) / 0.95);
         h = bestMidH * (1.0 - clamped) + h * clamped;
-    }
-
-    // ── Water-step erosion pass ────────────────────────────
-    // Pulls h toward lh(0) (deep water level) wherever a tier-0 ↔ tier-1
-    // edge is nearby. Smooths shallow→deep boundaries the same way the
-    // coast pass smooths land→water. Runs BEFORE coast pass so coast
-    // wins at 3-cell land/shallow/deep corners.
-    if (hasWaterStepEdge) {
-        float deepTarget = levelHeights.x; // lh(0) = -0.020
-        float waterT = clamp(minWaterStepDist / (hexRadius * 0.7), 0.0, 1.0);
-        float waterMu = (1.0 - cos(waterT * 3.14159265)) / 2.0;
-        h = deepTarget * (1.0 - waterMu) + h * waterMu;
     }
 
     // ── Coast-erosion pass ─────────────────────────────────
