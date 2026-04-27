@@ -465,12 +465,12 @@ export async function createGlobeEngine(
 				}
 				for (const id of dirty) {
 					rebuildCellCliffEdges(gpuResources.cliffEdges, cellByIdMap, id);
-					// Patch the cliff count back into hexDataTex.A bits 4-7.
-					const count = Math.min(gpuResources.cliffEdges.counts[id] ?? 0, 15);
+					// Patch the cliff count back into hexDataTex.A bits 2-7.
+					const count = Math.min(gpuResources.cliffEdges.counts[id] ?? 0, 63);
 					const off = id * 4 + 3;
 					const bytes = gpuResources.hexTextures.dataBytes;
 					if (off < bytes.length) {
-						bytes[off] = (bytes[off] & 0x0f) | (count << 4);
+						bytes[off] = (bytes[off] & 0x03) | (count << 2);
 					}
 				}
 				gpuResources.cliffEdges.tex.update(gpuResources.cliffEdges.data);

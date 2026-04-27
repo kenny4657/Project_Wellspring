@@ -209,13 +209,14 @@ void readHexData(int id, out int heightLevel, out int edgeCount, out bool hasCli
     int aFlags = int(d.a * 255.0 + 0.5);
     hasCliffNbr = (aFlags & 1) != 0;
     hasCliffWithin1Hop = (aFlags & 2) != 0;
-    cliffCount = (aFlags >> 4) & 0xf;
+    cliffCount = (aFlags >> 2) & 0x3f;  // 6 bits, max 63
 }
 
 // Read one prebaked cliff edge for a cell. See cliff-edges-tex.ts for layout:
-// 24 texels per cell; slot i lives at texels (cellId*24 + i*2) and +1.
+// 48 texels per cell (24 slots × 2 texels); slot i lives at texels
+// (cellId*48 + i*2) and +1.
 void readCliffEdge(int cellId, int slot, out vec3 a, out vec3 b, out float midTier, out int flags) {
-    int idx = cellId * 24 + slot * 2;
+    int idx = cellId * 48 + slot * 2;
     int W = hexCliffEdgesTexWidth;
     vec4 t0 = texelFetch(hexCliffEdgesTex, ivec2(idx % W, idx / W), 0);
     int idx2 = idx + 1;
@@ -357,7 +358,7 @@ void main() {
     float midWeightSum = 0.0;
     float midWeightedH = 0.0;
     float kernelK = 0.05;
-    for (int i = 0; i < 12; i++) {
+    for (int i = 0; i < 24; i++) {
         if (i >= cliffCount) break;
         vec3 a; vec3 b; float midTier; int flags;
         readCliffEdge(id, i, a, b, midTier, flags);

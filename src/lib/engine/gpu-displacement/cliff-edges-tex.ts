@@ -18,7 +18,11 @@ import type { Scene } from '@babylonjs/core/scene';
 import type { HexCell } from '../icosphere';
 import { getLevelHeight } from '../hex-borders';
 
-const MAX_EDGES_PER_CELL = 12;
+// 24 covers cells with many cliff neighbors (observed up to 16 at
+// 7+ corner cells near tier-2/3/4 transition zones). The alpha-byte
+// encoding now uses 6 bits for the count (bits 2-7), so the max is
+// 63 if we ever need to bump higher.
+const MAX_EDGES_PER_CELL = 24;
 const TEXELS_PER_EDGE = 2;
 const TEXELS_PER_CELL = MAX_EDGES_PER_CELL * TEXELS_PER_EDGE;
 const FLOATS_PER_CELL = TEXELS_PER_CELL * 4;

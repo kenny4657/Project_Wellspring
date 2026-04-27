@@ -56,13 +56,13 @@ export async function initGpuDisplacement(
 	const hexTextures = buildHexDataTextures(cells, scene);
 	const hexCorners = buildHexCornersTexture(cells, scene);
 	const cliffEdges = buildCliffEdgesTexture(cells, scene);
-	// Patch cliff edge counts into hexDataTex.A bits 4-7 so the shader
-	// reads count + flag bits in a single texelFetch.
+	// Patch cliff edge counts into hexDataTex.A bits 2-7 (6 bits, max 63).
+	// Bits 0-1 keep the existing hasCliffNbr / hasCliffWithin1Hop flags.
 	for (let id = 0; id < cliffEdges.counts.length; id++) {
-		const count = Math.min(cliffEdges.counts[id], 15);
+		const count = Math.min(cliffEdges.counts[id], 63);
 		const off = id * 4 + 3;
 		if (off >= hexTextures.dataBytes.length) break;
-		hexTextures.dataBytes[off] = (hexTextures.dataBytes[off] & 0x0f) | (count << 4);
+		hexTextures.dataBytes[off] = (hexTextures.dataBytes[off] & 0x03) | (count << 2);
 	}
 	hexTextures.hexDataTex.update(hexTextures.dataBytes);
 	const t3 = performance.now();
