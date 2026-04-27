@@ -67,7 +67,11 @@ export function buildHexDataTextures(cells: HexCell[], scene: Scene): HexDataTex
 	const h = nextPow2(Math.ceil(numHexes / w));
 
 	const dataBytes = new Uint8Array(w * h * 4);
-	const neighborBytes = new Uint8Array(w * h * 4);
+	// hexNeighborsTex uses 2 pixels (rows) per cell to hold up to 12
+	// neighbor nibbles. Layout: row (id/w)*2 + 0 = slots 0..7,
+	// row (id/w)*2 + 1 = slots 8..11 (last 4 bytes unused).
+	const neighborH = h * 2;
+	const neighborBytes = new Uint8Array(w * neighborH * 4);
 
 	// Cell.id is what the shader uses as the lookup index. Build a
 	// lookup so we can find a cell by its id (cells[] is in build
@@ -98,28 +102,32 @@ export function buildHexDataTextures(cells: HexCell[], scene: Scene): HexDataTex
 		dataBytes[off + 3] = 0;
 
 		// hexNeighborsTex layout — neighbor heightLevel PER EDGE,
-		// packed 4-bits each into 3 bytes (RGB). Slot k is the
-		// neighbor across edge k (corner k → corner (k+1)). Pentagons
-		// pad slot 5 with the cell's own heightLevel so cliff/coast
-		// detection sees a no-op there.
+		// packed 4-bits each across 2 RGBA8 pixels (rows). Pixel 0:
+		// slots 0..7 in RGBA. Pixel 1: slots 8..11 in R+G (B+A unused).
+		// Cells with fewer slots pad with the cell's own heightLevel
+		// so cliff/coast detection sees a no-op there. 12 slots cover
+		// every observed cell (max 10) with a margin.
 		const heights: number[] = [];
-		for (let k = 0; k < 8; k++) {
+		for (let k = 0; k < 12; k++) {
 			if (k >= edgeCount) {
 				heights.push(c.heightLevel);
 				continue;
 			}
-			// Corner-match (not dot-product) so 7+ corner cells get the
-			// right neighbor for each edge.
 			const nb = findNeighborByCorners(c, k, cellByIdMap);
 			heights.push(nb ? nb.heightLevel : c.heightLevel);
 		}
-		// Pack pairs into bytes (4 bits each, since heightLevel is 0–4).
-		// 8 slots in 4 bytes (RGBA) supports 8-corner cells (810/16812).
-		// 10-corner cells (2/16812) still truncate at edge 8.
-		neighborBytes[off + 0] = (heights[0] & 0xf) | ((heights[1] & 0xf) << 4);
-		neighborBytes[off + 1] = (heights[2] & 0xf) | ((heights[3] & 0xf) << 4);
-		neighborBytes[off + 2] = (heights[4] & 0xf) | ((heights[5] & 0xf) << 4);
-		neighborBytes[off + 3] = (heights[6] & 0xf) | ((heights[7] & 0xf) << 4);
+		const xCol = id % w;
+		const yRowBase = Math.floor(id / w) * 2;
+		const px0 = (yRowBase * w + xCol) * 4;
+		const px1 = ((yRowBase + 1) * w + xCol) * 4;
+		neighborBytes[px0 + 0] = (heights[0] & 0xf) | ((heights[1] & 0xf) << 4);
+		neighborBytes[px0 + 1] = (heights[2] & 0xf) | ((heights[3] & 0xf) << 4);
+		neighborBytes[px0 + 2] = (heights[4] & 0xf) | ((heights[5] & 0xf) << 4);
+		neighborBytes[px0 + 3] = (heights[6] & 0xf) | ((heights[7] & 0xf) << 4);
+		neighborBytes[px1 + 0] = (heights[8] & 0xf) | ((heights[9] & 0xf) << 4);
+		neighborBytes[px1 + 1] = (heights[10] & 0xf) | ((heights[11] & 0xf) << 4);
+		neighborBytes[px1 + 2] = 0;
+		neighborBytes[px1 + 3] = 0;
 	}
 
 	const hexDataTex = new RawTexture(
@@ -134,7 +142,7 @@ export function buildHexDataTextures(cells: HexCell[], scene: Scene): HexDataTex
 	hexDataTex.name = 'gpuHexData';
 
 	const hexNeighborsTex = new RawTexture(
-		neighborBytes, w, h,
+		neighborBytes, w, neighborH,
 		Constants.TEXTUREFORMAT_RGBA,
 		scene,
 		false, false,
