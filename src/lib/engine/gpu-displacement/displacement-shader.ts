@@ -429,29 +429,6 @@ void main() {
 
         walkCliffEdges(unitDir, nbHL, nbEdgeCount, nbNeighborH, nbCorners,
                        nbHexRadius, cliffNoise, midNoise, nbTierH, bestMu, midWeightSum, midWeightedH);
-
-        // Also accumulate the neighbor's coast edges into our min-dist /
-        // soft-min trackers. Self walked its own coast edges; 1-hopping
-        // each neighbor's coast edges makes minCoastDist symmetric across
-        // any two cells sharing an edge — the truly-nearest coast from
-        // any vertex on a shared edge is now in BOTH cells' visible set,
-        // so both compute the same minCoastDist. Closes the residual
-        // mu-driven fissure on shared land-land edges (12926/12964/12965)
-        // without relying on a hard proximity gate (the previous attempt
-        // created discontinuity boundaries).
-        for (int j = 0; j < 12; j++) {
-            if (j >= nbEdgeCount) break;
-            int nbnbH = nbNeighborH[j];
-            if (!isCoastEdge(nbHL, nbnbH)) continue;
-            vec3 a = nbCorners[j];
-            int nextIdx = (j + 1) == nbEdgeCount ? 0 : (j + 1);
-            vec3 b = nbCorners[nextIdx];
-            float dist = distToSegment(unitDir, a, b);
-            coastWeightSum += exp(-dist / coastSmoothK);
-            coastN++;
-            minCoastDist = min(minCoastDist, dist);
-            hasCoastEdge = true;
-        }
     }
 
     if (bestMu < 1.0 && midWeightSum > 0.0) {
