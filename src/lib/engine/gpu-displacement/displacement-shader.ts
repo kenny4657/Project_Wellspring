@@ -289,14 +289,7 @@ void main() {
     bool isWaterHex = selfH <= 1;
     float selfTierH = levelHeight(selfH);
     float interiorNoiseH = isWaterHex ? abs(rawNoise) : (rawNoise + 0.3);
-    // Signed (no abs) so border vs interior noise share the same sign.
-    // The abs() version always-pushed-up borders, but on shared land-land
-    // edges that mu-blends into a sign mismatch between adjacent cells,
-    // amplifying h disagreement to ~800m fissures. Signed eliminates
-    // that. Trade-off: coastlines no longer get a guaranteed positive
-    // bump near the edge — a coastal cell with strongly-negative noise
-    // can dip slightly below sea level. Water sphere should hide it.
-    float borderNoiseH = rawNoise + 0.15;
+    float borderNoiseH = abs(rawNoise) + 0.15;
     float hexRadius = meanHexRadius(corners, edgeCount);
 
     // ── Walk non-excluded edges to find nearest border ─────
