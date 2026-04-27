@@ -447,8 +447,13 @@ function simulateShaderHeight(
 		const mu = (1 - Math.cos(t01 * Math.PI)) / 2;
 		const isWaterNeighborBorder = nearestBorderTarget < -0.001;
 		const borderNoiseCoeff = isWaterNeighborBorder ? NOISE_AMP : NOISE_AMP * 0.3;
-		const noiseCoeff = NOISE_AMP * mu + borderNoiseCoeff * (1 - mu);
-		const noiseH = interiorNoiseH * mu + borderNoiseH * (1 - mu);
+		// LAND: mu-independent noise (see shader rationale)
+		const noiseCoeff = isWater
+			? (NOISE_AMP * mu + borderNoiseCoeff * (1 - mu))
+			: NOISE_AMP;
+		const noiseH = isWater
+			? (interiorNoiseH * mu + borderNoiseH * (1 - mu))
+			: interiorNoiseH;
 		h = selfTierH * mu + nearestBorderTarget * (1 - mu) + noiseH * noiseCoeff;
 		if (nearestBorderTarget === 0 && nearestEdgeIdx >= 0) {
 			const coastMid = 4 * nearestEdgeT * (1 - nearestEdgeT);

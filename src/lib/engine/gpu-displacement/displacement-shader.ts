@@ -373,8 +373,20 @@ void main() {
 
         bool isWaterNeighborBorder = borderTarget < -0.001;
         float borderNoiseCoeff = isWaterNeighborBorder ? noiseAmp : noiseAmp * 0.3;
-        float noiseCoeff = noiseAmp * mu + borderNoiseCoeff * (1.0 - mu);
-        float noiseH = interiorNoiseH * mu + borderNoiseH * (1.0 - mu);
+        // For LAND cells: use mu-INDEPENDENT noise (interior flavor, full amp).
+        // The mu-blend used to taper noise toward border at coasts but it
+        // also introduced a per-cell asymmetry on shared land-land edges:
+        // each cell uses its OWN nearest non-excluded edge for mu, so a
+        // coastal cell (low mu, border-flavored) and an inland cell (high
+        // mu, interior-flavored) sharing an edge produce different h along
+        // the entire edge. Mu-independent noise eliminates this for land.
+        // Water keeps the mu-blend — shoreline behavior depends on it.
+        float noiseCoeff = isWaterHex
+            ? (noiseAmp * mu + borderNoiseCoeff * (1.0 - mu))
+            : noiseAmp;
+        float noiseH = isWaterHex
+            ? (interiorNoiseH * mu + borderNoiseH * (1.0 - mu))
+            : interiorNoiseH;
         h = selfTierH * mu + borderTarget * (1.0 - mu) + noiseH * noiseCoeff;
 
         // COAST_ROUNDING dip at coastal edge midpoint
