@@ -63,6 +63,8 @@ out float vTierH;
 out float vCliffMu;
 flat out int vTerrainId;
 flat out int vHeightLevel;
+flat out int vNeighborTerrainId;
+out float vNearestEdgeDist;
 
 float levelHeight(int level) {
     if (level <= 0) return levelHeights.x;
@@ -366,6 +368,30 @@ void main() {
         h = bestMidH * (1.0 - clamped) + h * clamped;
     }
 
+    // Cross-terrain blend: find the nearest neighbor edge whose hex has
+    // a DIFFERENT terrain id. Fragment shader uses this to blend toward
+    // the neighbor's terrain color near the shared edge — same effect
+    // as the CPU pipeline's vColor.g packing of (neighborId, distToBorder).
+    int selfTerrain = readTerrainId(id);
+    int nearestNbTerrain = selfTerrain;
+    float nearestNbDist = 1.0;
+    for (int i = 0; i < 12; i++) {
+        if (i >= edgeCount) break;
+        int nbId = nbIds[i];
+        if (nbId < 0) continue;
+        int nbTerrain = readTerrainId(nbId);
+        if (nbTerrain == selfTerrain) continue;
+        vec3 a = corners[i];
+        int nextIdx = (i + 1) == edgeCount ? 0 : (i + 1);
+        vec3 b = corners[nextIdx];
+        float dist = distToSegment(unitDir, a, b);
+        float d01 = clamp(dist / hexRadius, 0.0, 1.0);
+        if (d01 < nearestNbDist) {
+            nearestNbDist = d01;
+            nearestNbTerrain = nbTerrain;
+        }
+    }
+
     vec3 worldPos = unitDir * (planetRadius * (1.0 + h));
     vec4 wp = world * vec4(worldPos, 1.0);
     vWorldPos = wp.xyz;
@@ -373,8 +399,10 @@ void main() {
     vHeight = h;
     vTierH = selfTierH;
     vCliffMu = 1.0 - rockMu;
-    vTerrainId = readTerrainId(id);
+    vTerrainId = selfTerrain;
     vHeightLevel = selfH;
+    vNeighborTerrainId = nearestNbTerrain;
+    vNearestEdgeDist = nearestNbDist;
     gl_Position = viewProjection * wp;
 }
 `;
@@ -389,6 +417,8 @@ in float vTierH;
 in float vCliffMu;
 flat in int vTerrainId;
 flat in int vHeightLevel;
+flat in int vNeighborTerrainId;
+in float vNearestEdgeDist;
 
 uniform vec3 sunDir;
 uniform vec3 fillDir;
@@ -529,6 +559,22 @@ void main() {
     float inlandH = tierHKm + noiseBias;
     float colorH = max(heightAboveR, inlandH);
     vec3 procColor = computeTerrainColor(terrainId, colorH, tierHKm, scratchy);
+
+    // Cross-terrain blend near borders. Skip on water (no surface texture
+    // there, and the cliff erosion's smooth ramp already handles the
+    // tier transition geometrically) and gate by distance so we don't
+    // fire the snoise calls for fragments deep in the cell interior.
+    if (!isWaterFrag && vNeighborTerrainId != terrainId && vNearestEdgeDist < 0.5) {
+        float n1 = snoise(vWorldPos * 0.004) * 0.22;
+        float n2 = snoise(vWorldPos * 0.012) * 0.10;
+        float threshold = max(0.35 + n1 + n2, 0.08);
+        float blend = (1.0 - smoothstep(0.0, threshold, vNearestEdgeDist)) * 0.45;
+        if (blend > 0.001) {
+            int nbId = clamp(vNeighborTerrainId, 0, 9);
+            vec3 nbColor = computeTerrainColor(nbId, colorH, tierHKm, scratchy);
+            procColor = mix(procColor, nbColor, blend);
+        }
+    }
 
     // Cliff face — only fires when vCliffMu (= 1 - rockMu) is high, i.e.
     // we're near a real rock cliff. Smooth coast / water-step transitions
