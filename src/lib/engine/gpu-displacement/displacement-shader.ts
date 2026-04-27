@@ -453,21 +453,19 @@ float snoise(vec3 v) {
     return 42.0 * dot(m * m, vec4(dot(p0, x0), dot(p1, x1), dot(p2, x2), dot(p3, x3)));
 }
 
-// ── Scratchy organic surface texture (triplanar) ─────────────
+// Scratchy texture: 2 octaves (vs 4 in terrain-material.ts) and a
+// single dominant-axis projection (vs full triplanar) — about a 6×
+// drop in per-fragment snoise calls, which was the GPU bottleneck.
 float scratchyPattern(vec2 uv) {
-    float n1 = snoise(vec3(uv * 18.0, 0.0)) * 0.4;
-    float n2 = snoise(vec3(uv * 35.0, 1.5)) * 0.3;
-    float n3 = snoise(vec3(uv * 70.0, 3.0)) * 0.2;
-    float n4 = snoise(vec3(uv * 140.0, 5.0)) * 0.1;
-    return n1 + n2 + n3 + n4;
+    float n1 = snoise(vec3(uv * 18.0, 0.0)) * 0.5;
+    float n2 = snoise(vec3(uv * 70.0, 3.0)) * 0.25;
+    return n1 + n2;
 }
-float triplanarScratchy(vec3 worldPos, vec3 normal, float scale) {
-    vec3 blend = abs(normal);
-    blend = blend / (blend.x + blend.y + blend.z + 0.001);
-    float tx = scratchyPattern(worldPos.yz * scale);
-    float ty = scratchyPattern(worldPos.xz * scale);
-    float tz = scratchyPattern(worldPos.xy * scale);
-    return tx * blend.x + ty * blend.y + tz * blend.z;
+float dominantAxisScratchy(vec3 worldPos, vec3 normal, float scale) {
+    vec3 a = abs(normal);
+    if (a.x >= a.y && a.x >= a.z) return scratchyPattern(worldPos.yz * scale);
+    if (a.y >= a.z)               return scratchyPattern(worldPos.xz * scale);
+    return scratchyPattern(worldPos.xy * scale);
 }
 
 // ── Per-terrain palette lookup + 4-band height blend ─────────
@@ -514,7 +512,11 @@ void main() {
     int terrainId = clamp(vTerrainId, 0, 9);
     float tierHKm = vTierH * planetRadius;     // unit-sphere → world km
     float heightAboveR = vHeight * planetRadius;
-    float scratchy = triplanarScratchy(vWorldPos, N, 0.004);
+    // Skip surface scratchy on water hexes — water doesn't need rocky
+    // grain and we already get specular highlights below. Halves the
+    // fragment cost for the entire ocean.
+    bool isWaterFrag = vHeightLevel <= 1;
+    float scratchy = isWaterFrag ? 0.0 : dominantAxisScratchy(vWorldPos, N, 0.004);
 
     // Own terrain color, height-banded. Clamp height above the shore band
     // so shore color appears only on the actual shoreline (we don't have
@@ -535,7 +537,6 @@ void main() {
         float t = clamp(scratchy * 0.5 + 0.5, 0.0, 1.0);
         vec3 rockColor = mix(cliffLight, cliffDark, t);
         rockColor = mix(rockColor, cliffPale, smoothstep(0.65, 0.85, t) * 0.45);
-        rockColor += snoise(vWorldPos * 0.04) * 0.025;
         // Surface steepness suppresses cliff coloring on flat tops.
         float steepness = 1.0 - dot(N, normalize(vWorldPos));
         float erosionBlend = smoothstep(0.003, 0.06, steepness)
@@ -553,7 +554,7 @@ void main() {
     vec3 litColor = procColor * light;
 
     // Subtle specular on water surfaces.
-    if (vHeightLevel <= 1) {
+    if (isWaterFrag) {
         vec3 halfVec = normalize(sunDir + toCamera);
         float spec = pow(max(0.0, dot(N, halfVec)), 64.0);
         litColor += vec3(1.0, 0.98, 0.92) * spec * 0.10;
