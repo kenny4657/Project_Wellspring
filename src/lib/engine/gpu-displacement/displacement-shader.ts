@@ -109,8 +109,11 @@ void distAndT(vec3 p, vec3 a, vec3 b, out float dist, out float t) {
 bool isCliffEdge(int selfH, int nbH) {
     bool selfWater = selfH <= 1;
     bool nbWater = nbH <= 1;
-    if (selfWater && nbWater) return false;
     int gap = int(abs(float(selfH - nbH)));
+    // Water-water cross-tier (tier-0 ↔ tier-1): treat as cliff so the
+    // existing cliff-erosion pass produces a symmetric smooth ramp
+    // between the two water levels (replaces the old water-step pass).
+    if (selfWater && nbWater) return gap > 0;
     if (selfWater && nbH <= 2) return false;
     if (nbWater && selfH <= 2) return false;
     return gap > 0;
@@ -311,11 +314,8 @@ void main() {
     int coastN = 0;
     float minCoastDist = 1e9;
     bool hasCoastEdge = false;
-    // Water-step pass: same logic as coast pass but for water-water edges
-    // with different tiers (deep ↔ shallow). Pulls h toward the deeper
-    // tier's level via hard min over those edges.
-    float minWaterStepDist = 1e9;
-    bool hasWaterStepEdge = false;
+    // (water-step pass removed — tier-0/tier-1 boundaries now go through
+    // cliff erosion, which produces a symmetric smooth ramp.)
 
     for (int i = 0; i < 12; i++) {
         if (i >= edgeCount) break;
@@ -343,13 +343,6 @@ void main() {
             coastN++;
             minCoastDist = min(minCoastDist, dist);
             hasCoastEdge = true;
-        }
-        // Water-water with different tiers (tier-0 ↔ tier-1):
-        bool selfWaterE = selfH <= 1;
-        bool nbWaterE = nbH <= 1;
-        if (selfWaterE && nbWaterE && selfH != nbH) {
-            minWaterStepDist = min(minWaterStepDist, dist);
-            hasWaterStepEdge = true;
         }
         hasBorder = true;
     }
@@ -440,18 +433,6 @@ void main() {
         float bestMidH = midWeightedH / midWeightSum;
         float clamped = max(0.0, (bestMu - 0.05) / 0.95);
         h = bestMidH * (1.0 - clamped) + h * clamped;
-    }
-
-    // ── Water-step erosion pass ────────────────────────────
-    // Pulls h toward lh(0) (deep water level) wherever a tier-0 ↔ tier-1
-    // edge is nearby. Smooths shallow→deep boundaries the same way the
-    // coast pass smooths land→water. Runs BEFORE coast pass so coast
-    // wins at 3-cell land/shallow/deep corners.
-    if (hasWaterStepEdge) {
-        float deepTarget = levelHeights.x; // lh(0) = -0.020
-        float waterT = clamp(minWaterStepDist / (hexRadius * 0.7), 0.0, 1.0);
-        float waterMu = (1.0 - cos(waterT * 3.14159265)) / 2.0;
-        h = deepTarget * (1.0 - waterMu) + h * waterMu;
     }
 
     // ── Coast-erosion pass ─────────────────────────────────

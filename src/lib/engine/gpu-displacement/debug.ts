@@ -32,8 +32,9 @@ import {
 function isCliffEdge(selfH: number, nbH: number): boolean {
 	const selfWater = selfH <= 1;
 	const nbWater = nbH <= 1;
-	if (selfWater && nbWater) return false;
 	const gap = Math.abs(selfH - nbH);
+	// Water-water cross-tier: cliff (smooth ramp via cliff-erosion pass).
+	if (selfWater && nbWater) return gap > 0;
 	if (selfWater && nbH <= 2) return false;
 	if (nbWater && selfH <= 2) return false;
 	return gap > 0;
@@ -370,8 +371,6 @@ function simulateShaderHeight(
 	let coastN = 0;
 	let minCoastDist = Infinity;
 	let hasCoastEdge = false;
-	let minWaterStepDist = Infinity;
-	let hasWaterStepEdge = false;
 	// EPS for corner tie-break. CPU uses 1e-4, but at unit-sphere-normalized
 	// edge midpoints the chord-to-sphere drift is ~7e-5 — that drift is the
 	// same magnitude as 1e-4, causing the tie-break to fire on midpoints
@@ -424,12 +423,6 @@ function simulateShaderHeight(
 			coastN++;
 			if (dist < minCoastDist) minCoastDist = dist;
 			hasCoastEdge = true;
-		}
-		// Water-water with different tiers (deep ↔ shallow):
-		const nbH2 = self.neighborH[i];
-		if (selfH <= 1 && nbH2 <= 1 && selfH !== nbH2) {
-			if (dist < minWaterStepDist) minWaterStepDist = dist;
-			hasWaterStepEdge = true;
 		}
 		hasBorder = true;
 	}
@@ -484,13 +477,6 @@ function simulateShaderHeight(
 		h = bestMidH * (1 - clamped) + hBase * clamped;
 	}
 
-	// Water-step pass first, then coast pass — see shader for ordering rationale.
-	if (hasWaterStepEdge) {
-		const deepTarget = LEVEL_HEIGHTS[0];
-		const waterT = Math.min(Math.max(minWaterStepDist / (hexRadius * 0.7), 0), 1);
-		const waterMu = (1 - Math.cos(waterT * Math.PI)) / 2;
-		h = deepTarget * (1 - waterMu) + h * waterMu;
-	}
 	if (isWater && hasCoastEdge) {
 		const coastT = Math.min(Math.max(minCoastDist / (hexRadius * 0.7), 0), 1);
 		const coastMu = (1 - Math.cos(coastT * Math.PI)) / 2;
