@@ -68,6 +68,7 @@ flat out int vTerrainId;
 flat out int vHeightLevel;
 flat out int vNeighborTerrainId;
 out float vNearestEdgeDist;
+out float vCoastDist;
 
 float levelHeight(int level) {
     if (level <= 0) return levelHeights.x;
@@ -426,6 +427,22 @@ void main() {
         }
     }
 
+    // Coast distance: nearest water-neighbor edge ratio (0=at edge, 1=opposite side).
+    // For land cells only — fragment uses this to paint sand on coastal land.
+    float coastDist = 1.0;
+    if (!isWaterHex) {
+        for (int i = 0; i < 12; i++) {
+            if (i >= edgeCount) break;
+            if (neighborH[i] > 1) continue;
+            vec3 a = corners[i];
+            int nextIdx = (i + 1) == edgeCount ? 0 : (i + 1);
+            vec3 b = corners[nextIdx];
+            float dist = distToSegment(unitDir, a, b);
+            float d01 = clamp(dist / hexRadius, 0.0, 1.0);
+            if (d01 < coastDist) coastDist = d01;
+        }
+    }
+
     vec3 worldPos = unitDir * (planetRadius * (1.0 + h));
     vec4 wp = world * vec4(worldPos, 1.0);
     vWorldPos = wp.xyz;
@@ -437,6 +454,7 @@ void main() {
     vHeightLevel = selfH;
     vNeighborTerrainId = nearestNbTerrain;
     vNearestEdgeDist = nearestNbDist;
+    vCoastDist = coastDist;
     gl_Position = viewProjection * wp;
 }
 `;
@@ -453,6 +471,7 @@ flat in int vTerrainId;
 flat in int vHeightLevel;
 flat in int vNeighborTerrainId;
 in float vNearestEdgeDist;
+in float vCoastDist;
 
 uniform vec3 sunDir;
 uniform vec3 fillDir;
@@ -535,6 +554,23 @@ float triplanarScratchy(vec3 worldPos, vec3 normal, float scale) {
     return tx * blend.x + ty * blend.y + tz * blend.z;
 }
 
+// ── Slab map (rocky stratification for cliff faces) ──────────
+float hash1(vec2 p) {
+    p = fract(p * vec2(123.34, 456.21));
+    p += dot(p, p + 78.233);
+    return fract(p.x * p.y);
+}
+// Returns vec3(edgeDist, cellRand1, cellRand2) — see terrain-material.ts.
+vec3 slabMap(vec2 uv, float warp) {
+    uv += vec2(snoise(vec3(uv * 0.7, 0.0)), snoise(vec3(uv * 0.7, 5.0))) * warp;
+    vec2 cellId = floor(uv);
+    vec2 cellUV = fract(uv);
+    float edgeDist = min(min(cellUV.x, 1.0 - cellUV.x), min(cellUV.y, 1.0 - cellUV.y));
+    float cv1 = hash1(cellId);
+    float cv2 = hash1(cellId + 100.0);
+    return vec3(edgeDist, cv1, cv2);
+}
+
 // ── Per-terrain palette lookup + 4-band height blend ─────────
 vec3 palShore(int id, float s) { return terrainPalette[id * 4]     * (1.0 + s * 0.10); }
 vec3 palGrass(int id, float s) { return terrainPalette[id * 4 + 1] * (1.0 + s * 0.14); }
@@ -610,21 +646,92 @@ void main() {
         }
     }
 
-    // Cliff face — only fires when vCliffMu (= 1 - rockMu) is high, i.e.
-    // we're near a real rock cliff. Smooth coast / water-step transitions
-    // do not set rockMu, so they stay terrain-colored.
-    if (vCliffMu > 0.01) {
+    // Surface steepness from displaced geometry — cliff faces have steep
+    // gradients; flat tops do not. Used to gate both the cliff face render
+    // and the cliff-foot sand mix.
+    float steepness = 1.0 - dot(N, normalize(vWorldPos));
+
+    // Beach color (sand) — used by both cliff foot blend and beach overlay
+    vec3 beachColor = vec3(0.68, 0.60, 0.42) * (1.0 + scratchy * 0.10);
+
+    // ── Cliff face render (rocky brown with slab striations) ──
+    // Only fires when vCliffMu (= 1 - rockMu) is high, i.e. we're near a
+    // real rock cliff. Smooth coast / water-step transitions don't set
+    // rockMu, so they stay terrain-colored.
+    if (vCliffMu > 0.01 && steepness > 0.003) {
         vec3 cliffLight = cliffPalette[terrainId * 3];
         vec3 cliffDark  = cliffPalette[terrainId * 3 + 1];
         vec3 cliffPale  = cliffPalette[terrainId * 3 + 2];
-        float t = clamp(scratchy * 0.5 + 0.5, 0.0, 1.0);
-        vec3 rockColor = mix(cliffLight, cliffDark, t);
-        rockColor = mix(rockColor, cliffPale, smoothstep(0.65, 0.85, t) * 0.45);
-        // Surface steepness suppresses cliff coloring on flat tops.
-        float steepness = 1.0 - dot(N, normalize(vWorldPos));
-        float erosionBlend = smoothstep(0.003, 0.06, steepness)
-                           * smoothstep(0.0, 0.5, vCliffMu);
+
+        // Triplanar slab maps — 2 octaves of cell-noise give the rocky
+        // stratified look. Same setup as terrain-material.ts.
+        vec3 triW = abs(N);
+        triW /= (triW.x + triW.y + triW.z + 0.001);
+        vec2 uvX = vec2(vWorldPos.y * 0.4, vWorldPos.z) * 0.008;
+        vec2 uvY = vec2(vWorldPos.x, vWorldPos.z) * 0.008;
+        vec2 uvZ = vec2(vWorldPos.x, vWorldPos.y * 0.4) * 0.008;
+
+        vec3 slab1X = slabMap(uvX, 0.4);
+        vec3 slab1Y = slabMap(uvY, 0.4);
+        vec3 slab1Z = slabMap(uvZ, 0.4);
+        float slabCell1 = slab1X.y * triW.x + slab1Y.y * triW.y + slab1Z.y * triW.z;
+
+        vec3 slab2X = slabMap(uvX * 2.8 + 10.0, 0.5);
+        vec3 slab2Y = slabMap(uvY * 2.8 + 10.0, 0.5);
+        vec3 slab2Z = slabMap(uvZ * 2.8 + 10.0, 0.5);
+        float slabCell2 = slab2X.y * triW.x + slab2Y.y * triW.y + slab2Z.y * triW.z;
+
+        vec3 rockColor = mix(cliffLight, cliffDark, slabCell1);
+        rockColor = mix(rockColor, cliffPale, step(0.65, slabCell1) * 0.45);
+        rockColor = mix(rockColor, rockColor * 0.80, step(0.55, slabCell2) * 0.35);
+        rockColor = mix(rockColor, rockColor * 1.15, (1.0 - step(0.45, slabCell2)) * 0.20);
+
+        // Midpoint blend toward neutral rock so both sides of a cliff
+        // converge as proximity → 1.
+        vec3 midRock = vec3(0.32, 0.26, 0.19);
+        rockColor = mix(rockColor, midRock, smoothstep(0.5, 1.0, vCliffMu) * 0.75);
+
+        // Cliff foot sand blend — bottom of the cliff face picks up sand
+        // color so the cliff sits on a sandy base instead of a hard line.
+        float footAmt = 1.0 - smoothstep(
+            0.004 * planetRadius,
+            0.010 * planetRadius,
+            heightAboveR
+        );
+        float footNoise = snoise(vWorldPos * 0.010) * 0.30
+                        + snoise(vWorldPos * 0.035) * 0.15;
+        footAmt = clamp(footAmt + footNoise, 0.0, 1.0);
+        rockColor = mix(rockColor, beachColor * 0.82, footAmt * 0.70);
+
+        // Apply rock to procColor by steepness × proximity.
+        float erosionNoise = snoise(vWorldPos * 0.006) * 0.02;
+        float erosionBlend = smoothstep(0.003 + erosionNoise, 0.06, steepness)
+                           * smoothstep(0.0, 0.3, vCliffMu);
         procColor = mix(procColor, rockColor, erosionBlend);
+    }
+
+    // ── Beach overlay on coastal land ──
+    // Land hexes near a water neighbor get sand painted on the top face,
+    // blending toward cliff rock near actual cliffs so the surfaces converge.
+    if (!isWaterFrag && vCoastDist < 0.5) {
+        float coastNoise = snoise(vWorldPos * 0.005) * 0.12
+                         + snoise(vWorldPos * 0.015) * 0.06;
+        // coastProximity: 1 at the water edge, 0 well inland.
+        float coastProximity = clamp(1.0 - vCoastDist * 2.0, 0.0, 1.0);
+        float beachBlend = smoothstep(0.35 + coastNoise, 1.0, coastProximity);
+        if (beachBlend > 0.001) {
+            vec3 rockNearCliff = mix(
+                cliffPalette[terrainId * 3],
+                cliffPalette[terrainId * 3 + 1],
+                0.55
+            );
+            float beachRockNoise = snoise(vWorldPos * 0.010) * 0.30
+                                 + snoise(vWorldPos * 0.035) * 0.15;
+            float rockMix = smoothstep(0.05, 0.85, vCliffMu);
+            rockMix = clamp(rockMix + beachRockNoise * 0.3, 0.0, 1.0);
+            vec3 beachAtCliff = mix(beachColor, rockNearCliff, rockMix * 0.65);
+            procColor = mix(procColor, beachAtCliff, beachBlend);
+        }
     }
 
     // Lighting (matches terrain-material.ts)
