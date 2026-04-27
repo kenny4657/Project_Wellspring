@@ -364,17 +364,25 @@ void main() {
         bool isSteep = (flags & 1) != 0;
         bool isRock  = (flags & 2) != 0;
         float dist = distToSegment(unitDir, a, b);
+        // Use edge length itself as the rampWidth scale. The edge endpoints
+        // are identical from every cell that sees this edge (both sides of
+        // a shared edge AND every cell that 1-hops in to find it), so this
+        // is symmetric — closing the gap that appears when self-radius is
+        // used for an edge originally owned by a different-radius neighbor.
+        // Approximation: for a regular hex, edge length ≈ mean-hex-radius,
+        // so the visual is close to what the 1-hop walk produced before.
+        float ownerR = length(b - a);
         float mu;
         if (isSteep) {
-            float rampWidth = hexRadius * 0.2;
-            float safeBand = hexRadius * 0.05;
+            float rampWidth = ownerR * 0.2;
+            float safeBand = ownerR * 0.05;
             float perturbed = dist < safeBand
                 ? dist
-                : max(0.0, dist + cliffNoise * hexRadius * 0.25);
+                : max(0.0, dist + cliffNoise * ownerR * 0.25);
             float t = min(perturbed / rampWidth, 1.0);
             mu = t * (2.0 - t);
         } else {
-            float rampWidth = hexRadius * 0.7;
+            float rampWidth = ownerR * 0.7;
             float t = min(dist / rampWidth, 1.0);
             mu = (1.0 - cos(t * 3.14159265)) / 2.0;
         }
