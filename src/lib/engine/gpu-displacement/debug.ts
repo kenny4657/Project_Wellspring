@@ -455,7 +455,7 @@ function simulateShaderHeight(
 			? (interiorNoiseH * mu + borderNoiseH * (1 - mu))
 			: interiorNoiseH;
 		h = selfTierH * mu + nearestBorderTarget * (1 - mu) + noiseH * noiseCoeff;
-		if (nearestBorderTarget === 0 && nearestEdgeIdx >= 0) {
+		if (isWater && nearestBorderTarget === 0 && nearestEdgeIdx >= 0) {
 			const coastMid = 4 * nearestEdgeT * (1 - nearestEdgeT);
 			const coastBlend = mu * (1 - mu);
 			h -= COAST_ROUNDING * coastMid * coastBlend * 4;
@@ -491,10 +491,11 @@ function simulateShaderHeight(
 		const waterMu = (1 - Math.cos(waterT * Math.PI)) / 2;
 		h = deepTarget * (1 - waterMu) + h * waterMu;
 	}
-	if (hasCoastEdge) {
+	if (isWater && hasCoastEdge) {
 		const coastT = Math.min(Math.max(minCoastDist / (hexRadius * 0.7), 0), 1);
 		const coastMu = (1 - Math.cos(coastT * Math.PI)) / 2;
-		h = h * coastMu;
+		const landTarget = (rawNoise + 0.3) * NOISE_AMP;
+		h = landTarget * (1 - coastMu) + h * coastMu;
 	}
 
 	// Land hex: floor above water sphere — see shader for rationale.

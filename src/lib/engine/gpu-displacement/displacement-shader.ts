@@ -389,8 +389,10 @@ void main() {
             : interiorNoiseH;
         h = selfTierH * mu + borderTarget * (1.0 - mu) + noiseH * noiseCoeff;
 
-        // COAST_ROUNDING dip at coastal edge midpoint
-        if (borderTarget == 0.0 && nearestEdgeIdx >= 0) {
+        // COAST_ROUNDING dip at coastal edge midpoint — water only.
+        // For land cells, nearestEdgeT/mu are per-cell-asymmetric on shared
+        // land-land edges, producing a fissure at midpoints.
+        if (isWaterHex && borderTarget == 0.0 && nearestEdgeIdx >= 0) {
             float coastMid = 4.0 * nearestEdgeT * (1.0 - nearestEdgeT);
             float coastBlend = mu * (1.0 - mu);
             h -= coastRounding * coastMid * coastBlend * 4.0;
@@ -458,10 +460,20 @@ void main() {
     // nearest-edge classification. Closes the discontinuity between
     // coast and water-water target zones (e.g. 12922/12961/12960).
     // Runs LAST so coast dominates at any coast-touching corner.
-    if (hasCoastEdge) {
+    // Water-only: pulls water h up toward LAND'S natural coast-edge h
+    // ((rawNoise+0.3)*noiseAmp), not toward 0. With land's coast post-pass
+    // disabled, land sits at (rawNoise+0.3)*noiseAmp at its coast edges,
+    // not at sea level. Pulling water to 0 at coast leaves a vertical step
+    // between land and water — instead, water rises to meet land.
+    //
+    // Land has no coast post-pass (land's coast h comes from the border
+    // walk's selfTierH*mu + target*(1-mu) = 0 + noiseH*noiseCoeff = the
+    // mu-independent (rawNoise+0.3)*noiseAmp value).
+    if (isWaterHex && hasCoastEdge) {
         float coastT = clamp(minCoastDist / (hexRadius * 0.7), 0.0, 1.0);
         float coastMu = (1.0 - cos(coastT * 3.14159265)) / 2.0;
-        h = h * coastMu;
+        float landTarget = (rawNoise + 0.3) * noiseAmp;
+        h = landTarget * (1.0 - coastMu) + h * coastMu;
     }
 
     vec3 worldPos = unitDir * (planetRadius * (1.0 + h));
