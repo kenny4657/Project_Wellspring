@@ -109,11 +109,8 @@ void distAndT(vec3 p, vec3 a, vec3 b, out float dist, out float t) {
 bool isCliffEdge(int selfH, int nbH) {
     bool selfWater = selfH <= 1;
     bool nbWater = nbH <= 1;
+    if (selfWater && nbWater) return false;
     int gap = int(abs(float(selfH - nbH)));
-    // Water-water cross-tier (tier-0 ↔ tier-1): treat as cliff so the
-    // existing cliff-erosion pass produces a symmetric smooth ramp
-    // between the two water levels (replaces the old water-step pass).
-    if (selfWater && nbWater) return gap > 0;
     if (selfWater && nbH <= 2) return false;
     if (nbWater && selfH <= 2) return false;
     return gap > 0;
@@ -263,6 +260,48 @@ void walkCliffEdges(
         }
         float midTier = (selfTierH + levelHeight(neighborH[i])) * 0.5;
         float midH = midTier + (abs(midNoise) + 0.15) * noiseAmp * 0.3;
+        float w = exp(-mu / kernelK);
+        midWeightSum += w;
+        midWeightedH += w * midH;
+        if (mu < bestMu) bestMu = mu;
+    }
+}
+
+// Water-step erosion — same shape as walkCliffEdges (cosine ramp,
+// weighted-avg midH for cell-symmetry) but for water-water cross-tier
+// edges (tier-0 ↔ tier-1). Separate from cliff erosion because the
+// fragment shader paints `vCliffMu > 0.5` brown — sharing the cliff
+// accumulators would draw underwater steps as land cliffs.
+void walkWaterStepEdges(
+    vec3 unitDir,
+    int selfH,
+    int edgeCount,
+    int neighborH[12],
+    vec3 corners[12],
+    float ownerHexRadius,
+    float midNoise,
+    float selfTierH,
+    inout float bestMu,
+    inout float midWeightSum,
+    inout float midWeightedH
+) {
+    float kernelK = 0.05;
+    for (int i = 0; i < 12; i++) {
+        if (i >= edgeCount) break;
+        int nbH = neighborH[i];
+        if (selfH > 1 || nbH > 1) continue;
+        if (selfH == nbH) continue;
+        vec3 a = corners[i];
+        int nextIdx = (i + 1) == edgeCount ? 0 : (i + 1);
+        vec3 b = corners[nextIdx];
+        float dist = distToSegment(unitDir, a, b);
+        float rampWidth = ownerHexRadius * 0.7;
+        float t = min(dist / rampWidth, 1.0);
+        float mu = (1.0 - cos(t * 3.14159265)) / 2.0;
+        // Smaller noise contribution than land cliffs — underwater terrain
+        // shouldn't have rocky cliff bumps.
+        float midTier = (selfTierH + levelHeight(nbH)) * 0.5;
+        float midH = midTier + (abs(midNoise) + 0.15) * noiseAmp * 0.1;
         float w = exp(-mu / kernelK);
         midWeightSum += w;
         midWeightedH += w * midH;
@@ -433,6 +472,36 @@ void main() {
         float bestMidH = midWeightedH / midWeightSum;
         float clamped = max(0.0, (bestMu - 0.05) / 0.95);
         h = bestMidH * (1.0 - clamped) + h * clamped;
+    }
+
+    // ── Water-step erosion (gentle ramp between tier-0 / tier-1) ──
+    // Same shape as cliff erosion but for water-water cross-tier; uses
+    // separate accumulators so vCliffMu (cliff coloring) isn't triggered.
+    float wsBestMu = 1.0;
+    float wsMidWeightSum = 0.0;
+    float wsMidWeightedH = 0.0;
+    walkWaterStepEdges(unitDir, selfH, edgeCount, neighborH, corners,
+                       hexRadius, midNoise, selfTierH, wsBestMu, wsMidWeightSum, wsMidWeightedH);
+    for (int i = 0; i < 12; i++) {
+        if (i >= edgeCount) break;
+        int nbId = nbIds[i];
+        if (nbId < 0) continue;
+        int nbHL, nbEdgeCount;
+        readHexData(nbId, nbHL, nbEdgeCount);
+        int nbNeighborH[12];
+        readNeighbors(nbId, nbNeighborH);
+        vec3 nbCorners[12];
+        int nbNbIds[12];
+        readCornersAndNeighborIds(nbId, nbCorners, nbNbIds);
+        float nbHexRadius = meanHexRadius(nbCorners, nbEdgeCount);
+        float nbTierH = levelHeight(nbHL);
+        walkWaterStepEdges(unitDir, nbHL, nbEdgeCount, nbNeighborH, nbCorners,
+                           nbHexRadius, midNoise, nbTierH, wsBestMu, wsMidWeightSum, wsMidWeightedH);
+    }
+    if (wsBestMu < 1.0 && wsMidWeightSum > 0.0) {
+        float wsMidH = wsMidWeightedH / wsMidWeightSum;
+        float clamped = max(0.0, (wsBestMu - 0.05) / 0.95);
+        h = wsMidH * (1.0 - clamped) + h * clamped;
     }
 
     // ── Coast-erosion pass ─────────────────────────────────

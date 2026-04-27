@@ -32,9 +32,8 @@ import {
 function isCliffEdge(selfH: number, nbH: number): boolean {
 	const selfWater = selfH <= 1;
 	const nbWater = nbH <= 1;
+	if (selfWater && nbWater) return false;
 	const gap = Math.abs(selfH - nbH);
-	// Water-water cross-tier: cliff (smooth ramp via cliff-erosion pass).
-	if (selfWater && nbWater) return gap > 0;
 	if (selfWater && nbH <= 2) return false;
 	if (nbWater && selfH <= 2) return false;
 	return gap > 0;
@@ -161,6 +160,37 @@ function walkCliffEdges(
 		}
 		const midTier = (selfTierH + getLevelHeight(neighborH[i])) * 0.5;
 		const midH = midTier + (Math.abs(midNoise) + 0.15) * NOISE_AMP * 0.3;
+		const w = Math.exp(-mu / 0.05);
+		state.midWeightSum += w;
+		state.midWeightedH += w * midH;
+		if (mu < state.bestMu) state.bestMu = mu;
+	}
+}
+
+// Water-step erosion (mirrors shader walkWaterStepEdges)
+function walkWaterStepEdges(
+	unitDir: Vector3,
+	selfH: number,
+	corners: Vector3[],
+	neighborH: number[],
+	ownerHexRadius: number,
+	midNoise: number,
+	selfTierH: number,
+	state: CliffWalkState,
+): void {
+	const n = corners.length;
+	for (let i = 0; i < n; i++) {
+		const nbH = neighborH[i];
+		if (selfH > 1 || nbH > 1) continue;
+		if (selfH === nbH) continue;
+		const a = corners[i];
+		const b = corners[(i + 1) % n];
+		const { dist } = distAndT(unitDir, a, b);
+		const rampWidth = ownerHexRadius * 0.7;
+		const t = Math.min(dist / rampWidth, 1);
+		const mu = (1 - Math.cos(t * Math.PI)) / 2;
+		const midTier = (selfTierH + getLevelHeight(nbH)) * 0.5;
+		const midH = midTier + (Math.abs(midNoise) + 0.15) * NOISE_AMP * 0.1;
 		const w = Math.exp(-mu / 0.05);
 		state.midWeightSum += w;
 		state.midWeightedH += w * midH;
@@ -475,6 +505,24 @@ function simulateShaderHeight(
 		bestMidH = state.midWeightedH / state.midWeightSum;
 		const clamped = Math.max(0, (state.bestMu - 0.05) / 0.95);
 		h = bestMidH * (1 - clamped) + hBase * clamped;
+	}
+
+	const wsState: CliffWalkState = { bestMu: 1, midWeightSum: 0, midWeightedH: 0 };
+	walkWaterStepEdges(unitDir, selfH, self.corners, self.neighborH, hexRadius,
+		midNoise, selfTierH, wsState);
+	for (let i = 0; i < n; i++) {
+		const nb = self.neighbors[i];
+		if (!nb) continue;
+		const nbData = fetchCellData(nb, cellById);
+		const nbHexRadius = meanHexRadius(nbData.corners);
+		const nbTierH = getLevelHeight(nbData.heightLevel);
+		walkWaterStepEdges(unitDir, nbData.heightLevel, nbData.corners, nbData.neighborH,
+			nbHexRadius, midNoise, nbTierH, wsState);
+	}
+	if (wsState.bestMu < 1 && wsState.midWeightSum > 0) {
+		const wsMid = wsState.midWeightedH / wsState.midWeightSum;
+		const clamped = Math.max(0, (wsState.bestMu - 0.05) / 0.95);
+		h = wsMid * (1 - clamped) + h * clamped;
 	}
 
 	if (isWater && hasCoastEdge) {
