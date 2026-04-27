@@ -345,7 +345,7 @@ function simulateShaderHeight(
 	const midNoise = rawNoise;
 
 	const interiorNoiseH = isWater ? Math.abs(rawNoise) : (rawNoise + 0.3);
-	const borderNoiseH = Math.abs(rawNoise) + 0.15;
+	const borderNoiseH = rawNoise + 0.15;
 
 	// CPU's allSameHeight short-circuit produces ASYMMETRIC results when
 	// adjacent cells take different paths (one takes the short-circuit,
