@@ -201,9 +201,11 @@ void readHexData(int id, out int heightLevel, out int edgeCount, out bool hasCli
     hasCliffNbr = (int(d.a * 255.0 + 0.5) & 1) != 0;
 }
 
-void readCornersAndNeighborIds(int id, int edgeCount, out vec3 corners[12], out int nbIds[12]) {
+void readCornersAndNeighborIds(int id, out vec3 corners[12], out int nbIds[12]) {
+    // Reads all 12 slots — early-break by edgeCount caused visible gaps
+    // (pre-existing issue, see prior session notes). Cells with fewer
+    // corners pad slots with duplicates so loops stay safe.
     for (int i = 0; i < 12; i++) {
-        if (i >= edgeCount) break;
         vec4 v = readCornerPixel(id, i);
         corners[i] = v.rgb;
         nbIds[i] = int(v.a + 0.5);
@@ -291,7 +293,7 @@ void main() {
     readNeighbors(id, neighborH);
     vec3 corners[12];
     int nbIds[12];
-    readCornersAndNeighborIds(id, edgeCount, corners, nbIds);
+    readCornersAndNeighborIds(id, corners, nbIds);
 
     // Noise
     vec4 noiseRGBA = textureLod(noiseCubemap, unitDir, 0.0);
@@ -338,7 +340,7 @@ void main() {
         readNeighbors(nbId, nbNeighborH);
         vec3 nbCorners[12];
         int nbNbIds[12];
-        readCornersAndNeighborIds(nbId, nbEdgeCount, nbCorners, nbNbIds);
+        readCornersAndNeighborIds(nbId, nbCorners, nbNbIds);
         float nbHexRadius = meanHexRadius(nbCorners, nbEdgeCount);
         float nbTierH = levelHeight(nbHL);
 
