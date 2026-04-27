@@ -82,6 +82,19 @@ export function buildHexDataTextures(cells: HexCell[], scene: Scene): HexDataTex
 	let maxId = 0;
 	for (const c of cells) if (c.id > maxId) maxId = c.id;
 
+	// Pass 1: per-cell hasCliffNbr (used for the within-1-hop computation
+	// in pass 2; defined as: this cell has any neighbor of a different tier).
+	const hasCliffNbrById = new Map<number, boolean>();
+	for (const c of cells) {
+		let v = false;
+		for (let k = 0; k < c.corners.length; k++) {
+			const nb = findNeighborByCorners(c, k, cellByIdMap);
+			if (nb && nb.heightLevel !== c.heightLevel) { v = true; break; }
+		}
+		hasCliffNbrById.set(c.id, v);
+	}
+
+	// Pass 2: write all texture bytes in one loop now that hasCliffNbr is known.
 	for (let id = 0; id <= maxId; id++) {
 		const c = cellByIdMap.get(id);
 		const off = id * 4;
@@ -94,19 +107,23 @@ export function buildHexDataTextures(cells: HexCell[], scene: Scene): HexDataTex
 		//   R = heightLevel (0–4)
 		//   G = terrain     (0–14)
 		//   B = isPentagon flag in bit 0, edgeCount in bits 4..7
-		//   A = bit 0: hasCliffNbr (any cross-tier neighbor) — lets the
-		//        shader skip 1-hop fetches into neighbors that can't
-		//        contribute any cliff erosion.
+		//   A = bit 0: hasCliffNbr (self has any cross-tier neighbor)
+		//       bit 1: hasCliffWithin1Hop (self OR any of self's neighbors
+		//              has cross-tier neighbor) — lets the shader skip
+		//              the ENTIRE cliff erosion (self + 1-hop) for deep
+		//              interior cells far from any tier transition.
 		dataBytes[off + 0] = c.heightLevel;
 		dataBytes[off + 1] = c.terrain;
 		const edgeCount = c.corners.length;
 		dataBytes[off + 2] = (c.isPentagon ? 1 : 0) | (edgeCount << 4);
-		let hasCliffNbr = 0;
-		for (let k = 0; k < edgeCount; k++) {
-			const nb = findNeighborByCorners(c, k, cellByIdMap);
-			if (nb && nb.heightLevel !== c.heightLevel) { hasCliffNbr = 1; break; }
+		const own = hasCliffNbrById.get(c.id) ? 1 : 0;
+		let oneHop = own;
+		if (!oneHop) {
+			for (const nbId of c.neighbors) {
+				if (hasCliffNbrById.get(nbId)) { oneHop = 1; break; }
+			}
 		}
-		dataBytes[off + 3] = hasCliffNbr;
+		dataBytes[off + 3] = own | (oneHop << 1);
 
 		// hexNeighborsTex layout — neighbor heightLevel PER EDGE,
 		// packed 4-bits each across 2 RGBA8 pixels (rows). Pixel 0:

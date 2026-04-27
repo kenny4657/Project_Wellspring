@@ -197,13 +197,15 @@ void readNeighbors(int id, out int nb[12]) {
     nb[11] = (n5 >> 4) & 0xf;
 }
 
-void readHexData(int id, out int heightLevel, out int edgeCount, out bool hasCliffNbr) {
+void readHexData(int id, out int heightLevel, out int edgeCount, out bool hasCliffNbr, out bool hasCliffWithin1Hop) {
     vec4 d = texelFetch(hexDataTex, hexCoord(id), 0);
     heightLevel = int(d.r * 255.0 + 0.5);
     int packed = int(d.b * 255.0 + 0.5);
     edgeCount = (packed >> 4) & 0xf;
     if (edgeCount < 5) edgeCount = 6;
-    hasCliffNbr = (int(d.a * 255.0 + 0.5) & 1) != 0;
+    int aFlags = int(d.a * 255.0 + 0.5);
+    hasCliffNbr = (aFlags & 1) != 0;
+    hasCliffWithin1Hop = (aFlags & 2) != 0;
 }
 
 int readTerrainId(int id) {
@@ -300,8 +302,8 @@ void main() {
 
     // Self data
     int selfH, edgeCount;
-    bool selfHasCliffNbr;
-    readHexData(id, selfH, edgeCount, selfHasCliffNbr);
+    bool selfHasCliffNbr, selfHasCliffWithin1Hop;
+    readHexData(id, selfH, edgeCount, selfHasCliffNbr, selfHasCliffWithin1Hop);
     int neighborH[12];
     readNeighbors(id, neighborH);
     vec3 corners[12];
@@ -327,39 +329,42 @@ void main() {
     float h = selfTierH + interiorNoiseH * noiseAmp;
 
     // ── Tier-transition erosion (self + 1-hop) ─────────────
+    // Whole-block short-circuit: if neither self nor any of self's
+    // neighbors has a cross-tier edge, no cliff erosion can fire from
+    // any visible cliff — skip the self walk AND the 1-hop loop. Most
+    // of the planet's interior land masses and open ocean qualify, so
+    // this saves ~12 probe fetches + 12 edge tests per vertex for
+    // those regions.
     float bestMu = 1.0;
     float rockMu = 1.0;  // gates fragment-shader cliff coloring
     float midWeightSum = 0.0;
     float midWeightedH = 0.0;
-    walkCliffEdges(unitDir, selfH, edgeCount, neighborH, corners,
-                   hexRadius, cliffNoise, midNoise, selfTierH,
-                   bestMu, rockMu, midWeightSum, midWeightedH);
-    for (int i = 0; i < 12; i++) {
-        if (i >= edgeCount) break;
-        int nbId = nbIds[i];
-        if (nbId < 0) continue;
-
-        // Cheap probe: just one texelFetch for the neighbor's hexData.
-        // If the neighbor has no cross-tier neighbors of its own, no
-        // cliff edges can come from it — skip the rest of the reads
-        // (saves ~14 texelFetches per skipped neighbor for the bulk
-        // of the planet that's deep-interior single-tier).
-        int nbHL, nbEdgeCount;
-        bool nbHasCliffNbr;
-        readHexData(nbId, nbHL, nbEdgeCount, nbHasCliffNbr);
-        if (!nbHasCliffNbr) continue;
-
-        int nbNeighborH[12];
-        readNeighbors(nbId, nbNeighborH);
-        vec3 nbCorners[12];
-        int nbNbIds[12];
-        readCornersAndNeighborIds(nbId, nbCorners, nbNbIds);
-        float nbHexRadius = meanHexRadius(nbCorners, nbEdgeCount);
-        float nbTierH = levelHeight(nbHL);
-
-        walkCliffEdges(unitDir, nbHL, nbEdgeCount, nbNeighborH, nbCorners,
-                       nbHexRadius, cliffNoise, midNoise, nbTierH,
+    if (selfHasCliffWithin1Hop) {
+        walkCliffEdges(unitDir, selfH, edgeCount, neighborH, corners,
+                       hexRadius, cliffNoise, midNoise, selfTierH,
                        bestMu, rockMu, midWeightSum, midWeightedH);
+        for (int i = 0; i < 12; i++) {
+            if (i >= edgeCount) break;
+            int nbId = nbIds[i];
+            if (nbId < 0) continue;
+
+            int nbHL, nbEdgeCount;
+            bool nbHasCliffNbr, nbHasCliffWithin1Hop;
+            readHexData(nbId, nbHL, nbEdgeCount, nbHasCliffNbr, nbHasCliffWithin1Hop);
+            if (!nbHasCliffNbr) continue;
+
+            int nbNeighborH[12];
+            readNeighbors(nbId, nbNeighborH);
+            vec3 nbCorners[12];
+            int nbNbIds[12];
+            readCornersAndNeighborIds(nbId, nbCorners, nbNbIds);
+            float nbHexRadius = meanHexRadius(nbCorners, nbEdgeCount);
+            float nbTierH = levelHeight(nbHL);
+
+            walkCliffEdges(unitDir, nbHL, nbEdgeCount, nbNeighborH, nbCorners,
+                           nbHexRadius, cliffNoise, midNoise, nbTierH,
+                           bestMu, rockMu, midWeightSum, midWeightedH);
+        }
     }
 
     if (bestMu < 1.0 && midWeightSum > 0.0) {
