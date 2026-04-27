@@ -92,6 +92,8 @@ export interface GlobeEngine {
 	findOverhangs(): Promise<unknown>;
 	/** Toggle backface culling on the GPU displacement material at runtime. */
 	setBackfaceCulling(enabled: boolean): void;
+	/** Toggle the global water sphere mesh on/off. */
+	setWaterSphereVisible(visible: boolean): void;
 	/** Walk around every canonical corner and verify the cells touching
 	 *  it tile a full 360° wedge. If the chain doesn't close, there's
 	 *  a topological gap — pixels in that wedge have no triangle. */
@@ -529,6 +531,10 @@ export async function createGlobeEngine(
 			if (gpuResources) {
 				gpuResources.material.backFaceCulling = enabled;
 			}
+		},
+
+		setWaterSphereVisible(visible: boolean) {
+			waterSphere.setEnabled(visible);
 		},
 
 		findWedgeGaps() {
