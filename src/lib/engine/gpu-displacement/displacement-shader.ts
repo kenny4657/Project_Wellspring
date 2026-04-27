@@ -233,7 +233,17 @@ void walkCliffEdges(
         float mu;
         if (steep) {
             float rampWidth = ownerHexRadius * 0.2;
-            float perturbed = max(0.0, dist + cliffNoise * ownerHexRadius * 0.25);
+            // safeBand: don't apply cliffNoise perturbation when we're
+            // very close to the cliff edge. Without this, positive
+            // cliffNoise pushes perturbed away from 0 even at dist=0,
+            // making mu large and h close to h_base. Two adjacent cells
+            // then see h_base_A vs h_base_B at the SAME shared cliff
+            // edge — a ~55km vertical gap between meshes for tier-4
+            // vs tier-2. Mirrors the CPU sim, which had this all along.
+            float safeBand = ownerHexRadius * 0.05;
+            float perturbed = dist < safeBand
+                ? dist
+                : max(0.0, dist + cliffNoise * ownerHexRadius * 0.25);
             float t = min(perturbed / rampWidth, 1.0);
             mu = t * (2.0 - t);
         } else {
