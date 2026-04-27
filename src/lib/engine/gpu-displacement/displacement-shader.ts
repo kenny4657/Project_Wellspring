@@ -744,11 +744,23 @@ void main() {
         footAmt = clamp(footAmt + footNoise, 0.0, 1.0);
         rockColor = mix(rockColor, beachColor * 0.82, footAmt * 0.70);
 
-        // Apply rock to procColor by steepness × proximity.
+        // Apply rock to procColor. Two terms:
+        //   - erosionBlend: full rock on the steep cliff face itself.
+        //   - bleedBlend: partial rock tint on the flat-but-near-cliff top
+        //     and base. Hides the sharp hex boundary that appears where
+        //     the cliff face meets the flat top of each cell — visually
+        //     blurs the cliff edge across a band of nearby pixels without
+        //     needing actual texture sampling.
         float erosionNoise = snoise(vWorldPos * 0.006) * 0.02;
         float erosionBlend = smoothstep(0.003 + erosionNoise, 0.06, steepness)
                            * smoothstep(0.0, 0.3, vCliffMu);
-        procColor = mix(procColor, rockColor, erosionBlend);
+        // Bleed: high cliff proximity but low steepness — i.e. flat ground
+        // near a cliff edge. Falls to zero on the cliff face itself
+        // (where erosionBlend takes over) and far from any cliff.
+        float bleedNoise = snoise(vWorldPos * 0.012) * 0.08;
+        float flatGate = 1.0 - smoothstep(0.003, 0.06, steepness);
+        float bleedBlend = smoothstep(0.4, 0.9, vCliffMu) * flatGate * (0.30 + bleedNoise);
+        procColor = mix(procColor, rockColor, max(erosionBlend, bleedBlend));
     }
 
     // ── Beach overlay on coastal land ──
