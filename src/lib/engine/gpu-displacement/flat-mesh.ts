@@ -22,6 +22,7 @@
  */
 import { Mesh } from '@babylonjs/core/Meshes/mesh';
 import { VertexData } from '@babylonjs/core/Meshes/mesh.vertexData';
+import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import type { Scene } from '@babylonjs/core/scene';
 import type { HexCell } from '../icosphere';
 import type { ChunkAssignment } from '../globe-chunks';
@@ -41,6 +42,7 @@ export function buildFlatChunkMeshes(
 	cells: HexCell[],
 	scene: Scene,
 	chunkAssignment: ChunkAssignment,
+	cornerIdByRef?: Map<Vector3, number>,
 ): FlatChunkMesh[] {
 	const chunks: FlatChunkMesh[] = [];
 
@@ -51,6 +53,7 @@ export function buildFlatChunkMeshes(
 		const localUVs: number[] = [];
 		const wallFlags: number[] = [];
 		const neighborSlots: number[] = [];
+		const cornerIds: number[] = [];
 		const indices: number[] = [];
 		const cellLocalStart = new Map<number, number>();
 		const cellVertexCount = new Map<number, number>();
@@ -87,6 +90,10 @@ export function buildFlatChunkMeshes(
 				// for the *outer* sub-tris is the result of subdivision —
 				// not literally the hex center. We emit them with
 				// per-vertex attributes; the shader handles positioning.
+				// subdivTriangle preserves a/b/c verbatim through recursion,
+				// so vertices that match cell.corners exactly are canonical
+				// corners and get their cornerId baked in for shader-side
+				// snap-to-corner-h.
 				for (let j = 0; j < triVerts.length; j += 9) {
 					for (let k = 0; k < 3; k++) {
 						const ux = triVerts[j + k * 3];
@@ -97,6 +104,17 @@ export function buildFlatChunkMeshes(
 						localUVs.push(k === 1 ? 1 : 0, k === 2 ? 1 : 0);
 						wallFlags.push(0);
 						neighborSlots.push(0);
+						let cId = -1;
+						if (cornerIdByRef) {
+							for (let q = 0; q < n; q++) {
+								const cq = cell.corners[q];
+								if (cq.x === ux && cq.y === uy && cq.z === uz) {
+									cId = cornerIdByRef.get(cq) ?? -1;
+									break;
+								}
+							}
+						}
+						cornerIds.push(cId);
 						indices.push(vOff++);
 					}
 				}
@@ -116,6 +134,7 @@ export function buildFlatChunkMeshes(
 		const localUVsF32 = new Float32Array(localUVs);
 		const wallFlagsF32 = new Float32Array(wallFlags);
 		const neighborSlotsF32 = new Float32Array(neighborSlots);
+		const cornerIdsF32 = new Float32Array(cornerIds);
 
 		const mesh = new Mesh(`gpuFlatChunk_${chunkIdx}`, scene);
 		const vd = new VertexData();
@@ -126,6 +145,7 @@ export function buildFlatChunkMeshes(
 		mesh.setVerticesData('localUV', localUVsF32, false, 2);
 		mesh.setVerticesData('wallFlag', wallFlagsF32, false, 1);
 		mesh.setVerticesData('neighborSlot', neighborSlotsF32, false, 1);
+		mesh.setVerticesData('cornerId', cornerIdsF32, false, 1);
 		// Bounding info is computed from the input vertex positions
 		// (unit-sphere, radius 1). The shader displaces them to the
 		// actual world radius (~6371 km), so Babylon's frustum culling
