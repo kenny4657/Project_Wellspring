@@ -303,6 +303,11 @@ void main() {
     int coastN = 0;
     float minCoastDist = 1e9;
     bool hasCoastEdge = false;
+    // Water-step pass: same logic as coast pass but for water-water edges
+    // with different tiers (deep ↔ shallow). Pulls h toward the deeper
+    // tier's level via hard min over those edges.
+    float minWaterStepDist = 1e9;
+    bool hasWaterStepEdge = false;
 
     for (int i = 0; i < 12; i++) {
         if (i >= edgeCount) break;
@@ -330,6 +335,13 @@ void main() {
             coastN++;
             minCoastDist = min(minCoastDist, dist);
             hasCoastEdge = true;
+        }
+        // Water-water with different tiers (tier-0 ↔ tier-1):
+        bool selfWaterE = selfH <= 1;
+        bool nbWaterE = nbH <= 1;
+        if (selfWaterE && nbWaterE && selfH != nbH) {
+            minWaterStepDist = min(minWaterStepDist, dist);
+            hasWaterStepEdge = true;
         }
         hasBorder = true;
     }
@@ -422,6 +434,19 @@ void main() {
         float coastT = clamp(minCoastDist / (hexRadius * 0.7), 0.0, 1.0);
         float coastMu = (1.0 - cos(coastT * 3.14159265)) / 2.0;
         h = h * coastMu;
+    }
+
+    // ── Water-step erosion pass ────────────────────────────
+    // Same shape as coast pass but pulls h toward the deeper tier's
+    // level (lh(0)) wherever a tier-0 ↔ tier-1 edge is nearby. From
+    // tier-1 (shallow): smoothly descends to deep level at the edge.
+    // From tier-0 (already at deep level): no-op. Eliminates the
+    // step-shaped wall at every shallow/deep boundary corner.
+    if (hasWaterStepEdge) {
+        float deepTarget = levelHeights.x; // lh(0) = -0.020
+        float waterT = clamp(minWaterStepDist / (hexRadius * 0.7), 0.0, 1.0);
+        float waterMu = (1.0 - cos(waterT * 3.14159265)) / 2.0;
+        h = deepTarget * (1.0 - waterMu) + h * waterMu;
     }
 
     vec3 worldPos = unitDir * (planetRadius * (1.0 + h));

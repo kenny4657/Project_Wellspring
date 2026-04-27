@@ -368,6 +368,8 @@ function simulateShaderHeight(
 	let coastN = 0;
 	let minCoastDist = Infinity;
 	let hasCoastEdge = false;
+	let minWaterStepDist = Infinity;
+	let hasWaterStepEdge = false;
 	// EPS for corner tie-break. CPU uses 1e-4, but at unit-sphere-normalized
 	// edge midpoints the chord-to-sphere drift is ~7e-5 — that drift is the
 	// same magnitude as 1e-4, causing the tie-break to fire on midpoints
@@ -421,6 +423,12 @@ function simulateShaderHeight(
 			if (dist < minCoastDist) minCoastDist = dist;
 			hasCoastEdge = true;
 		}
+		// Water-water with different tiers (deep ↔ shallow):
+		const nbH2 = self.neighborH[i];
+		if (selfH <= 1 && nbH2 <= 1 && selfH !== nbH2) {
+			if (dist < minWaterStepDist) minWaterStepDist = dist;
+			hasWaterStepEdge = true;
+		}
 		hasBorder = true;
 	}
 
@@ -472,6 +480,14 @@ function simulateShaderHeight(
 		const coastT = Math.min(Math.max(minCoastDist / (hexRadius * 0.7), 0), 1);
 		const coastMu = (1 - Math.cos(coastT * Math.PI)) / 2;
 		h = h * coastMu;
+	}
+
+	// Water-step pass: mirror of shader. Hard min over deep↔shallow edges.
+	if (hasWaterStepEdge) {
+		const deepTarget = LEVEL_HEIGHTS[0];
+		const waterT = Math.min(Math.max(minWaterStepDist / (hexRadius * 0.7), 0), 1);
+		const waterMu = (1 - Math.cos(waterT * Math.PI)) / 2;
+		h = deepTarget * (1 - waterMu) + h * waterMu;
 	}
 
 	// Land hex: floor above water sphere — see shader for rationale.
