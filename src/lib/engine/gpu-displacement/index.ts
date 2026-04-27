@@ -16,6 +16,7 @@ import { bakeNoiseCubemapData, uploadNoiseCubemap, verifyNoiseBake, type NoiseBa
 import { buildFlatChunkMeshes, type FlatChunkMesh } from './flat-mesh';
 import { buildHexDataTextures, type HexDataTextures } from './hex-data-tex';
 import { buildHexCornersTexture, canonicalizeCells, type HexCornersTexture } from './hex-corners-tex';
+import { buildCornerHeightsTexture, type CornerHeightsTexture } from './corner-heights-tex';
 import { createDisplacementMaterial } from './displacement-shader';
 import type { RawCubeTexture } from '@babylonjs/core/Materials/Textures/rawCubeTexture';
 import type { ShaderMaterial } from '@babylonjs/core/Materials/shaderMaterial';
@@ -25,6 +26,7 @@ export interface GpuDisplacementResources {
 	noiseBakeData: NoiseBakeData;
 	hexTextures: HexDataTextures;
 	hexCorners: HexCornersTexture;
+	cornerHeights: CornerHeightsTexture;
 	flatChunks: FlatChunkMesh[];
 	material: ShaderMaterial;
 	verify: () => { maxRawError: number; maxCliffError: number };
@@ -53,15 +55,17 @@ export async function initGpuDisplacement(
 
 	const hexTextures = buildHexDataTextures(cells, scene);
 	const hexCorners = buildHexCornersTexture(cells, scene);
+	const cornerHeights = buildCornerHeightsTexture(cells, scene);
 	const t3 = performance.now();
 
-	const flatChunks = buildFlatChunkMeshes(cells, scene, chunkAssignment);
+	const flatChunks = buildFlatChunkMeshes(cells, scene, chunkAssignment, cornerHeights.idByRef);
 	const t4 = performance.now();
 
 	const material = createDisplacementMaterial(scene, {
 		noiseCubemap,
 		hexTextures,
 		hexCorners,
+		cornerHeights,
 	}, planetRadius);
 	for (const chunk of flatChunks) {
 		chunk.mesh.material = material;
@@ -83,6 +87,7 @@ export async function initGpuDisplacement(
 		noiseBakeData,
 		hexTextures,
 		hexCorners,
+		cornerHeights,
 		flatChunks,
 		material,
 		verify: () => verifyNoiseBake(noiseBakeData, 64),

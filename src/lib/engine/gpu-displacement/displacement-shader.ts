@@ -24,6 +24,7 @@ import type { Scene } from '@babylonjs/core/scene';
 import type { RawCubeTexture } from '@babylonjs/core/Materials/Textures/rawCubeTexture';
 import type { HexDataTextures } from './hex-data-tex';
 import type { HexCornersTexture } from './hex-corners-tex';
+import type { CornerHeightsTexture } from './corner-heights-tex';
 import { LEVEL_HEIGHTS } from '../hex-borders';
 import { NOISE_AMP, NOISE_SCALE, BASE_HEIGHT, COAST_ROUNDING } from '../hex-heights';
 
@@ -46,14 +47,17 @@ uniform samplerCube noiseCubemap;
 uniform sampler2D hexDataTex;
 uniform sampler2D hexNeighborsTex;
 uniform sampler2D hexCornersTex;
+uniform sampler2D cornerHeightsTex;
 uniform int hexTexWidth;
 uniform int hexCornersTexWidth;
+uniform int cornerHeightsTexWidth;
 
 in vec3 position;
 in float hexId;
 in vec2 localUV;
 in float wallFlag;
 in float neighborSlot;
+in float cornerId;
 
 out vec3 vWorldPos;
 out vec2 vLocalUV;
@@ -270,6 +274,31 @@ void walkCliffEdges(
 void main() {
     int id = int(hexId + 0.5);
     vec3 unitDir = normalize(position);
+
+    // Canonical-corner snap: vertices that sit exactly on a canonical
+    // corner (cornerId >= 0) bypass the entire border-walk + cliff-erosion
+    // path and read a pre-baked averaged h. This guarantees that all cells
+    // sharing the corner output the same world position there, closing
+    // fissures by construction. Also a perf win — corner vertices skip
+    // ~30+ texelFetches per vertex.
+    if (cornerId >= 0.0) {
+        int cId = int(cornerId + 0.5);
+        int chW = cornerHeightsTexWidth;
+        float h = texelFetch(cornerHeightsTex, ivec2(cId % chW, cId / chW), 0).r;
+
+        int sH, sEdges;
+        readHexData(id, sH, sEdges);
+
+        vec3 worldPos = unitDir * (planetRadius * (1.0 + h));
+        vec4 wp = world * vec4(worldPos, 1.0);
+        vWorldPos = wp.xyz;
+        vLocalUV = localUV;
+        vHeight = h;
+        vTierH = levelHeight(sH);
+        vCliffMu = 0.0;
+        gl_Position = viewProjection * wp;
+        return;
+    }
 
     // Self data
     int selfH, edgeCount;
@@ -501,6 +530,7 @@ export function createDisplacementMaterial(
 		noiseCubemap: RawCubeTexture;
 		hexTextures: HexDataTextures;
 		hexCorners: HexCornersTexture;
+		cornerHeights: CornerHeightsTexture;
 	},
 	planetRadius: number,
 ): ShaderMaterial {
@@ -511,16 +541,16 @@ export function createDisplacementMaterial(
 		vertex: 'gpuDispl',
 		fragment: 'gpuDispl',
 	}, {
-		attributes: ['position', 'hexId', 'localUV', 'wallFlag', 'neighborSlot'],
+		attributes: ['position', 'hexId', 'localUV', 'wallFlag', 'neighborSlot', 'cornerId'],
 		uniforms: [
 			'world', 'viewProjection',
 			'planetRadius', 'noiseAmp', 'noiseScale',
 			'baseHeight', 'coastRounding',
 			'levelHeights', 'levelHeight4',
-			'hexTexWidth', 'hexCornersTexWidth',
+			'hexTexWidth', 'hexCornersTexWidth', 'cornerHeightsTexWidth',
 			'sunDir', 'cameraPos',
 		],
-		samplers: ['noiseCubemap', 'hexDataTex', 'hexNeighborsTex', 'hexCornersTex'],
+		samplers: ['noiseCubemap', 'hexDataTex', 'hexNeighborsTex', 'hexCornersTex', 'cornerHeightsTex'],
 	});
 
 	mat.setFloat('planetRadius', planetRadius);
@@ -535,10 +565,12 @@ export function createDisplacementMaterial(
 	mat.setFloat('levelHeight4', LEVEL_HEIGHTS[4]);
 	mat.setInt('hexTexWidth', resources.hexTextures.width);
 	mat.setInt('hexCornersTexWidth', resources.hexCorners.width);
+	mat.setInt('cornerHeightsTexWidth', resources.cornerHeights.width);
 	mat.setTexture('noiseCubemap', resources.noiseCubemap);
 	mat.setTexture('hexDataTex', resources.hexTextures.hexDataTex);
 	mat.setTexture('hexNeighborsTex', resources.hexTextures.hexNeighborsTex);
 	mat.setTexture('hexCornersTex', resources.hexCorners.tex);
+	mat.setTexture('cornerHeightsTex', resources.cornerHeights.tex);
 	mat.backFaceCulling = true;
 
 	return mat;
