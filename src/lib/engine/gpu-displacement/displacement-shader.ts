@@ -757,9 +757,12 @@ void main() {
         // Bleed: high cliff proximity but low steepness — i.e. flat ground
         // near a cliff edge. Falls to zero on the cliff face itself
         // (where erosionBlend takes over) and far from any cliff.
-        float bleedNoise = snoise(vWorldPos * 0.012) * 0.08;
+        // Widened lower threshold (0.15) so the rock tint reaches further
+        // out into the green/sand of the flat top, giving a rounded look
+        // instead of a hard cliff lip.
+        float bleedNoise = snoise(vWorldPos * 0.012) * 0.10;
         float flatGate = 1.0 - smoothstep(0.003, 0.06, steepness);
-        float bleedBlend = smoothstep(0.4, 0.9, vCliffMu) * flatGate * (0.30 + bleedNoise);
+        float bleedBlend = smoothstep(0.15, 0.7, vCliffMu) * flatGate * (0.40 + bleedNoise);
         procColor = mix(procColor, rockColor, max(erosionBlend, bleedBlend));
     }
 
