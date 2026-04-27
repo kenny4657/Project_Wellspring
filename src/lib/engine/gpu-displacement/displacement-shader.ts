@@ -354,6 +354,70 @@ void main() {
         hasBorder = true;
     }
 
+    // ── 1-hop border walk for same-tier-land corners ────────
+    // At a corner shared by N same-tier land cells, all internal edges
+    // are land-land (excluded) and there is no cliff to anchor the
+    // corner via cliff erosion. Each cell's nearest non-excluded edge
+    // is a different coast edge → different mu → fissure at the corner.
+    // Fix: when the vertex is near a shared edge with a same-tier-land
+    // neighbor, walk that neighbor's non-excluded edges and feed them
+    // into the same accumulators. Both/all cells then see the union of
+    // each others' coast edges → identical nearest dist at the corner.
+    // Proximity gate keeps cell interiors unchanged.
+    if (!isWaterHex) {
+        for (int i = 0; i < 12; i++) {
+            if (i >= edgeCount) break;
+            int nbH = neighborH[i];
+            if (nbH <= 1) continue;            // only land neighbors
+            if (nbH != selfH) continue;        // only same tier (cliff handles different)
+            int nbId = nbIds[i];
+            if (nbId < 0) continue;
+
+            vec3 a = corners[i];
+            int nextIdx = (i + 1) == edgeCount ? 0 : (i + 1);
+            vec3 b = corners[nextIdx];
+            float distToShared = distToSegment(unitDir, a, b);
+            if (distToShared > hexRadius * 0.15) continue; // proximity gate
+
+            int nbHL, nbEdgeCount;
+            readHexData(nbId, nbHL, nbEdgeCount);
+            int nbNeighborH[12];
+            readNeighbors(nbId, nbNeighborH);
+            vec3 nbCorners[12];
+            int nbNbIds[12];
+            readCornersAndNeighborIds(nbId, nbCorners, nbNbIds);
+
+            for (int j = 0; j < 12; j++) {
+                if (j >= nbEdgeCount) break;
+                int nbnbH = nbNeighborH[j];
+                if (isExcludedEdge(nbHL, nbnbH)) continue;
+
+                vec3 ja = nbCorners[j];
+                int jNext = (j + 1) == nbEdgeCount ? 0 : (j + 1);
+                vec3 jb = nbCorners[jNext];
+                float jDist; float jT;
+                distAndT(unitDir, ja, jb, jDist, jT);
+
+                float jTarget = computeBorderTarget(nbHL, nbnbH);
+                bool jCoast = isCoastEdge(nbHL, nbnbH);
+
+                if (jDist < minDist) {
+                    minDist = jDist;
+                    nearestEdgeIdx = j;
+                    nearestEdgeT = jT;
+                    nearestBorderTarget = jTarget;
+                }
+                if (jCoast) {
+                    coastWeightSum += exp(-jDist / coastSmoothK);
+                    coastN++;
+                    minCoastDist = min(minCoastDist, jDist);
+                    hasCoastEdge = true;
+                }
+                hasBorder = true;
+            }
+        }
+    }
+
     float h;
     if (!hasBorder) {
         // All edges excluded (typical for an inland land hex with only

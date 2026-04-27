@@ -434,6 +434,45 @@ function simulateShaderHeight(
 		hasBorder = true;
 	}
 
+	// 1-hop border walk for same-tier-land corners (mirrors shader)
+	if (!isWater) {
+		for (let i = 0; i < n; i++) {
+			const nb = self.neighbors[i];
+			if (!nb) continue;
+			const nbH = self.neighborH[i];
+			if (nbH <= 1) continue;
+			if (nbH !== selfH) continue;
+			const a = self.corners[i];
+			const b = self.corners[(i + 1) % n];
+			const { dist: distToShared } = distAndT(unitDir, a, b);
+			if (distToShared > hexRadius * 0.15) continue;
+			const nbData = fetchCellData(nb, cellById);
+			const nbN = nbData.corners.length;
+			for (let j = 0; j < nbN; j++) {
+				const nbnbH = nbData.neighborH[j];
+				if (isExcludedEdge({ heightLevel: nbData.heightLevel } as HexCell, { heightLevel: nbnbH } as HexCell, cellById)) continue;
+				const ja = nbData.corners[j];
+				const jb = nbData.corners[(j + 1) % nbN];
+				const { dist: jDist, t: jT } = distAndT(unitDir, ja, jb);
+				const jTarget = computeBorderTarget(nbData.heightLevel, nbnbH);
+				const jCoast = isCoastEdge(nbData.heightLevel, nbnbH);
+				if (jDist < minDist - 1e-7) {
+					minDist = jDist;
+					nearestEdgeIdx = j;
+					nearestEdgeT = jT;
+					nearestBorderTarget = jTarget;
+				}
+				if (jCoast && jTarget === 0) {
+					coastWeightSum += Math.exp(-jDist / coastK);
+					coastN++;
+					if (jDist < minCoastDist) minCoastDist = jDist;
+					hasCoastEdge = true;
+				}
+				hasBorder = true;
+			}
+		}
+	}
+
 	let h: number;
 	if (!hasBorder) {
 		h = selfTierH + interiorNoiseH * NOISE_AMP;
