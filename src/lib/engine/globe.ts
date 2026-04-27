@@ -37,6 +37,7 @@ import { buildGlobeMesh, buildHexEdgeLines, updateCellTerrain } from '$lib/engin
 import { assignCellsToChunks, isChunkVisible } from '$lib/engine/globe-chunks';
 import { initGpuDisplacement, type GpuDisplacementResources } from '$lib/engine/gpu-displacement';
 import { applyDisplacementSettings } from '$lib/engine/gpu-displacement/displacement-shader';
+import { writeHexTerrain, writeHexHeightLevel } from '$lib/engine/gpu-displacement/hex-data-tex';
 import { canonicalizeCells } from '$lib/engine/gpu-displacement/hex-corners-tex';
 import { diagnoseGpuDisplacement, dumpSeamPair, dumpAtUnitDir, dumpHAtUnitDir, findRenderedMeshGaps, findLandUnderwaterVertices, landHHistogram, findVisibleCracks, findOverhangTriangles, findWedgeGaps, type DiagnoseResult } from '$lib/engine/gpu-displacement/debug';
 import { createTerrainMaterial, applyTerrainSettings } from '$lib/engine/terrain-material';
@@ -54,6 +55,10 @@ export interface GlobeEngine {
 	flyTo(lat: number, lng: number, altitude?: number): void;
 	setView(lat: number, lng: number, altitude: number): void;
 	setHexTerrain(cellIndex: number, terrain: TerrainTypeId): void;
+	/** Phase 4 GPU edit path — change a hex's tier and propagate the
+	 *  effect to neighbors' hexNeighborsTex slots + recompute cliff
+	 *  flags. Only updates GPU mode; CPU mesh has no live-height path. */
+	setHexHeightLevel(cellIndex: number, heightLevel: number): void;
 	setGridVisible(visible: boolean): void;
 	setTerrainSettings(settings: TerrainSettings): void;
 	/** Toggle hex-id debug coloring. Each hex gets a hash-derived RGB so
@@ -337,6 +342,9 @@ export async function createGlobeEngine(
 	// ── GPU displacement state (built on demand) ───────────
 	let gpuResources: GpuDisplacementResources | null = null;
 	let gpuModeOn = false;
+	// Lazily built when first GPU edit happens (height-level changes
+	// need a cell-id lookup; cells[] is in build order, ids may have gaps).
+	let cellByIdMap: Map<number, HexCell> | null = null;
 
 	// ── Render Loop ─────────────────────────────────────────
 	let waterTime = 0;
@@ -420,8 +428,32 @@ export async function createGlobeEngine(
 		},
 
 		setHexTerrain(cellIndex: number, terrain: TerrainTypeId) {
-			cells[cellIndex].terrain = TERRAIN_TYPES[terrain];
+			const terrainId = TERRAIN_TYPES[terrain];
+			cells[cellIndex].terrain = terrainId;
+			// CPU mesh path keeps its rebuild — needed for non-GPU mode AND
+			// for visual parity tests against GPU.
 			updateCellTerrain(chunks, chunkOfCell, cells, cellIndex);
+			// GPU path: single 1-byte texture write. ~1µs vs ~5-10ms for the
+			// CPU rebuild. The texture upload re-pushes the whole hexDataTex
+			// buffer (Babylon's RawTexture API), but the data array is
+			// already CPU-side and the GPU upload of a few KB is fast.
+			if (gpuResources) writeHexTerrain(gpuResources.hexTextures, cells[cellIndex].id, terrainId);
+		},
+
+		setHexHeightLevel(cellIndex: number, heightLevel: number) {
+			const cell = cells[cellIndex];
+			if (!cell) return;
+			cell.heightLevel = heightLevel;
+			// CPU mesh path: today's globe-mesh.ts has no path for height
+			// changes (would need a chunk rebuild). Skip CPU update — GPU
+			// mode is the only path that supports live height edits.
+			if (gpuResources) {
+				if (!cellByIdMap) {
+					cellByIdMap = new Map();
+					for (const c of cells) cellByIdMap.set(c.id, c);
+				}
+				writeHexHeightLevel(gpuResources.hexTextures, cells, cellByIdMap, cell.id, heightLevel);
+			}
 		},
 
 		setGridVisible(visible: boolean) {

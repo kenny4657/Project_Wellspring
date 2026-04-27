@@ -177,3 +177,120 @@ export function buildHexDataTextures(cells: HexCell[], scene: Scene): HexDataTex
 
 	return { hexDataTex, hexNeighborsTex, width: w, height: h, dataBytes, neighborBytes };
 }
+
+/** Phase 4 edit path — write a single hex's terrain byte to the GPU
+ *  texture without rebuilding any meshes. Replaces the CPU updateCellTerrain
+ *  rebuild that touched up to ~7 cells worth of vertex colors. */
+export function writeHexTerrain(tex: HexDataTextures, cellId: number, terrainId: number): void {
+	const off = cellId * 4;
+	if (off + 1 >= tex.dataBytes.length) return;
+	tex.dataBytes[off + 1] = terrainId & 0xff;
+	tex.hexDataTex.update(tex.dataBytes);
+}
+
+/** Phase 4 edit path — write a hex's height level. Updates self's R byte
+ *  in hexDataTex AND every neighbor's neighbor-list nibble in
+ *  hexNeighborsTex, plus recomputes hasCliffNbr/hasCliffWithin1Hop bits
+ *  for self, neighbors, and 2-hop neighbors (1-hop flag depends on neighbor's
+ *  hasCliffNbr).
+ *
+ *  `cells` is the live cell array (heightLevel will be mutated to match).
+ *  `cellByIdMap` is supplied to avoid re-building it per call. */
+export function writeHexHeightLevel(
+	tex: HexDataTextures,
+	cells: HexCell[],
+	cellByIdMap: Map<number, HexCell>,
+	cellId: number,
+	heightLevel: number,
+): void {
+	const cell = cellByIdMap.get(cellId);
+	if (!cell) return;
+
+	cell.heightLevel = heightLevel;
+	const off = cellId * 4;
+	if (off >= tex.dataBytes.length) return;
+	tex.dataBytes[off + 0] = heightLevel & 0xff;
+
+	// Update each neighbor's hexNeighborsTex slot for THIS cell. The
+	// edge slot index is wherever this cell appears in the neighbor's
+	// edge-walk order.
+	for (const nbId of cell.neighbors) {
+		const nb = cellByIdMap.get(nbId);
+		if (!nb) continue;
+		const nbN = nb.corners.length;
+		for (let k = 0; k < nbN; k++) {
+			const a = nb.corners[k];
+			const b = nb.corners[(k + 1) % nbN];
+			let hasA = false, hasB = false;
+			for (const c of cell.corners) {
+				if (c === a) hasA = true;
+				if (c === b) hasB = true;
+				if (hasA && hasB) break;
+			}
+			if (!hasA || !hasB) continue;
+			// Slot k of nb encodes this cell's heightLevel.
+			const xCol = nbId % tex.width;
+			const yRowBase = Math.floor(nbId / tex.width) * 2;
+			const slotByteOffset = k < 8
+				? ((yRowBase * tex.width + xCol) * 4 + Math.floor(k / 2))
+				: (((yRowBase + 1) * tex.width + xCol) * 4 + Math.floor((k - 8) / 2));
+			const isHighNibble = (k % 2) === 1;
+			const cur = tex.neighborBytes[slotByteOffset];
+			const newByte = isHighNibble
+				? (cur & 0x0f) | ((heightLevel & 0xf) << 4)
+				: (cur & 0xf0) | (heightLevel & 0xf);
+			tex.neighborBytes[slotByteOffset] = newByte;
+			break; // only one slot in nb maps to this cell
+		}
+	}
+
+	// Recompute hasCliffNbr for self + every neighbor (their cross-tier
+	// status may have flipped because self's tier changed).
+	const recomputeHasCliffNbr = (c: HexCell): boolean => {
+		for (let k = 0; k < c.corners.length; k++) {
+			const nb = findNeighborByCorners(c, k, cellByIdMap);
+			if (nb && nb.heightLevel !== c.heightLevel) return true;
+		}
+		return false;
+	};
+
+	const affected = new Set<number>([cellId, ...cell.neighbors]);
+	const hasCliffMap = new Map<number, boolean>();
+	for (const id of affected) {
+		const c = cellByIdMap.get(id);
+		if (!c) continue;
+		hasCliffMap.set(id, recomputeHasCliffNbr(c));
+	}
+
+	// hasCliffWithin1Hop for self + neighbors + 2-hop (since a 2-hop
+	// cell's flag depends on its neighbor's hasCliffNbr, and one of its
+	// neighbors might be in `affected`).
+	const within1HopAffected = new Set<number>(affected);
+	for (const id of affected) {
+		const c = cellByIdMap.get(id);
+		if (!c) continue;
+		for (const nbId of c.neighbors) within1HopAffected.add(nbId);
+	}
+	for (const id of within1HopAffected) {
+		const c = cellByIdMap.get(id);
+		if (!c) continue;
+		const own = hasCliffMap.get(id) ?? recomputeHasCliffNbr(c);
+		hasCliffMap.set(id, own);
+		let oneHop = own;
+		if (!oneHop) {
+			for (const nbId of c.neighbors) {
+				const v = hasCliffMap.get(nbId);
+				const nbHas = v !== undefined ? v : recomputeHasCliffNbr(cellByIdMap.get(nbId)!);
+				if (nbHas) { oneHop = true; break; }
+			}
+		}
+		const aOff = id * 4 + 3;
+		if (aOff < tex.dataBytes.length) {
+			tex.dataBytes[aOff] = (own ? 1 : 0) | ((oneHop ? 1 : 0) << 1);
+		}
+	}
+
+	tex.hexDataTex.update(tex.dataBytes);
+	tex.hexNeighborsTex.update(tex.neighborBytes);
+	void cells; // signature kept for API symmetry; cellByIdMap is enough
+}
