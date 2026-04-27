@@ -24,6 +24,7 @@ import type { Scene } from '@babylonjs/core/scene';
 import type { RawCubeTexture } from '@babylonjs/core/Materials/Textures/rawCubeTexture';
 import type { HexDataTextures } from './hex-data-tex';
 import type { HexCornersTexture } from './hex-corners-tex';
+import type { CliffEdgesTexture } from './cliff-edges-tex';
 import { LEVEL_HEIGHTS } from '../hex-borders';
 import { NOISE_AMP, NOISE_SCALE, BASE_HEIGHT, COAST_ROUNDING } from '../hex-heights';
 import { loadTerrainSettings, packCustomPalettes, packCliffPalettes, type TerrainSettings } from '$lib/world/terrain-types';
@@ -47,8 +48,10 @@ uniform samplerCube noiseCubemap;
 uniform sampler2D hexDataTex;
 uniform sampler2D hexNeighborsTex;
 uniform sampler2D hexCornersTex;
+uniform sampler2D hexCliffEdgesTex;
 uniform int hexTexWidth;
 uniform int hexCornersTexWidth;
+uniform int hexCliffEdgesTexWidth;
 
 in vec3 position;
 in float hexId;
@@ -197,7 +200,7 @@ void readNeighbors(int id, out int nb[12]) {
     nb[11] = (n5 >> 4) & 0xf;
 }
 
-void readHexData(int id, out int heightLevel, out int edgeCount, out bool hasCliffNbr, out bool hasCliffWithin1Hop) {
+void readHexData(int id, out int heightLevel, out int edgeCount, out bool hasCliffNbr, out bool hasCliffWithin1Hop, out int cliffCount) {
     vec4 d = texelFetch(hexDataTex, hexCoord(id), 0);
     heightLevel = int(d.r * 255.0 + 0.5);
     int packed = int(d.b * 255.0 + 0.5);
@@ -206,6 +209,21 @@ void readHexData(int id, out int heightLevel, out int edgeCount, out bool hasCli
     int aFlags = int(d.a * 255.0 + 0.5);
     hasCliffNbr = (aFlags & 1) != 0;
     hasCliffWithin1Hop = (aFlags & 2) != 0;
+    cliffCount = (aFlags >> 4) & 0xf;
+}
+
+// Read one prebaked cliff edge for a cell. See cliff-edges-tex.ts for layout:
+// 24 texels per cell; slot i lives at texels (cellId*24 + i*2) and +1.
+void readCliffEdge(int cellId, int slot, out vec3 a, out vec3 b, out float midTier, out int flags) {
+    int idx = cellId * 24 + slot * 2;
+    int W = hexCliffEdgesTexWidth;
+    vec4 t0 = texelFetch(hexCliffEdgesTex, ivec2(idx % W, idx / W), 0);
+    int idx2 = idx + 1;
+    vec4 t1 = texelFetch(hexCliffEdgesTex, ivec2(idx2 % W, idx2 / W), 0);
+    a = t0.xyz;
+    midTier = t0.w;
+    b = t1.xyz;
+    flags = int(t1.w + 0.5);
 }
 
 int readTerrainId(int id) {
@@ -301,9 +319,9 @@ void main() {
     vec3 unitDir = normalize(position);
 
     // Self data
-    int selfH, edgeCount;
+    int selfH, edgeCount, cliffCount;
     bool selfHasCliffNbr, selfHasCliffWithin1Hop;
-    readHexData(id, selfH, edgeCount, selfHasCliffNbr, selfHasCliffWithin1Hop);
+    readHexData(id, selfH, edgeCount, selfHasCliffNbr, selfHasCliffWithin1Hop, cliffCount);
     int neighborH[12];
     readNeighbors(id, neighborH);
     vec3 corners[12];
@@ -328,43 +346,45 @@ void main() {
     // goes through the same symmetric smooth-ramp logic.
     float h = selfTierH + interiorNoiseH * noiseAmp;
 
-    // ── Tier-transition erosion (self + 1-hop) ─────────────
-    // Whole-block short-circuit: if neither self nor any of self's
-    // neighbors has a cross-tier edge, no cliff erosion can fire from
-    // any visible cliff — skip the self walk AND the 1-hop loop. Most
-    // of the planet's interior land masses and open ocean qualify, so
-    // this saves ~12 probe fetches + 12 edge tests per vertex for
-    // those regions.
+    // ── Tier-transition erosion (prebaked cliff edge table) ──
+    // Replaces the self+1-hop walk. cliffCount is packed into hexDataTex.A
+    // bits 4-7 by the build step in cliff-edges-tex.ts. For deep-interior
+    // cells with no transitions in 1-hop reach, count is 0 and this loop
+    // does nothing. Each iteration is 2 texelFetches + ramp math — no
+    // per-neighbor data fetches, no nested 12-edge walks.
     float bestMu = 1.0;
     float rockMu = 1.0;  // gates fragment-shader cliff coloring
     float midWeightSum = 0.0;
     float midWeightedH = 0.0;
-    if (selfHasCliffWithin1Hop) {
-        walkCliffEdges(unitDir, selfH, edgeCount, neighborH, corners,
-                       hexRadius, cliffNoise, midNoise, selfTierH,
-                       bestMu, rockMu, midWeightSum, midWeightedH);
-        for (int i = 0; i < 12; i++) {
-            if (i >= edgeCount) break;
-            int nbId = nbIds[i];
-            if (nbId < 0) continue;
-
-            int nbHL, nbEdgeCount;
-            bool nbHasCliffNbr, nbHasCliffWithin1Hop;
-            readHexData(nbId, nbHL, nbEdgeCount, nbHasCliffNbr, nbHasCliffWithin1Hop);
-            if (!nbHasCliffNbr) continue;
-
-            int nbNeighborH[12];
-            readNeighbors(nbId, nbNeighborH);
-            vec3 nbCorners[12];
-            int nbNbIds[12];
-            readCornersAndNeighborIds(nbId, nbCorners, nbNbIds);
-            float nbHexRadius = meanHexRadius(nbCorners, nbEdgeCount);
-            float nbTierH = levelHeight(nbHL);
-
-            walkCliffEdges(unitDir, nbHL, nbEdgeCount, nbNeighborH, nbCorners,
-                           nbHexRadius, cliffNoise, midNoise, nbTierH,
-                           bestMu, rockMu, midWeightSum, midWeightedH);
+    float kernelK = 0.05;
+    for (int i = 0; i < 12; i++) {
+        if (i >= cliffCount) break;
+        vec3 a; vec3 b; float midTier; int flags;
+        readCliffEdge(id, i, a, b, midTier, flags);
+        bool isSteep = (flags & 1) != 0;
+        bool isRock  = (flags & 2) != 0;
+        float dist = distToSegment(unitDir, a, b);
+        float mu;
+        if (isSteep) {
+            float rampWidth = hexRadius * 0.2;
+            float safeBand = hexRadius * 0.05;
+            float perturbed = dist < safeBand
+                ? dist
+                : max(0.0, dist + cliffNoise * hexRadius * 0.25);
+            float t = min(perturbed / rampWidth, 1.0);
+            mu = t * (2.0 - t);
+        } else {
+            float rampWidth = hexRadius * 0.7;
+            float t = min(dist / rampWidth, 1.0);
+            mu = (1.0 - cos(t * 3.14159265)) / 2.0;
         }
+        float midNoiseScale = isRock ? 0.3 : 0.1;
+        float midH = midTier + (abs(midNoise) + 0.15) * noiseAmp * midNoiseScale;
+        float w = exp(-mu / kernelK);
+        midWeightSum += w;
+        midWeightedH += w * midH;
+        if (mu < bestMu) bestMu = mu;
+        if (isRock && isSteep && mu < rockMu) rockMu = mu;
     }
 
     if (bestMu < 1.0 && midWeightSum > 0.0) {
@@ -624,6 +644,7 @@ export function createDisplacementMaterial(
 		noiseCubemap: RawCubeTexture;
 		hexTextures: HexDataTextures;
 		hexCorners: HexCornersTexture;
+		cliffEdges: CliffEdgesTexture;
 	},
 	planetRadius: number,
 ): ShaderMaterial {
@@ -640,12 +661,12 @@ export function createDisplacementMaterial(
 			'planetRadius', 'noiseAmp', 'noiseScale',
 			'baseHeight', 'coastRounding',
 			'levelHeights', 'levelHeight4',
-			'hexTexWidth', 'hexCornersTexWidth',
+			'hexTexWidth', 'hexCornersTexWidth', 'hexCliffEdgesTexWidth',
 			'sunDir', 'fillDir', 'cameraPos',
 			'seaLevel', 'bottomOffset', 'topOffset',
 			'terrainPalette', 'terrainBlend', 'terrainBlendPos', 'cliffPalette',
 		],
-		samplers: ['noiseCubemap', 'hexDataTex', 'hexNeighborsTex', 'hexCornersTex'],
+		samplers: ['noiseCubemap', 'hexDataTex', 'hexNeighborsTex', 'hexCornersTex', 'hexCliffEdgesTex'],
 	});
 
 	mat.setFloat('planetRadius', planetRadius);
@@ -660,10 +681,12 @@ export function createDisplacementMaterial(
 	mat.setFloat('levelHeight4', LEVEL_HEIGHTS[4]);
 	mat.setInt('hexTexWidth', resources.hexTextures.width);
 	mat.setInt('hexCornersTexWidth', resources.hexCorners.width);
+	mat.setInt('hexCliffEdgesTexWidth', resources.cliffEdges.width);
 	mat.setTexture('noiseCubemap', resources.noiseCubemap);
 	mat.setTexture('hexDataTex', resources.hexTextures.hexDataTex);
 	mat.setTexture('hexNeighborsTex', resources.hexTextures.hexNeighborsTex);
 	mat.setTexture('hexCornersTex', resources.hexCorners.tex);
+	mat.setTexture('hexCliffEdgesTex', resources.cliffEdges.tex);
 	// Per-terrain palette + height bands. Same scheme as terrain-material.ts.
 	mat.setVector3('fillDir', new Vector3(1, -0.3, -0.5).normalize());
 	mat.setFloat('seaLevel', -0.002 * planetRadius);

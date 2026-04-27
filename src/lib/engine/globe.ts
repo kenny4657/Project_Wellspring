@@ -38,6 +38,7 @@ import { assignCellsToChunks, isChunkVisible } from '$lib/engine/globe-chunks';
 import { initGpuDisplacement, type GpuDisplacementResources } from '$lib/engine/gpu-displacement';
 import { applyDisplacementSettings } from '$lib/engine/gpu-displacement/displacement-shader';
 import { writeHexTerrain, writeHexHeightLevel } from '$lib/engine/gpu-displacement/hex-data-tex';
+import { rebuildCellCliffEdges } from '$lib/engine/gpu-displacement/cliff-edges-tex';
 import { canonicalizeCells } from '$lib/engine/gpu-displacement/hex-corners-tex';
 import { diagnoseGpuDisplacement, dumpSeamPair, dumpAtUnitDir, dumpHAtUnitDir, findRenderedMeshGaps, findLandUnderwaterVertices, landHHistogram, findVisibleCracks, findOverhangTriangles, findWedgeGaps, type DiagnoseResult } from '$lib/engine/gpu-displacement/debug';
 import { createTerrainMaterial, applyTerrainSettings } from '$lib/engine/terrain-material';
@@ -453,6 +454,27 @@ export async function createGlobeEngine(
 					for (const c of cells) cellByIdMap.set(c.id, c);
 				}
 				writeHexHeightLevel(gpuResources.hexTextures, cells, cellByIdMap, cell.id, heightLevel);
+				// Cliff edge tables for self + 1-hop + 2-hop neighbors are
+				// invalidated: a tier flip can create or destroy cliff edges,
+				// and those edges appear in 1-hop and 2-hop neighbors' tables.
+				const dirty = new Set<number>([cell.id, ...cell.neighbors]);
+				for (const nbId of cell.neighbors) {
+					const nb = cellByIdMap.get(nbId);
+					if (!nb) continue;
+					for (const nb2Id of nb.neighbors) dirty.add(nb2Id);
+				}
+				for (const id of dirty) {
+					rebuildCellCliffEdges(gpuResources.cliffEdges, cellByIdMap, id);
+					// Patch the cliff count back into hexDataTex.A bits 4-7.
+					const count = Math.min(gpuResources.cliffEdges.counts[id] ?? 0, 15);
+					const off = id * 4 + 3;
+					const bytes = gpuResources.hexTextures.dataBytes;
+					if (off < bytes.length) {
+						bytes[off] = (bytes[off] & 0x0f) | (count << 4);
+					}
+				}
+				gpuResources.cliffEdges.tex.update(gpuResources.cliffEdges.data);
+				gpuResources.hexTextures.hexDataTex.update(gpuResources.hexTextures.dataBytes);
 			}
 		},
 

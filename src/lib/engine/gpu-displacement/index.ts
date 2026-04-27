@@ -16,6 +16,7 @@ import { bakeNoiseCubemapData, uploadNoiseCubemap, verifyNoiseBake, type NoiseBa
 import { buildFlatChunkMeshes, type FlatChunkMesh } from './flat-mesh';
 import { buildHexDataTextures, type HexDataTextures } from './hex-data-tex';
 import { buildHexCornersTexture, canonicalizeCells, type HexCornersTexture } from './hex-corners-tex';
+import { buildCliffEdgesTexture, type CliffEdgesTexture } from './cliff-edges-tex';
 import { createDisplacementMaterial } from './displacement-shader';
 import type { RawCubeTexture } from '@babylonjs/core/Materials/Textures/rawCubeTexture';
 import type { ShaderMaterial } from '@babylonjs/core/Materials/shaderMaterial';
@@ -25,6 +26,7 @@ export interface GpuDisplacementResources {
 	noiseBakeData: NoiseBakeData;
 	hexTextures: HexDataTextures;
 	hexCorners: HexCornersTexture;
+	cliffEdges: CliffEdgesTexture;
 	flatChunks: FlatChunkMesh[];
 	material: ShaderMaterial;
 	verify: () => { maxRawError: number; maxCliffError: number };
@@ -53,6 +55,16 @@ export async function initGpuDisplacement(
 
 	const hexTextures = buildHexDataTextures(cells, scene);
 	const hexCorners = buildHexCornersTexture(cells, scene);
+	const cliffEdges = buildCliffEdgesTexture(cells, scene);
+	// Patch cliff edge counts into hexDataTex.A bits 4-7 so the shader
+	// reads count + flag bits in a single texelFetch.
+	for (let id = 0; id < cliffEdges.counts.length; id++) {
+		const count = Math.min(cliffEdges.counts[id], 15);
+		const off = id * 4 + 3;
+		if (off >= hexTextures.dataBytes.length) break;
+		hexTextures.dataBytes[off] = (hexTextures.dataBytes[off] & 0x0f) | (count << 4);
+	}
+	hexTextures.hexDataTex.update(hexTextures.dataBytes);
 	const t3 = performance.now();
 
 	const flatChunks = buildFlatChunkMeshes(cells, scene, chunkAssignment);
@@ -62,6 +74,7 @@ export async function initGpuDisplacement(
 		noiseCubemap,
 		hexTextures,
 		hexCorners,
+		cliffEdges,
 	}, planetRadius);
 	for (const chunk of flatChunks) {
 		chunk.mesh.material = material;
@@ -83,6 +96,7 @@ export async function initGpuDisplacement(
 		noiseBakeData,
 		hexTextures,
 		hexCorners,
+		cliffEdges,
 		flatChunks,
 		material,
 		verify: () => verifyNoiseBake(noiseBakeData, 64),
