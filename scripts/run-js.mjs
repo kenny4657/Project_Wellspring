@@ -23,8 +23,8 @@ page.on('console', (msg) => {
 });
 page.on('pageerror', (err) => console.error('[page error]', err.message));
 
-await page.goto('http://localhost:5173/globe', { waitUntil: 'networkidle' });
-await page.waitForFunction(() => typeof window.engine !== 'undefined', { timeout: 60000 });
+await page.goto('http://localhost:5173/globe', { waitUntil: 'domcontentloaded' });
+await page.waitForFunction(() => typeof window.engine !== 'undefined', { timeout: 120000 });
 await page.waitForTimeout(500);
 
 const result = await page.evaluate(async (code) => {

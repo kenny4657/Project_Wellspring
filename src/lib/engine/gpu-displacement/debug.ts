@@ -362,9 +362,11 @@ function simulateShaderHeight(
 	let hasBorder = false;
 	// Coast smooth-min: exp soft-min with N normalization, mirrors
 	// the shader. smoothD = -log((sum exp(-d_i / k)) / N) * k.
+	// minCoastDist tracks the hard min for the coast-erosion pass below.
 	const coastK = 0.22;
 	let coastWeightSum = 0;
 	let coastN = 0;
+	let minCoastDist = Infinity;
 	let hasCoastEdge = false;
 	// EPS for corner tie-break. CPU uses 1e-4, but at unit-sphere-normalized
 	// edge midpoints the chord-to-sphere drift is ~7e-5 — that drift is the
@@ -416,6 +418,7 @@ function simulateShaderHeight(
 		if (coast && edgeTarget === 0) {
 			coastWeightSum += Math.exp(-dist / coastK);
 			coastN++;
+			if (dist < minCoastDist) minCoastDist = dist;
 			hasCoastEdge = true;
 		}
 		hasBorder = true;
@@ -462,6 +465,13 @@ function simulateShaderHeight(
 	if (state.bestMu < 1) {
 		const clamped = Math.max(0, (state.bestMu - 0.05) / 0.95);
 		h = state.bestMidH * (1 - clamped) + hBase * clamped;
+	}
+
+	// Coast-erosion pass: mirror of shader. Hard min over coast edges.
+	if (hasCoastEdge) {
+		const coastT = Math.min(Math.max(minCoastDist / (hexRadius * 0.7), 0), 1);
+		const coastMu = (1 - Math.cos(coastT * Math.PI)) / 2;
+		h = h * coastMu;
 	}
 
 	// Land hex: floor above water sphere — see shader for rationale.

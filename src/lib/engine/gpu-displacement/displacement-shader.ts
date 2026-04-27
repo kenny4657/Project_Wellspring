@@ -297,9 +297,11 @@ void main() {
     // edge-count-invariant — without /N, an 8-coast-edge hex gets
     // smoothD lower by k*log(8/6)=0.064 unit-sphere = ~408km vs a
     // 6-coast-edge hex, mashing its interior toward sea level.
+    // minCoastDist tracks the hard min for the coast-erosion pass below.
     float coastSmoothK = 0.22;
     float coastWeightSum = 0.0;
     int coastN = 0;
+    float minCoastDist = 1e9;
     bool hasCoastEdge = false;
 
     for (int i = 0; i < 12; i++) {
@@ -326,6 +328,7 @@ void main() {
         if (coast) {
             coastWeightSum += exp(-dist / coastSmoothK);
             coastN++;
+            minCoastDist = min(minCoastDist, dist);
             hasCoastEdge = true;
         }
         hasBorder = true;
@@ -396,18 +399,29 @@ void main() {
     }
 
     if (bestMu < 1.0) {
-        // Float-precision leak fix: at exact cliff-edge mesh vertices,
-        // dist isn't exactly 0 due to fp rounding (input position vs
-        // canonical corner). That leaves bestMu slightly > 0 (e.g.
-        // 0.008-0.023 on steep cliffs), and the blend leaks
-        // (h_base_A - h_base_B) * bestMu of own-tier difference between
-        // the two cliff-adjacent cells — visible as h-mismatch at the
-        // shared edge midpoint. Clamping bestMu in (0, 0.05] to 0
-        // forces the cliff face to bestMidH at the edge (symmetric
-        // across both cells). Verified against engine.dumpH() at
-        // 8614↔8615 and 8614↔8654 cliff edge midpoints.
+        // Float-precision leak fix — see commit b54b6c3 for full notes.
         float clamped = max(0.0, (bestMu - 0.05) / 0.95);
         h = bestMidH * (1.0 - clamped) + h * clamped;
+    }
+
+    // ── Coast-erosion pass ─────────────────────────────────
+    // Mirrors cliff erosion's structure: ALWAYS applies when coast edges
+    // exist, independent of which border edge the walk picked as
+    // "nearest". Without this pass, h has a discontinuity where the
+    // border walk's nearest-edge classification flips from coast
+    // (target=0) to water-water (target=lh(min)) — visible as the 38km
+    // vertical wall at coastal water hex corners (e.g. 12922/12961/12960).
+    //
+    // Uses HARD MIN over coast edges. A normalized soft-min
+    // (-log(sum/N)*k) overestimates min when one edge is at dist=0 and
+    // others far — gives positive coastDist at corners where it should
+    // be 0. Hard min is N-invariant and gives correct corner behavior.
+    // coastMu ramps from 0 at coast (h fully pulled to sea level) to 1
+    // at hexRadius * 0.7 (no pull). Same falloff shape as non-steep cliff.
+    if (hasCoastEdge) {
+        float coastT = clamp(minCoastDist / (hexRadius * 0.7), 0.0, 1.0);
+        float coastMu = (1.0 - cos(coastT * 3.14159265)) / 2.0;
+        h = h * coastMu;
     }
 
     vec3 worldPos = unitDir * (planetRadius * (1.0 + h));
