@@ -76,7 +76,7 @@ ivec2 hexCoord(int id) {
 vec4 readCornerPixel(int id, int k) {
     int W = hexCornersTexWidth;
     int xCol = id % W;
-    int yRow = (id / W) * 6 + k;
+    int yRow = (id / W) * 8 + k;
     return texelFetch(hexCornersTex, ivec2(xCol, yRow), 0);
 }
 
@@ -154,17 +154,21 @@ float computeBorderTarget(int selfH, int nbH) {
     return 0.0;
 }
 
-void readNeighbors(int id, out int nb[6]) {
+void readNeighbors(int id, out int nb[8]) {
+    // 8 nibbles packed in 4 bytes (RGBA) — supports 8-corner cells.
     vec4 nbPacked = texelFetch(hexNeighborsTex, hexCoord(id), 0);
     int n0 = int(nbPacked.r * 255.0 + 0.5);
     int n1 = int(nbPacked.g * 255.0 + 0.5);
     int n2 = int(nbPacked.b * 255.0 + 0.5);
+    int n3 = int(nbPacked.a * 255.0 + 0.5);
     nb[0] = n0 & 0xf;
     nb[1] = (n0 >> 4) & 0xf;
     nb[2] = n1 & 0xf;
     nb[3] = (n1 >> 4) & 0xf;
     nb[4] = n2 & 0xf;
     nb[5] = (n2 >> 4) & 0xf;
+    nb[6] = n3 & 0xf;
+    nb[7] = (n3 >> 4) & 0xf;
 }
 
 void readHexData(int id, out int heightLevel, out int edgeCount) {
@@ -175,31 +179,31 @@ void readHexData(int id, out int heightLevel, out int edgeCount) {
     if (edgeCount < 5) edgeCount = 6;
 }
 
-void readCornersAndNeighborIds(int id, out vec3 corners[6], out int nbIds[6]) {
-    for (int i = 0; i < 6; i++) {
+void readCornersAndNeighborIds(int id, out vec3 corners[8], out int nbIds[8]) {
+    for (int i = 0; i < 8; i++) {
         vec4 v = readCornerPixel(id, i);
         corners[i] = v.rgb;
         nbIds[i] = int(v.a + 0.5);
     }
 }
 
-float meanHexRadius(vec3 corners[6], int edgeCount) {
+float meanHexRadius(vec3 corners[8], int edgeCount) {
     vec3 c = vec3(0.0);
-    for (int i = 0; i < 6; i++) { if (i >= edgeCount) break; c += corners[i]; }
+    for (int i = 0; i < 8; i++) { if (i >= edgeCount) break; c += corners[i]; }
     c = normalize(c / float(edgeCount));
     float r = 0.0;
-    for (int i = 0; i < 6; i++) { if (i >= edgeCount) break; r += length(corners[i] - c); }
+    for (int i = 0; i < 8; i++) { if (i >= edgeCount) break; r += length(corners[i] - c); }
     return r / float(edgeCount);
 }
 
-// Walk a hex's 6 edges and apply cliff erosion for every cliff
+// Walk a hex's edges (up to 8) and apply cliff erosion for every cliff
 // edge to (bestMu, bestMidH). Used both for self and 1-hop neighbors.
 void walkCliffEdges(
     vec3 unitDir,
     int selfH,
     int edgeCount,
-    int neighborH[6],
-    vec3 corners[6],
+    int neighborH[8],
+    vec3 corners[8],
     float ownerHexRadius,
     float cliffNoise,
     float midNoise,
@@ -207,7 +211,7 @@ void walkCliffEdges(
     inout float bestMu,
     inout float bestMidH
 ) {
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < 8; i++) {
         if (i >= edgeCount) break;
         if (!isCliffEdge(selfH, neighborH[i])) continue;
         vec3 a = corners[i];
@@ -241,10 +245,10 @@ void main() {
     // Self data
     int selfH, edgeCount;
     readHexData(id, selfH, edgeCount);
-    int neighborH[6];
+    int neighborH[8];
     readNeighbors(id, neighborH);
-    vec3 corners[6];
-    int nbIds[6];
+    vec3 corners[8];
+    int nbIds[8];
     readCornersAndNeighborIds(id, corners, nbIds);
 
     // Noise
@@ -272,7 +276,7 @@ void main() {
     float coastWeightSum = 0.0;
     bool hasCoastEdge = false;
 
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < 8; i++) {
         if (i >= edgeCount) break;
         int nbH = neighborH[i];
         if (isExcludedEdge(selfH, nbH)) continue;
@@ -345,17 +349,17 @@ void main() {
     // Without this, a cliff hex C adjacent to both A and B would only
     // be 1-hop visited from the side where A-B is non-cliff, making
     // the seam mismatch.
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < 8; i++) {
         if (i >= edgeCount) break;
         int nbId = nbIds[i];
         if (nbId < 0) continue;
 
         int nbHL, nbEdgeCount;
         readHexData(nbId, nbHL, nbEdgeCount);
-        int nbNeighborH[6];
+        int nbNeighborH[8];
         readNeighbors(nbId, nbNeighborH);
-        vec3 nbCorners[6];
-        int nbNbIds[6];
+        vec3 nbCorners[8];
+        int nbNbIds[8];
         readCornersAndNeighborIds(nbId, nbCorners, nbNbIds);
         float nbHexRadius = meanHexRadius(nbCorners, nbEdgeCount);
         float nbTierH = levelHeight(nbHL);

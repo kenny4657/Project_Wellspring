@@ -103,7 +103,7 @@ export function buildHexDataTextures(cells: HexCell[], scene: Scene): HexDataTex
 		// pad slot 5 with the cell's own heightLevel so cliff/coast
 		// detection sees a no-op there.
 		const heights: number[] = [];
-		for (let k = 0; k < 6; k++) {
+		for (let k = 0; k < 8; k++) {
 			if (k >= edgeCount) {
 				heights.push(c.heightLevel);
 				continue;
@@ -114,10 +114,12 @@ export function buildHexDataTextures(cells: HexCell[], scene: Scene): HexDataTex
 			heights.push(nb ? nb.heightLevel : c.heightLevel);
 		}
 		// Pack pairs into bytes (4 bits each, since heightLevel is 0–4).
+		// 8 slots in 4 bytes (RGBA) supports 8-corner cells (810/16812).
+		// 10-corner cells (2/16812) still truncate at edge 8.
 		neighborBytes[off + 0] = (heights[0] & 0xf) | ((heights[1] & 0xf) << 4);
 		neighborBytes[off + 1] = (heights[2] & 0xf) | ((heights[3] & 0xf) << 4);
 		neighborBytes[off + 2] = (heights[4] & 0xf) | ((heights[5] & 0xf) << 4);
-		neighborBytes[off + 3] = 0;
+		neighborBytes[off + 3] = (heights[6] & 0xf) | ((heights[7] & 0xf) << 4);
 	}
 
 	const hexDataTex = new RawTexture(

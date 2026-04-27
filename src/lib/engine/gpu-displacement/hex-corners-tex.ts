@@ -239,7 +239,9 @@ export function buildHexCornersTexture(cells: HexCell[], scene: Scene): HexCorne
 
 	const W = nextPow2(Math.ceil(Math.sqrt(idCount)));
 	const baseH = nextPow2(Math.ceil(idCount / W));
-	const H = baseH * 6;
+	// 8 rows per cell to support 7+ corner cells (810/16812 have 8 corners).
+	// 10-corner cells (2/16812) still truncate at corner 8.
+	const H = baseH * 8;
 
 	const data = new Float32Array(W * H * 4);
 
@@ -252,9 +254,9 @@ export function buildHexCornersTexture(cells: HexCell[], scene: Scene): HexCorne
 		const corners = c.corners;
 		const edgeCount = corners.length;
 		const xCol = id % W;
-		const yRowBase = Math.floor(id / W) * 6;
-		for (let k = 0; k < 6; k++) {
-			const corner = corners[k] ?? corners[0]; // pad pentagons
+		const yRowBase = Math.floor(id / W) * 8;
+		for (let k = 0; k < 8; k++) {
+			const corner = corners[k] ?? corners[0]; // pad slots beyond edgeCount
 			let neighborId = -1;
 			if (k < edgeCount) {
 				const nb = findNeighborByCorners(c, k, cellByIdMap);
