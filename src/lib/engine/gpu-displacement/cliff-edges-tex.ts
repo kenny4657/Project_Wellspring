@@ -92,6 +92,17 @@ function collectCellCliffEdges(
 	c: HexCell, cellByIdMap: Map<number, HexCell>,
 ): BakedEdge[] {
 	const edges: BakedEdge[] = [];
+	// Dedupe by canonical (a, b) corner pair. After canonicalizeCells, the
+	// corner Vector3 instances are shared across cells, so the same physical
+	// edge yields the same key regardless of which cell recorded it.
+	// Without dedup, edges are recorded multiple times (once per visiting
+	// perspective) and the multiplicity differs per cell — cell A sees
+	// B-C edge twice (B's perspective + C's perspective, both in A's 1-hop)
+	// while cell D might see it once. Asymmetric multiplicity → asymmetric
+	// weighted-avg midH → gap. Also: cells like 12908/12910 overflow the
+	// 12-slot cap without dedup (16-17 raw entries → truncation drops a
+	// different subset per cell, also gap).
+	const seen = new Set<string>();
 
 	const recordCellEdges = (owner: HexCell): void => {
 		const n = owner.corners.length;
@@ -100,9 +111,16 @@ function collectCellCliffEdges(
 			const nb = findNeighborByCorners(owner, k, cellByIdMap);
 			if (!nb) continue;
 			if (!isCliffEdge(ownerH, nb.heightLevel)) continue;
+			const a = owner.corners[k];
+			const b = owner.corners[(k + 1) % n];
+			const ka = `${a.x.toFixed(7)},${a.y.toFixed(7)},${a.z.toFixed(7)}`;
+			const kb = `${b.x.toFixed(7)},${b.y.toFixed(7)},${b.z.toFixed(7)}`;
+			const key = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+			if (seen.has(key)) continue;
+			seen.add(key);
 			edges.push({
-				a: owner.corners[k],
-				b: owner.corners[(k + 1) % n],
+				a,
+				b,
 				midTier: (getLevelHeight(ownerH) + getLevelHeight(nb.heightLevel)) * 0.5,
 				isSteep: isSteepCliffEdge(ownerH, nb.heightLevel),
 				isRock: isRockCliff(ownerH, nb.heightLevel),
